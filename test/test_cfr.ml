@@ -24,6 +24,16 @@ let first_iteration_is_uniform () =
       Alcotest.(check (array (float 0.))) key [| 0.5; 0.5 |] probs)
     (Strategy.bindings (C.average_strategy t))
 
+(* From OpenSpiel's cfr_test.py (simultaneous updates, uniform averaging).
+   Player 1 reaches "Qb" with own probability 1. Iteration 1 plays [1/2, 1/2]
+   there and iteration 2 plays [0, 1], so the cumulative strategy is
+   [1/2, 3/2]. *)
+let openspiel_two_iterations () =
+  let s = C.average_strategy (solve 2) in
+  Alcotest.(check (array (float 1e-12)))
+    "Qb" [| 0.25; 0.75 |]
+    (Strategy.probs s "Qb" ~n:2)
+
 let game_value () =
   let s = C.average_strategy (solve 10_000) in
   close 1e-4 "value" (-1. /. 18.) (E.expected_value s)
@@ -51,6 +61,8 @@ let tests =
   [
     Alcotest.test_case "first iteration is uniform" `Quick
       first_iteration_is_uniform;
+    Alcotest.test_case "OpenSpiel two iterations" `Quick
+      openspiel_two_iterations;
     Alcotest.test_case "game value -1/18" `Quick game_value;
     Alcotest.test_case "equilibrium family" `Quick lands_in_equilibrium_family;
   ]
