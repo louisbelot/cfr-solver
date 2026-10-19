@@ -1,0 +1,3 @@
+(library
+ (name cfr)
+ (public_name cfr-solver))
