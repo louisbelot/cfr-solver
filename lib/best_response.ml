@@ -22,14 +22,12 @@ module Make (G : Game.S) = struct
     go G.root 1.;
     reach
 
-  (* Lowest index among the maxima. The slack keeps exact ties (which rounding
-     can split by an ulp) on the lowest action, the same convention as
-     OpenSpiel. *)
+  (* Strict comparison keeps ties on the lowest index, as OpenSpiel does. *)
   let argmax n f =
     let best = ref 0 and best_v = ref (f 0) in
     for a = 1 to n - 1 do
       let v = f a in
-      if v > !best_v +. (1e-12 *. Float.max 1. (Float.abs !best_v)) then begin
+      if v > !best_v then begin
         best := a;
         best_v := v
       end
