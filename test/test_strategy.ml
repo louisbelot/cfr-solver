@@ -1,4 +1,4 @@
-open Cfr
+open Cfr_solver
 
 let two = [| "p"; "b" |]
 

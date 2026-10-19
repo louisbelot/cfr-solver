@@ -1,4 +1,4 @@
-open Cfr
+open Cfr_solver
 
 let probs = Alcotest.(array (float 1e-12))
 

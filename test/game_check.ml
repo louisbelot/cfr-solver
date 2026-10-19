@@ -1,6 +1,6 @@
 (* Structural checks that every game must pass before a solver can trust it. *)
 
-open Cfr
+open Cfr_solver
 
 type counts = { histories : int; terminals : int; infosets : int }
 

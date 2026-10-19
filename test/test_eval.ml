@@ -1,4 +1,4 @@
-open Cfr
+open Cfr_solver
 module E = Eval.Make (Kuhn)
 
 (* Every Kuhn infoset gets the same probability of betting. *)

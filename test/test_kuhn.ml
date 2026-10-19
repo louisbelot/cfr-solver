@@ -1,4 +1,4 @@
-open Cfr
+open Cfr_solver
 
 (* Follow a path from the root: chance outcomes by index, actions by label. *)
 let rec follow h = function
