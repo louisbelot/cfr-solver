@@ -6,4 +6,5 @@ let () =
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
       ("cfr", Test_cfr.tests);
+      ("best response", Test_best_response.tests);
     ]
