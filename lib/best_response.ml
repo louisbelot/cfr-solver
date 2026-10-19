@@ -3,8 +3,8 @@ module Make (G : Game.S) = struct
 
   (* For every infoset of [br], the histories in it as (children, weight),
      where weight is the probability that chance and the opponent play to
-     reach the history. Histories nobody else would reach are skipped: they
-     carry zero weight in every comparison below. *)
+     reach the history. Histories that chance or the opponent never reach are
+     skipped, since they carry zero weight in every comparison below. *)
   let collect br sigma =
     let reach = Hashtbl.create 64 in
     let rec go h w =
