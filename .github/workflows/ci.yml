@@ -23,7 +23,7 @@ jobs:
       - run: opam exec -- dune test
       - name: smoke test the CLI
         if: runner.os == 'Linux'
-        run: opam exec -- dune exec cfr-solver -- solve -n 1000 --json kuhn.json --trace trace.csv
+        run: opam exec -- dune exec cfr-solver -- solve -n 10000 --json kuhn.json --trace trace.csv
 
   format:
     runs-on: ubuntu-latest
