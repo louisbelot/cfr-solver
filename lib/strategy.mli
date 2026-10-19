@@ -27,3 +27,7 @@ val cardinal : t -> int
 
 val pp : ?keys:string list -> Format.formatter -> t -> unit
 (** One line per infoset, in [keys] order (default: sorted). *)
+
+val to_json : ?keys:string list -> t -> Json.t
+(** An object from infoset to an object from action to probability, in [keys]
+    order (default: sorted). Keys without an entry are left out. *)

@@ -7,4 +7,5 @@ let () =
       ("eval", Test_eval.tests);
       ("cfr", Test_cfr.tests);
       ("best response", Test_best_response.tests);
+      ("json", Test_json.tests);
     ]

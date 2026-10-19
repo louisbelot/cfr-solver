@@ -38,3 +38,20 @@ let pp ?keys ppf t =
             probs;
           Format.fprintf ppf "@\n")
     keys
+
+let to_json ?keys t =
+  let keys =
+    match keys with Some k -> k | None -> List.map fst (bindings t)
+  in
+  Json.Object
+    (List.filter_map
+       (fun key ->
+         Option.map
+           (fun { actions; probs } ->
+             ( key,
+               Json.Object
+                 (Array.to_list
+                    (Array.mapi (fun a p -> (actions.(a), Json.Float p)) probs))
+             ))
+           (find t key))
+       keys)
