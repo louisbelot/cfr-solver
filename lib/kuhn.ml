@@ -36,3 +36,27 @@ let node = function
             (move_to_string m, Play { cards; moves = moves @ [ m ] })
           in
           Decision { player; infoset; actions = [ child Pass; child Bet ] })
+
+(* Kuhn's equilibrium family as tabulated on Wikipedia and in OpenSpiel. *)
+let equilibrium alpha =
+  if not (alpha >= 0. && alpha <= 1. /. 3.) then
+    invalid_arg "Kuhn.equilibrium: alpha must be in [0, 1/3]";
+  let third = 1. /. 3. in
+  List.fold_left
+    (fun s (key, bet) ->
+      Strategy.add key ~actions:[| "p"; "b" |] ~probs:[| 1. -. bet; bet |] s)
+    Strategy.empty
+    [
+      ("J", alpha);
+      ("Q", 0.);
+      ("K", 3. *. alpha);
+      ("Jpb", 0.);
+      ("Qpb", alpha +. third);
+      ("Kpb", 1.);
+      ("Jp", third);
+      ("Qp", 0.);
+      ("Kp", 1.);
+      ("Jb", 0.);
+      ("Qb", third);
+      ("Kb", 1.);
+    ]
