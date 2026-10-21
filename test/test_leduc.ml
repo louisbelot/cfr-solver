@@ -73,6 +73,19 @@ let openspiel_nash_conv () =
   in
   Alcotest.(check (float 1e-12)) "first action" 2. (B.nash_conv first)
 
+module C = Cfr.Make (Leduc)
+
+(* Fully converged runs (CFR+ and DCFR at 10,000 iterations, exploitability
+   under 1e-5) agree on -0.085606, and the literature quotes -0.0856. 500
+   iterations of CFR+ get within 1e-4 of it. *)
+let cfr_plus_solves_leduc () =
+  let t = C.create ~algorithm:Plus () in
+  C.run t 500;
+  let s = C.average_strategy t in
+  Alcotest.(check (float 1e-4)) "value" (-0.085606) (E.expected_value s);
+  let e = B.exploitability s in
+  if e > 2e-3 then Alcotest.failf "exploitability %g after 500" e
+
 let tests =
   [
     Alcotest.test_case "tree shape and contract" `Quick structure;
@@ -80,4 +93,5 @@ let tests =
     Alcotest.test_case "infoset keys" `Quick keys;
     Alcotest.test_case "legal actions" `Quick legal;
     Alcotest.test_case "OpenSpiel nash conv" `Quick openspiel_nash_conv;
+    Alcotest.test_case "CFR+ solves Leduc" `Quick cfr_plus_solves_leduc;
   ]
