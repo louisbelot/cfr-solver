@@ -6,6 +6,7 @@ let () =
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
+      ("tree", Test_tree.tests);
       ("cfr", Test_cfr.tests);
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
