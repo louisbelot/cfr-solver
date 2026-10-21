@@ -5,8 +5,6 @@ let rec count = function
   | Chance { children; _ } | Decision { children; _ } ->
       Array.fold_left (fun n c -> n + count c) 1 children
 
-(* The compiled tree must have exactly the histories and infosets of the lazy
-   game, with each infoset's player and action labels carried over. *)
 let same_game (module G : Game.S) () =
   let module Check = Game_check.Make (G) in
   let module E = Eval.Make (G) in

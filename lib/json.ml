@@ -7,8 +7,6 @@ type t =
   | List of t list
   | Object of (string * t) list
 
-(* Shortest of %.15g, %.16g, %.17g that reads back to the same float, so 0.1
-   prints as 0.1 and nothing is lost. *)
 let float_to_string x =
   if not (Float.is_finite x) then invalid_arg "Json: non-finite float";
   let rec go p =
@@ -42,8 +40,6 @@ let rec write buf indent = function
   | Object kvs ->
       block buf indent '{' '}' (List.map (fun (k, x) -> (Some k, x)) kvs)
 
-(* A container of scalars stays on one line; anything else gets one element
-   per line. In a strategy file that puts each infoset on its own line. *)
 and block buf indent opening closing items =
   let item (key, x) =
     Option.iter

@@ -1,8 +1,3 @@
-(* Log-log line charts as standalone SVG, enough for convergence plots. The
-   colors are the first four slots of a categorical palette picked for
-   colorblind separation, with a second set for dark mode, since GitHub shows
-   README images on both backgrounds. *)
-
 type series = { label : string; points : (int * float) list }
 
 let width = 760.
@@ -31,14 +26,11 @@ let decades lo hi =
   ( Float.to_int (Float.floor (Float.log10 lo)),
     Float.to_int (Float.ceil (Float.log10 hi)) )
 
-(* 10 with a superscript exponent. *)
 let power k = Printf.sprintf "10<tspan dy=\"-6\" font-size=\"9\">%d</tspan>" k
 
 let loglog ~title ~xlabel ~ylabel series =
   if List.length series > Array.length light then
     invalid_arg "Plot.loglog: too many series";
-  (* Exploitability can come out exactly zero, which has no place on a log
-     axis. *)
   let series =
     List.map
       (fun s ->
@@ -98,8 +90,6 @@ let loglog ~title ~xlabel ~ylabel series =
      text-anchor=\"middle\">%s</text>"
     (top +. (plot_h /. 2.))
     ylabel;
-  (* Direct labels at the right end of each line, pushed apart vertically when
-     lines finish close together. *)
   let ends =
     List.mapi
       (fun i s ->
@@ -121,7 +111,6 @@ let loglog ~title ~xlabel ~ylabel series =
         s.points;
       add "\"/>")
     series;
-  (* The dot stays on the line end; only the label moves. *)
   ignore
     (List.fold_left
        (fun prev (i, label, x, y) ->

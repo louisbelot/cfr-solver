@@ -29,9 +29,6 @@ let schedule = function
   | Discounted { alpha; beta; gamma } ->
       { alternating = true; alpha; beta; gamma }
 
-(* t^e / (t^e + 1), with the infinite exponents meaning "keep" and "reset". A
-   regret r_s added on iteration s and discounted with e = 1 ends iteration T
-   as r_s * s / (T + 1), which is how Linear CFR gets its weights. *)
 let factor e t =
   if e = infinity then 1.
   else if e = neg_infinity then 0.
@@ -39,8 +36,6 @@ let factor e t =
     let x = Float.pow (float_of_int t) e in
     x /. (x +. 1.)
 
-(* Per-infoset arrays live in flat float arrays: infoset i owns slots
-   [offset.(i)] to [offset.(i + 1) - 1], one per action. *)
 module Make (G : Game.S) = struct
   type t = {
     tree : Tree.t;
@@ -58,8 +53,6 @@ module Make (G : Game.S) = struct
     mutable weight : float;
   }
 
-  (* Decision depth and the largest action count, to size the scratch space
-     that holds action values on the way back up. *)
   let rec shape = function
     | Tree.Terminal _ -> (0, 0)
     | Chance { children; _ } ->
@@ -105,7 +98,6 @@ module Make (G : Game.S) = struct
 
   let iterations t = t.iterations
 
-  (* Regret matching into infoset i's slots of [current]. *)
   let match_regrets t i =
     let base = t.offset.(i) and n = t.offset.(i + 1) - t.offset.(i) in
     let total = ref 0. in
@@ -118,23 +110,12 @@ module Make (G : Game.S) = struct
          else 1. /. float_of_int n)
     done
 
-  (* An infoset is visited once per history in it, and its regrets change on
-     every visit. Computing sigma^t once per pass and caching it keeps every
-     visit on the same strategy, as the update rule assumes. Recomputing it on
-     every visit, as some tutorial implementations do, lets later histories in
-     an iteration see regret added by earlier ones. With alternating updates
-     the cache is per pass, so player 1's pass sees player 0's new strategy. *)
   let refresh t i =
     if t.stamp.(i) <> t.passes then begin
       match_regrets t i;
       t.stamp.(i) <- t.passes
     end
 
-  (* Player 0's expected payoff below [node] under the current profile. [pi0]
-     and [pi1] are the players' own reach probabilities and [pc] is chance's.
-     Regrets and the strategy sum change only at infosets of players for which
-     [updating] holds. [depth] counts decisions above [node] and picks this
-     node's row of [values]. *)
   let rec walk t updating node depth pi0 pi1 pc =
     match node with
     | Tree.Terminal u -> u
@@ -164,8 +145,6 @@ module Make (G : Game.S) = struct
           let own, opp =
             match player with P0 -> (pi0, pi1) | P1 -> (pi1, pi0)
           in
-          (* Counterfactual weight: the probability that everyone except
-             [player] plays to reach this history. *)
           let w = Game.sign player *. opp *. pc and own = t.weight *. own in
           for a = 0 to n - 1 do
             let k = base + a in

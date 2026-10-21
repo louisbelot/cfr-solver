@@ -10,7 +10,6 @@ let structure () =
   Alcotest.(check int) "terminals" 30 c.terminals;
   Alcotest.(check int) "infosets" 12 c.infosets
 
-(* Deal 0 is (J, Q) and deal 5 is (K, Q). *)
 let payoffs () =
   let f = Alcotest.(check (float 0.)) in
   f "J vs Q, check-check" (-1.) (payoff [ "0"; "p"; "p" ]);

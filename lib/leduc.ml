@@ -1,8 +1,6 @@
-(* Declared in rank order, so [compare] orders cards. *)
 type rank = J | Q | K
 type action = Fold | Call | Raise
 
-(* Betting lists are in the order played. A round has at most four actions. *)
 type history =
   | Start
   | Dealt of rank
@@ -22,7 +20,6 @@ let action_to_string = function Fold -> "f" | Call -> "c" | Raise -> "r"
 let actions_to_string bets = String.concat "" (List.map action_to_string bets)
 let player_of i = if i mod 2 = 0 then Game.P0 else P1
 
-(* Draw one of the remaining cards. *)
 let deal dealt k =
   let left = 6 - List.length dealt in
   List.filter_map
@@ -34,8 +31,6 @@ let deal dealt k =
 
 type status = Acting of Game.player | Closed | Folded of Game.player
 
-(* A round closes on a call that is not the opening check: check-check, or a
-   call of a raise. *)
 let status bets =
   let n = List.length bets in
   match List.rev bets with
@@ -43,8 +38,6 @@ let status bets =
   | Call :: _ when n >= 2 -> Closed
   | _ -> Acting (player_of n)
 
-(* Chips each player puts in during one round. A call matches the highest
-   contribution so far; a raise matches it and adds [size]. *)
 let committed size bets =
   let c = [| 0; 0 |] in
   List.iteri
@@ -64,7 +57,6 @@ let compare_hands board (c0, c1) =
   | 0 -> compare c0 c1
   | c -> c
 
-(* Player 0's payoff: what the loser put in, the ante included. *)
 let payoff hole first second outcome =
   let c1 = committed 2 first and c2 = committed 4 second in
   let put p = 1 + c1.(p) + c2.(p) in

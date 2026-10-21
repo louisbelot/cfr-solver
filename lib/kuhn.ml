@@ -1,8 +1,5 @@
 type card = J | Q | K
 type move = Pass | Bet
-
-(* [moves] is in the order played; a Kuhn hand is at most three moves long, so
-   appending is cheap. *)
 type history = Deal | Play of { cards : card * card; moves : move list }
 
 let name = "kuhn"
@@ -11,8 +8,6 @@ let rank = function J -> 0 | Q -> 1 | K -> 2
 let card_to_string = function J -> "J" | Q -> "Q" | K -> "K"
 let move_to_string = function Pass -> "p" | Bet -> "b"
 let deals = [ (J, Q); (J, K); (Q, J); (Q, K); (K, J); (K, Q) ]
-
-(* Both players ante 1, a bet is 1, so the winner of a called bet takes 2. *)
 let showdown (c0, c1) stake = if rank c0 > rank c1 then stake else -.stake
 
 let node = function
@@ -37,7 +32,6 @@ let node = function
           in
           Decision { player; infoset; actions = [ child Pass; child Bet ] })
 
-(* Kuhn's equilibrium family as tabulated on Wikipedia and in OpenSpiel. *)
 let equilibrium alpha =
   if not (alpha >= 0. && alpha <= 1. /. 3.) then
     invalid_arg "Kuhn.equilibrium: alpha must be in [0, 1/3]";

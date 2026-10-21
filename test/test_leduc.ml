@@ -3,10 +3,6 @@ module Check = Game_check.Make (Leduc)
 module B = Best_response.Make (Leduc)
 module E = Eval.Make (Leduc)
 
-(* Counted by hand: 9 hole-card pairs, each with 6 decision points, 4 folds
-   and 5 ways to close round 1; 24 (hole, board) combinations, since a pocket
-   pair leaves only two board ranks; and the same 15 nodes in round 2 below
-   each of the 5 closed first rounds. *)
 let structure () =
   let c = Check.check () in
   Alcotest.(check int)
@@ -17,9 +13,6 @@ let structure () =
   Alcotest.(check int) "infosets" 288 c.infosets;
   Alcotest.(check int) "per player" 144 (List.length (E.infosets P0))
 
-(* Chance indices follow J, Q, K among the ranks still in the deck. "2"; "1"
-   deals player 0 a king and player 1 a queen, after which the board is J, Q
-   or K at index 0, 1 or 2. *)
 let kq = [ "2"; "1" ]
 
 let payoffs () =
@@ -56,9 +49,6 @@ let legal () =
   l "facing a raise" [ "f"; "c"; "r" ] (labels (kq @ [ "r" ]));
   l "raise cap" [ "f"; "c" ] (labels (kq @ [ "c"; "r"; "r" ]))
 
-(* From OpenSpiel's exploitability_test.py, where the uniform value is
-   "taken from independent implementations". Always taking the first legal
-   action means checking or folding, so nobody ever raises. *)
 let openspiel_nash_conv () =
   Alcotest.(check (float 1e-12))
     "uniform" 4.747222222222222
@@ -75,9 +65,6 @@ let openspiel_nash_conv () =
 
 module C = Cfr.Make (Leduc)
 
-(* Fully converged runs (CFR+ and DCFR at 10,000 iterations, exploitability
-   under 1e-5) agree on -0.085606, and the literature quotes -0.0856. 500
-   iterations of CFR+ get within 1e-4 of it. *)
 let cfr_plus_solves_leduc () =
   let t = C.create ~algorithm:Plus () in
   C.run t 500;

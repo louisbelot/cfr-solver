@@ -18,7 +18,6 @@ let normalize () =
   Alcotest.check probs "all zero" [| 0.5; 0.5 |]
     (Regret_matching.normalize [| 0.; 0. |])
 
-(* Rock, paper, scissors, payoffs to the row player. *)
 let rps = [| [| 0.; -1.; 1. |]; [| 1.; 0.; -1. |]; [| -1.; 1.; 0. |] |]
 let dot x y = Array.fold_left ( +. ) 0. (Array.map2 ( *. ) x y)
 let utilities opp = Array.map (fun row -> dot row opp) rps
@@ -30,7 +29,6 @@ let update regrets sigma u =
 let accumulate sums sigma =
   Array.iteri (fun a p -> sums.(a) <- sums.(a) +. p) sigma
 
-(* Against a fixed rock-heavy opponent the average strategy goes to paper. *)
 let exploits_fixed_opponent () =
   let opp = [| 0.4; 0.3; 0.3 |] in
   let regrets = Array.make 3 0. and sums = Array.make 3 0. in
@@ -42,9 +40,6 @@ let exploits_fixed_opponent () =
   let avg = Regret_matching.normalize sums in
   Alcotest.(check bool) "mostly paper" true (avg.(1) > 0.99)
 
-(* In self-play the average strategies converge to the unique equilibrium,
-   uniform play, even from lopsided starting regrets. RPS is symmetric, so the
-   same payoff matrix serves both players. *)
 let self_play () =
   let r0 = [| 5.; 0.; 0. |] and r1 = [| 0.; 0.; 3. |] in
   let s0 = Array.make 3 0. and s1 = Array.make 3 0. in

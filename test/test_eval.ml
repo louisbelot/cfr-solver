@@ -1,7 +1,6 @@
 open Cfr_solver
 module E = Eval.Make (Kuhn)
 
-(* Every Kuhn infoset gets the same probability of betting. *)
 let constant ~p0 ~p1 =
   let fill player bet s =
     List.fold_left
@@ -13,9 +12,6 @@ let constant ~p0 ~p1 =
 
 let exact = Alcotest.float 1e-12
 
-(* Payoffs that follow from the rules alone: check-check and bet-call are
-   zero-sum showdowns that each card wins as often as it loses; an opponent
-   who never calls or bets loses every ante. *)
 let pure_profiles () =
   Alcotest.check exact "always check" 0.
     (E.expected_value (constant ~p0:0. ~p1:0.));

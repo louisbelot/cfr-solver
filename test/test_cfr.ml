@@ -24,10 +24,6 @@ let first_iteration_is_uniform () =
       Alcotest.(check (array (float 0.))) key [| 0.5; 0.5 |] probs)
     (Strategy.bindings (C.average_strategy t))
 
-(* From OpenSpiel's cfr_test.py (simultaneous updates, uniform averaging).
-   Player 1 reaches "Qb" with own probability 1. Iteration 1 plays [1/2, 1/2]
-   there and iteration 2 plays [0, 1], so the cumulative strategy is
-   [1/2, 3/2]. *)
 let openspiel_two_iterations () =
   let s = C.average_strategy (solve 2) in
   Alcotest.(check (array (float 1e-12)))
@@ -38,9 +34,6 @@ let game_value () =
   let s = C.average_strategy (solve 10_000) in
   close 1e-4 "value" (-1. /. 18.) (E.expected_value s)
 
-(* The equilibrium is a one-parameter family, so CFR may land anywhere in it.
-   Player 0's probabilities are tied to its own alpha (the jack bluff rate);
-   player 1's are unique. *)
 let lands_in_equilibrium_family () =
   let s = C.average_strategy (solve 10_000) in
   let alpha = bet s "J" in
@@ -67,10 +60,6 @@ let solve_with algorithm n =
   C.run t n;
   C.average_strategy t
 
-(* Equality with the reference is the strongest check on the update order:
-   alternation, when discounting happens, and which iteration weight goes into
-   the average. 30 iterations is enough for every variant's regrets to change
-   sign at some infosets. *)
 let matches_reference algorithm () =
   let s = solve_with algorithm 30 in
   List.iter
@@ -105,16 +94,12 @@ let every_algorithm_starts_uniform () =
         (Strategy.bindings (solve_with algorithm 1)))
     algorithms
 
-(* OpenSpiel's cfr_test.py runs CFR+ for 200 iterations and asks for the game
-   value within 1e-3 and exploitability below 1e-3. *)
 let openspiel_cfr_plus () =
   let s = solve_with Plus 200 in
   close 1e-3 "value" (-1. /. 18.) (E.expected_value s);
   let e = B.exploitability s in
   if e > 1e-3 then Alcotest.failf "exploitability %g" e
 
-(* The point of the variants: after 1000 iterations each one is at least
-   five times less exploitable than vanilla CFR. *)
 let variants_beat_vanilla () =
   let e alg = B.exploitability (solve_with alg 1000) in
   let base = e Vanilla in

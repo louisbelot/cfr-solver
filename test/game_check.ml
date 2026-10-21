@@ -1,11 +1,8 @@
-(* Structural checks that every game must pass before a solver can trust it. *)
-
 open Cfr_solver
 
 type counts = { histories : int; terminals : int; infosets : int }
 
 module Make (G : Game.S) = struct
-  (* Follow a path from the root: chance outcomes by index, actions by label. *)
   let rec follow h = function
     | [] -> h
     | step :: rest -> (
@@ -28,9 +25,6 @@ module Make (G : Game.S) = struct
   let check () =
     let seen = Hashtbl.create 64 in
     let histories = ref 0 and terminals = ref 0 in
-    (* [path] is the list of (infoset, action) pairs taken by each player so
-       far. With perfect recall it is the same for every history in an
-       infoset. *)
     let rec go h (path0, path1) =
       incr histories;
       match G.node h with

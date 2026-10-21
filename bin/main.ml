@@ -9,10 +9,8 @@ let short_name = function
   | Cfr.Discounted _ -> "dcfr"
   | a -> Cfr.algorithm_name a
 
-(* Strategy tables longer than this go to --json only. *)
 let max_table = 24
 
-(* 1, 2, 5, 10, 20, 50, ... below n, then n: evenly spaced on a log axis. *)
 let checkpoints n =
   let rec go p acc =
     if p >= n then acc
@@ -20,7 +18,6 @@ let checkpoints n =
   in
   List.rev (n :: go 1 [])
 
-(* About [per_decade] points per factor of ten, as distinct integers. *)
 let log_checkpoints per_decade n =
   let steps =
     Float.to_int
@@ -32,8 +29,6 @@ let log_checkpoints per_decade n =
   |> List.filter (fun k -> k < n)
   |> List.cons n |> List.sort_uniq compare
 
-(* MinGW's printf writes three exponent digits (7.8e-006). Trim them to two
-   so the output reads the same on every platform. *)
 let trim_exponent s =
   match String.index_opt s 'e' with
   | Some i when String.length s - i = 5 && s.[i + 2] = '0' ->

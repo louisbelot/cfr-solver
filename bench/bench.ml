@@ -1,6 +1,3 @@
-(* Iterations per second and minor-heap words allocated per iteration, for
-   every game and CFR variant. Run with: dune exec ./bench/bench.exe *)
-
 open Cfr_solver
 
 let measure (module G : Game.S) algorithm iterations =

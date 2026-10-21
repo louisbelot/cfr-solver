@@ -1,10 +1,6 @@
 module Make (G : Game.S) = struct
   module E = Eval.Make (G)
 
-  (* For every infoset of [br], the histories in it as (children, weight),
-     where weight is the probability that chance and the opponent play to
-     reach the history. Histories that chance or the opponent never reach are
-     skipped, since they carry zero weight in every comparison below. *)
   let collect br sigma =
     let reach = Hashtbl.create 64 in
     let rec go h w =
@@ -22,7 +18,6 @@ module Make (G : Game.S) = struct
     go G.root 1.;
     reach
 
-  (* Strict comparison keeps ties on the lowest index, as OpenSpiel does. *)
   let argmax n f =
     let best = ref 0 and best_v = ref (f 0) in
     for a = 1 to n - 1 do
@@ -34,11 +29,6 @@ module Make (G : Game.S) = struct
     done;
     !best
 
-  (* An infoset's best action depends on the values below it, which depend on
-     best actions at deeper infosets of the same player. Perfect recall makes
-     that recursion well founded, and memoizing [best] means each infoset is
-     decided once, from all of its histories at the same time. Choosing per
-     history instead would let the responder see the opponent's cards. *)
   let solve br sigma =
     let reach = collect br sigma in
     let best = Hashtbl.create 64 in

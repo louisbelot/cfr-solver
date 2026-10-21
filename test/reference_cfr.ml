@@ -1,10 +1,3 @@
-(* A slow, deliberately different CFR used to check [Cfr.Make]. It shares no
-   code with the solver: every pass enumerates the histories of the updating
-   player with their reach probabilities, evaluates each child with a separate
-   expected-value walk, and adds to the strategy sum once per infoset instead
-   of once per history. The DCFR weights are restated here from the paper
-   rather than taken from the library. Exponential time, so Kuhn only. *)
-
 open Cfr_solver
 
 type algorithm = {
@@ -73,8 +66,6 @@ module Make (G : Game.S) = struct
         List.mapi (fun a (_, h') -> probs.(a) *. value sigma h') actions
         |> List.fold_left ( +. ) 0.
 
-  (* (infoset, children, own reach, everyone else's reach) for each history of
-     [p]. *)
   let histories sigma p =
     let found = ref [] in
     let rec go h own others =

@@ -15,7 +15,6 @@ let first_action =
     (of_bets P0 (List.init 6 (Fun.const 0.)))
     (of_bets P1 (List.init 6 (Fun.const 0.)))
 
-(* Reference values from OpenSpiel's exploitability_test.py. *)
 let openspiel_nash_conv () =
   Alcotest.check exact "uniform" (11. /. 12.) (B.nash_conv Strategy.empty);
   Alcotest.check exact "first action" 2. (B.nash_conv first_action);
@@ -41,9 +40,6 @@ let actions player sigma =
       | None -> Alcotest.failf "no entry for %s" key)
     (E.infosets player)
 
-(* OpenSpiel's best-response actions against the uniform policy, including
-   the exact tie for player 0 holding a king (bet and check are both worth
-   1.5) that goes to the lower action. *)
 let openspiel_actions () =
   let pairs = Alcotest.(list (pair string string)) in
   Alcotest.check pairs "player 0"
@@ -67,8 +63,6 @@ let openspiel_actions () =
     ]
     (actions P1 Strategy.empty)
 
-(* Every pure strategy of a player, built infoset by infoset. Kuhn has 2^6 per
-   player, few enough to enumerate. *)
 let rec pure = function
   | [] -> [ Strategy.empty ]
   | (key, actions) :: rest ->
@@ -95,8 +89,6 @@ let profile =
       (list_size (return 6) (float_bound_inclusive 1.))
       (list_size (return 6) (float_bound_inclusive 1.)))
 
-(* The best response must match the best of all 64 pure strategies, and
-   playing the returned strategy must actually earn that value. *)
 let matches_brute_force sigma =
   List.for_all
     (fun player ->
