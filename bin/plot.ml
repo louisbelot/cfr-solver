@@ -1,6 +1,7 @@
 (* Log-log line charts as standalone SVG, enough for convergence plots. The
-   colors are four slots of a colorblind-checked palette, with a second set
-   for dark mode, since GitHub shows README images on both backgrounds. *)
+   colors are the first four slots of a categorical palette picked for
+   colorblind separation, with a second set for dark mode, since GitHub shows
+   README images on both backgrounds. *)
 
 type series = { label : string; points : (int * float) list }
 
