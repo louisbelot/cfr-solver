@@ -5,7 +5,7 @@
 (generate_opam_files true)
 
 (source
- (github Lemypoo/cfr-solver))
+ (github louisbelot/cfr-solver))
 
 (authors "Louis Belot")
 

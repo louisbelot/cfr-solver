@@ -7,8 +7,8 @@ description:
 maintainer: ["Louis Belot"]
 authors: ["Louis Belot"]
 license: "MIT"
-homepage: "https://github.com/Lemypoo/cfr-solver"
-bug-reports: "https://github.com/Lemypoo/cfr-solver/issues"
+homepage: "https://github.com/louisbelot/cfr-solver"
+bug-reports: "https://github.com/louisbelot/cfr-solver/issues"
 depends: [
   "ocaml" {>= "5.1"}
   "dune" {>= "3.0" & >= "3.0"}
@@ -31,4 +31,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/Lemypoo/cfr-solver.git"
+dev-repo: "git+https://github.com/louisbelot/cfr-solver.git"
