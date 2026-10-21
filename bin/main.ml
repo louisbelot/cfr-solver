@@ -32,6 +32,17 @@ let log_checkpoints per_decade n =
   |> List.filter (fun k -> k < n)
   |> List.cons n |> List.sort_uniq compare
 
+(* MinGW's printf writes three exponent digits (7.8e-006). Trim them to two
+   so the output reads the same on every platform. *)
+let trim_exponent s =
+  match String.index_opt s 'e' with
+  | Some i when String.length s - i = 5 && s.[i + 2] = '0' ->
+      String.sub s 0 (i + 2) ^ String.sub s (i + 3) 2
+  | _ -> s
+
+let sci x = trim_exponent (Printf.sprintf "%.3e" x)
+let short_float x = trim_exponent (Printf.sprintf "%.6g" x)
+
 let write_file path contents =
   Out_channel.with_open_text path (fun oc ->
       Out_channel.output_string oc contents)
@@ -69,7 +80,7 @@ let solve game algorithm iterations json trace =
     (Cfr.algorithm_name algorithm)
     !cpu;
   Format.printf "game value      %.6f (player 0)@." value;
-  Format.printf "exploitability  %.3e@." expl;
+  Format.printf "exploitability  %s@." (sci expl);
   if Strategy.cardinal sigma <= max_table then
     List.iter
       (fun p ->
@@ -102,7 +113,7 @@ let solve game algorithm iterations json trace =
     Option.iter
       (fun path ->
         rows
-        |> List.map (fun (k, e) -> Printf.sprintf "%d,%.6g\n" k e)
+        |> List.map (fun (k, e) -> Printf.sprintf "%d,%s\n" k (short_float e))
         |> String.concat ""
         |> ( ^ ) "iteration,exploitability\n"
         |> write_file path)
@@ -141,7 +152,7 @@ let compare_algorithms game iterations csv svg =
     (fun k ->
       Format.printf "%10d" k;
       List.iter
-        (fun (_, rows, _) -> Format.printf "%12.3e" (List.assoc k rows))
+        (fun (_, rows, _) -> Format.printf "%12s" (sci (List.assoc k rows)))
         runs;
       Format.printf "@.")
     (List.filter (fun k -> power_of_ten k || k = iterations) points);
@@ -154,7 +165,8 @@ let compare_algorithms game iterations csv svg =
         runs
         |> List.concat_map (fun (a, rows, _) ->
             List.map
-              (fun (k, e) -> Printf.sprintf "%s,%d,%.6g\n" (short_name a) k e)
+              (fun (k, e) ->
+                Printf.sprintf "%s,%d,%s\n" (short_name a) k (short_float e))
               rows)
         |> String.concat ""
         |> ( ^ ) "algorithm,iteration,exploitability\n"
