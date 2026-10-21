@@ -5,6 +5,26 @@ open Cfr_solver
 type counts = { histories : int; terminals : int; infosets : int }
 
 module Make (G : Game.S) = struct
+  (* Follow a path from the root: chance outcomes by index, actions by label. *)
+  let rec follow h = function
+    | [] -> h
+    | step :: rest -> (
+        match G.node h with
+        | Game.Chance outcomes ->
+            follow (snd (List.nth outcomes (int_of_string step))) rest
+        | Decision { actions; _ } -> follow (List.assoc step actions) rest
+        | Terminal _ -> Alcotest.fail "path runs past a terminal")
+
+  let payoff path =
+    match G.node (follow G.root path) with
+    | Game.Terminal u -> u
+    | _ -> Alcotest.failf "%s is not terminal" (String.concat " " path)
+
+  let infoset path =
+    match G.node (follow G.root path) with
+    | Game.Decision { infoset; _ } -> infoset
+    | _ -> Alcotest.failf "%s is not a decision" (String.concat " " path)
+
   let check () =
     let seen = Hashtbl.create 64 in
     let histories = ref 0 and terminals = ref 0 in

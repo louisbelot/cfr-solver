@@ -1,26 +1,8 @@
 open Cfr_solver
-
-(* Follow a path from the root: chance outcomes by index, actions by label. *)
-let rec follow h = function
-  | [] -> h
-  | step :: rest -> (
-      match Kuhn.node h with
-      | Game.Chance outcomes ->
-          follow (snd (List.nth outcomes (int_of_string step))) rest
-      | Decision { actions; _ } -> follow (List.assoc step actions) rest
-      | Terminal _ -> Alcotest.fail "path runs past a terminal")
-
-let payoff path =
-  match Kuhn.node (follow Kuhn.root path) with
-  | Game.Terminal u -> u
-  | _ -> Alcotest.failf "%s is not terminal" (String.concat " " path)
-
-let infoset path =
-  match Kuhn.node (follow Kuhn.root path) with
-  | Game.Decision { infoset; _ } -> infoset
-  | _ -> Alcotest.fail "not a decision"
-
 module Check = Game_check.Make (Kuhn)
+
+let payoff = Check.payoff
+let infoset = Check.infoset
 
 let structure () =
   let c = Check.check () in
