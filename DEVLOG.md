@@ -182,3 +182,107 @@ keeps the platform's format, which every JSON parser accepts.
 Next: external-sampling MCCFR, then outcome sampling, then
 their curves on the same charts. Removing the boxed
 floats from `walk` is a quick win to try first.
+
+## 2026-10-22: Monte Carlo CFR
+
+External-sampling and outcome-sampling MCCFR, exploitability charts against
+nodes touched for all six algorithms, and walks that no longer allocate.
+
+What exists now:
+
+- `Mccfr.Make`: `External` and `Outcome {epsilon}` (OpenSpiel's 0.6 is
+  `Mccfr.outcome`). `traverse t player` runs one sampled traversal, `iterate`
+  runs one per player, and `split` copies the solver with an independent
+  random stream (`Random.State.split`), which the tests use now and parallel
+  MCCFR can use later.
+- `Table`: the per-infoset flat arrays (regrets, strategy sums, the cached
+  current strategy and its stamp) pulled out of `Cfr` so both solvers share
+  them. `Tree.size` and `Tree.shape` size the scratch arrays.
+- `touched` on both solvers counts nodes visited. `cfr-solver compare` now gives
+  every algorithm the same node budget and plots exploitability against nodes
+  touched, with the sampled methods dashed. `solve` takes `-a es`, `-a os` and
+  `--seed`.
+- The bench reports nodes per second next to iterations per second.
+
+Design notes:
+
+- External sampling never needs importance weights: the probability of
+  sampling a history is the opponent's and chance's reach, which is exactly the
+  weight counterfactual regret puts on it, so they cancel and the update is
+  `v(a) - v` on sampled values.
+- The opponent's strategy sum gets their current strategy added at every
+  visit, with no weight. Its expectation is chance reach times the opponent's
+  own reach. Full CFR weights by own reach alone, but for a fixed infoset the
+  chance part is the same constant on every iteration, so it cancels when the
+  sum is normalized. Outcome sampling divides by the traverser's sampling
+  probability so the same thing holds.
+- Outcome sampling returns one float per call: the payoff divided by the
+  probability of the sampled path, times the strategy's probability of the
+  path below the current node. The regret update is then `opp * x * (1 - p)`
+  for the sampled action and `-opp * x * p` for the rest. Chance is sampled
+  on-policy and left out of both the reach and the sampling probability.
+- The cached strategy stamp works per traversal, the same as in full CFR.
+  External sampling can hit one of the traverser's infosets many times per
+  traversal, and the cache keeps the strategy fixed across those visits.
+- Uniform draws come from `Random.State.bits` (30 bits) times 2^-30, so drawing
+  doesn't allocate. 30 bits of resolution is far below any probability the
+  solver produces.
+
+The allocation fix flagged last time: `walk` returned a float and took three
+float reach arguments, and OCaml boxes those across a non-inlined recursive
+call. Reach now lives in a per-depth float array and the return value in a
+one-slot float array. Vanilla CFR went from 5,524 to 2 words per Leduc
+iteration and from 160 to 2 on Kuhn. Throughput did not change (about 57,000
+Leduc iterations a second before and after, within noise): minor-heap
+allocation was already cheap. I kept it anyway, because OCaml 5 minor
+collections stop every domain, and parallel MCCFR is planned. Both MCCFR walks
+allocate 0 words per iteration.
+
+Checks:
+
+- 61 tests, 4.4 s.
+- Unbiasedness against exact expectations. From a solver state after 20 (Kuhn)
+  or 50 (Leduc) iterations, split off 20,000 copies (4,000 for external
+  sampling on Leduc), run one traversal on each, and compare the mean change of
+  every regret and strategy-sum entry with the exact expected change from a
+  separate full-tree walk in the test, within 5 standard errors. Both
+  samplers, both players, both games. A few Leduc entries are hit about 50
+  times in a million traversals, so the sample variance there is often zero;
+  the standard error gets a floor from Var X <= max|X| E|X|.
+- An exact invariant: summed with the current strategy's weights, one
+  traversal's regret changes are zero at every infoset (qcheck, 200 random
+  states per sampler).
+- Mutation runs, each against the full suite: outcome sampling without the
+  (1 - sigma) factor fails 4 tests, without the importance weight on the
+  strategy sum 2, with the importance weight computed from sigma instead of the
+  exploration mix 4, external sampling with a uniform opponent 4, and with a
+  wrong strategy-sum increment 3. The third mutation first passed the
+  unbiasedness tests: it makes NaNs, and `NaN > tol` is false. The checks are
+  now written as `not (x <= tol)`.
+- Same seed, same strategy to the bit; another seed gives a different one.
+  Path lengths of a single Kuhn traversal are exactly {6, 8} nodes for
+  external sampling and {4, 5} for outcome sampling.
+
+Exploitability by nodes touched on Leduc (budget of 100,000 alternating
+iterations, 387.8 million nodes):
+
+| nodes       | cfr     | cfr+    | lcfr    | dcfr    | es      | os      |
+|-------------|--------:|--------:|--------:|--------:|--------:|--------:|
+| 10^5        | 3.05e-1 | 1.60e-1 | 2.28e-1 | 1.57e-1 | 5.91e-1 | 1.08    |
+| 10^7        | 1.73e-2 | 7.50e-5 | 3.97e-3 | 3.35e-5 | 3.10e-2 | 9.29e-2 |
+| 3.878 x 10^8| 2.03e-3 | 4.73e-7 | 2.43e-4 | 1.10e-6 | 4.79e-3 | 1.48e-2 |
+
+Per node, external sampling ends 2.4 times more exploitable than vanilla CFR
+and outcome sampling 7.3 times. On a 1,939-node game, sampling buys early
+progress (2.5 exploitability after 1,000 nodes, before any full pass is done)
+and nothing else. A million external-sampling iterations on Leduc take 0.59 s
+and give value -0.0874 and exploitability 0.0119.
+
+Speed (Windows laptop, release build): full-tree CFR about 100 Mnodes/s,
+external sampling 76, outcome sampling 49. Sampling pays a random draw per
+sampled node and jumps around memory more.
+
+Next: parallel MCCFR on OCaml 5 domains, with one split solver per domain and
+regrets merged or shared; then linear and discounted weighting inside MCCFR
+(the averaging Pluribus used), to see how much of CFR+'s lead the sampled
+methods can recover.
