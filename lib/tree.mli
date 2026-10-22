@@ -7,3 +7,5 @@ type infoset = { key : string; player : Game.player; actions : string array }
 type t = { root : node; infosets : infoset array }
 
 val build : (module Game.S) -> t
+val size : node -> int
+val shape : node -> int * int

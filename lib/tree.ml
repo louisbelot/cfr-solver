@@ -38,3 +38,18 @@ let build (module G : Game.S) =
   in
   let root = go G.root in
   { root; infosets = Array.of_list (List.rev !found) }
+
+let rec size = function
+  | Terminal _ -> 1
+  | Chance { children; _ } | Decision { children; _ } ->
+      Array.fold_left (fun n c -> n + size c) 1 children
+
+let rec shape = function
+  | Terminal _ -> (1, 0)
+  | Chance { children; _ } | Decision { children; _ } ->
+      Array.fold_left
+        (fun (h, w) c ->
+          let h', w' = shape c in
+          (max h (h' + 1), max w w'))
+        (1, Array.length children)
+        children
