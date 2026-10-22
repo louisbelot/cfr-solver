@@ -3,11 +3,54 @@ open Cfr_solver
 let games : (string * (module Game.S)) list =
   [ ("kuhn", (module Kuhn)); ("leduc", (module Leduc)) ]
 
-let algorithms = Cfr.[ Vanilla; Plus; Linear; dcfr ]
+type algorithm = Full of Cfr.algorithm | Sampled of Mccfr.sampling
+
+let algorithms =
+  [
+    Full Vanilla;
+    Full Plus;
+    Full Linear;
+    Full Cfr.dcfr;
+    Sampled External;
+    Sampled Mccfr.outcome;
+  ]
 
 let short_name = function
-  | Cfr.Discounted _ -> "dcfr"
-  | a -> Cfr.algorithm_name a
+  | Full (Discounted _) -> "dcfr"
+  | Full a -> Cfr.algorithm_name a
+  | Sampled External -> "es"
+  | Sampled (Outcome _) -> "os"
+
+let long_name = function
+  | Full a -> Cfr.algorithm_name a
+  | Sampled s -> Mccfr.sampling_name s
+
+type solver = {
+  run : int -> unit;
+  iterations : unit -> int;
+  touched : unit -> int;
+  average : unit -> Strategy.t;
+}
+
+let solver (module G : Game.S) seed = function
+  | Full algorithm ->
+      let module C = Cfr.Make (G) in
+      let t = C.create ~algorithm () in
+      {
+        run = C.run t;
+        iterations = (fun () -> C.iterations t);
+        touched = (fun () -> C.touched t);
+        average = (fun () -> C.average_strategy t);
+      }
+  | Sampled sampling ->
+      let module M = Mccfr.Make (G) in
+      let t = M.create ~seed sampling in
+      {
+        run = M.run t;
+        iterations = (fun () -> M.iterations t);
+        touched = (fun () -> M.touched t);
+        average = (fun () -> M.average_strategy t);
+      }
 
 let max_table = 24
 
@@ -42,16 +85,15 @@ let write_file path contents =
   Out_channel.with_open_text path (fun oc ->
       Out_channel.output_string oc contents)
 
-let solve game algorithm iterations json trace =
+let solve game algorithm seed iterations json trace =
   let (module G : Game.S) = List.assoc game games in
-  let module C = Cfr.Make (G) in
   let module B = Best_response.Make (G) in
   let module E = Eval.Make (G) in
-  let t = C.create ~algorithm () in
+  let t = solver (module G) seed algorithm in
   let cpu = ref 0. in
   let run_to k =
     let start = Sys.time () in
-    C.run t (k - C.iterations t);
+    t.run (k - t.iterations ());
     cpu := !cpu +. (Sys.time () -. start)
   in
   let rows =
@@ -63,17 +105,17 @@ let solve game algorithm iterations json trace =
         List.map
           (fun k ->
             run_to k;
-            (k, B.exploitability (C.average_strategy t)))
+            (k, B.exploitability (t.average ())))
           (checkpoints iterations)
   in
-  let sigma = C.average_strategy t in
+  let sigma = t.average () in
   let value = E.expected_value sigma in
   let expl = B.exploitability sigma in
   let players = [ Game.P0; P1 ] in
   let keys p = List.map fst (E.infosets p) in
   Format.printf "%s: %d iterations of %s in %.2f s@." G.name iterations
-    (Cfr.algorithm_name algorithm)
-    !cpu;
+    (long_name algorithm) !cpu;
+  Format.printf "nodes touched   %d@." (t.touched ());
   Format.printf "game value      %.6f (player 0)@." value;
   Format.printf "exploitability  %s@." (sci expl);
   if Strategy.cardinal sigma <= max_table then
@@ -92,8 +134,9 @@ let solve game algorithm iterations json trace =
         Json.Object
           [
             ("game", String G.name);
-            ("algorithm", String (Cfr.algorithm_name algorithm));
+            ("algorithm", String (long_name algorithm));
             ("iterations", Int iterations);
+            ("nodes_touched", Int (t.touched ()));
             ("game_value", Float value);
             ("exploitability", Float expl);
             ( "players",
@@ -116,55 +159,67 @@ let solve game algorithm iterations json trace =
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
 
-let compare_algorithms game iterations csv svg =
+let compare_algorithms game seed iterations csv svg =
   let (module G : Game.S) = List.assoc game games in
-  let module C = Cfr.Make (G) in
   let module B = Best_response.Make (G) in
-  let points = log_checkpoints 10 iterations in
+  let budget = iterations * 2 * Tree.size (Tree.build (module G)).root in
   let runs =
     List.map
       (fun algorithm ->
-        let t = C.create ~algorithm () in
-        let cpu = ref 0. in
+        let t = solver (module G) seed algorithm in
+        let cpu = ref 0. and last = ref 0 in
         let rows =
-          List.map
+          List.filter_map
             (fun k ->
               let start = Sys.time () in
-              C.run t (k - C.iterations t);
+              while t.touched () < k do
+                t.run 1
+              done;
               cpu := !cpu +. (Sys.time () -. start);
-              (k, B.exploitability (C.average_strategy t)))
-            points
+              let n = t.touched () in
+              if n = !last then None
+              else begin
+                last := n;
+                Some (n, B.exploitability (t.average ()))
+              end)
+            (log_checkpoints 10 budget)
         in
-        (algorithm, rows, !cpu))
+        (algorithm, rows, !cpu, t.iterations ()))
       algorithms
   in
-  let rec power_of_ten k = k = 1 || (k mod 10 = 0 && power_of_ten (k / 10)) in
-  Format.printf "%s: exploitability of the average strategy@.@." G.name;
-  Format.printf "%10s" "iterations";
-  List.iter (fun (a, _, _) -> Format.printf "%12s" (short_name a)) runs;
+  let at k rows =
+    match List.rev (List.filter (fun (n, _) -> n <= k) rows) with
+    | [] -> "-"
+    | (_, e) :: _ -> sci e
+  in
+  let rec decades k = if k >= budget then [] else k :: decades (k * 10) in
+  Format.printf
+    "%s: exploitability of the average strategy by nodes touched@.@." G.name;
+  Format.printf "%12s" "nodes";
+  List.iter (fun (a, _, _, _) -> Format.printf "%10s" (short_name a)) runs;
   Format.printf "@.";
   List.iter
     (fun k ->
-      Format.printf "%10d" k;
-      List.iter
-        (fun (_, rows, _) -> Format.printf "%12s" (sci (List.assoc k rows)))
-        runs;
+      Format.printf "%12d" k;
+      List.iter (fun (_, rows, _, _) -> Format.printf "%10s" (at k rows)) runs;
       Format.printf "@.")
-    (List.filter (fun k -> power_of_ten k || k = iterations) points);
-  Format.printf "%10s" "cpu (s)";
-  List.iter (fun (_, _, cpu) -> Format.printf "%12.2f" cpu) runs;
+    (decades 1000 @ [ budget ]);
+  Format.printf "%12s" "iterations";
+  List.iter (fun (_, _, _, n) -> Format.printf "%10d" n) runs;
+  Format.printf "@.%12s" "cpu (s)";
+  List.iter (fun (_, _, cpu, _) -> Format.printf "%10.2f" cpu) runs;
   Format.printf "@.";
   try
     Option.iter
       (fun path ->
         runs
-        |> List.concat_map (fun (a, rows, _) ->
+        |> List.concat_map (fun (a, rows, _, _) ->
             List.map
               (fun (k, e) ->
                 Printf.sprintf "%s,%d,%s\n" (short_name a) k (short_float e))
               rows)
         |> String.concat ""
-        |> ( ^ ) "algorithm,iteration,exploitability\n"
+        |> ( ^ ) "algorithm,nodes,exploitability\n"
         |> write_file path)
       csv;
     Option.iter
@@ -173,9 +228,14 @@ let compare_algorithms game iterations csv svg =
           ~title:
             (Printf.sprintf "%s: exploitability of the average strategy"
                (String.capitalize_ascii G.name))
-          ~xlabel:"iterations" ~ylabel:"exploitability"
+          ~xlabel:"nodes touched" ~ylabel:"exploitability"
           (List.map
-             (fun (a, rows, _) -> { Plot.label = short_name a; points = rows })
+             (fun (a, rows, _, _) ->
+               {
+                 Plot.label = short_name a;
+                 dashed = (match a with Sampled _ -> true | Full _ -> false);
+                 points = rows;
+               })
              runs)
         |> write_file path)
       svg;
@@ -195,11 +255,19 @@ let game =
 let algorithm =
   Arg.(
     value
-    & opt (enum (List.map (fun a -> (short_name a, a)) algorithms)) Cfr.Vanilla
+    & opt
+        (enum (List.map (fun a -> (short_name a, a)) algorithms))
+        (Full Vanilla)
     & info [ "a"; "algorithm" ] ~docv:"ALG"
         ~doc:
-          "CFR variant: cfr, cfr+, lcfr (linear) or dcfr (discounted, \
-           alpha            1.5, beta 0, gamma 2).")
+          "Algorithm: cfr, cfr+, lcfr (linear), dcfr (discounted, alpha 1.5, \
+           beta 0, gamma 2), es (external-sampling MCCFR) or os \
+           (outcome-sampling MCCFR, exploration 0.6).")
+
+let seed =
+  Arg.(
+    value & opt int 1
+    & info [ "seed" ] ~docv:"SEED" ~doc:"Random seed for es and os.")
 
 let iterations =
   let positive =
@@ -233,7 +301,8 @@ let solve_cmd =
   Cmd.v
     (Cmd.info "solve" ~doc:"Run CFR and print the average strategy.")
     Term.(
-      term_result (const solve $ game $ algorithm $ iterations $ json $ trace))
+      term_result
+        (const solve $ game $ algorithm $ seed $ iterations $ json $ trace))
 
 let csv =
   Arg.(
@@ -252,10 +321,12 @@ let compare_cmd =
   Cmd.v
     (Cmd.info "compare"
        ~doc:
-         "Run CFR, CFR+, linear CFR and discounted CFR side by side and \
-          track           exploitability.")
+         "Run every algorithm on the same budget of nodes touched (what N \
+          iterations of an alternating full-tree variant cost) and track \
+          exploitability.")
     Term.(
-      term_result (const compare_algorithms $ game $ iterations $ csv $ svg))
+      term_result
+        (const compare_algorithms $ game $ seed $ iterations $ csv $ svg))
 
 let () =
   exit

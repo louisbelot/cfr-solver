@@ -1,4 +1,4 @@
-type series = { label : string; points : (int * float) list }
+type series = { label : string; dashed : bool; points : (int * float) list }
 
 let width = 760.
 let height = 440.
@@ -6,8 +6,12 @@ let left = 72.
 let right = 128.
 let top = 48.
 let bottom = 56.
-let light = [| "#2a78d6"; "#eb6834"; "#1baf7a"; "#eda100" |]
-let dark = [| "#3987e5"; "#d95926"; "#199e70"; "#c98500" |]
+
+let light =
+  [| "#2a78d6"; "#eb6834"; "#1baf7a"; "#eda100"; "#e87ba4"; "#008300" |]
+
+let dark =
+  [| "#3987e5"; "#d95926"; "#199e70"; "#c98500"; "#d55181"; "#008300" |]
 
 let style =
   let rules colors =
@@ -104,8 +108,9 @@ let loglog ~title ~xlabel ~ylabel series =
     (fun i s ->
       add
         "<polyline class=\"s%d\" fill=\"none\" stroke-width=\"2\" \
-         stroke-linejoin=\"round\" points=\""
-        i;
+         stroke-linejoin=\"round\"%s points=\""
+        i
+        (if s.dashed then " stroke-dasharray=\"6 4\"" else "");
       List.iter
         (fun (x, y) -> add "%.1f,%.1f " (sx (float_of_int x)) (sy y))
         s.points;
