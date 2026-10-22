@@ -2,17 +2,18 @@
 
 Nash-equilibrium strategies for imperfect-information games, computed in OCaml
 with counterfactual regret minimization (CFR). It solves Kuhn poker and Leduc
-hold'em with four CFR variants (vanilla CFR, CFR+, linear CFR and discounted
-CFR) and measures how far any strategy is from equilibrium with an exact best
-response. Monte Carlo CFR is next.
+hold'em with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
+discounted CFR) and two Monte Carlo ones (external and outcome sampling), and
+measures how far any strategy is from equilibrium with an exact best response.
 
-![Exploitability against iterations in Leduc hold'em](docs/leduc.svg)
+![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
 ## Example
 
 ```
 $ dune exec cfr-solver -- solve -n 10000
 kuhn: 10000 iterations of cfr in 0.00 s
+nodes touched   550000
 game value      -0.055546 (player 0)
 exploitability  2.318e-03
 
@@ -47,7 +48,8 @@ queen call at 0.551 (alpha + 1/3 = 0.541). Player 1's equilibrium is unique
 
 `--json FILE` writes the strategy as JSON, `--trace FILE` writes
 exploitability at 1, 2, 5, 10, 20, ... iterations as CSV, and `-a` picks the
-algorithm (`cfr`, `cfr+`, `lcfr`, `dcfr`).
+algorithm (`cfr`, `cfr+`, `lcfr`, `dcfr`, `es`, `os`). The sampled ones take
+`--seed`.
 
 ## Leduc hold'em
 
@@ -61,6 +63,7 @@ OpenSpiel's tests use.
 ```
 $ dune exec cfr-solver -- solve -g leduc -a dcfr -n 10000
 leduc: 10000 iterations of dcfr(1.5,0,2) in 0.34 s
+nodes touched   38780000
 game value      -0.085606 (player 0)
 exploitability  7.805e-06
 ```
@@ -82,27 +85,33 @@ mixes with the same value and exploitability.
 
 ## Convergence
 
-`cfr-solver compare -g GAME -n N --svg FILE` runs all four variants side by
-side and plots exploitability of the average strategy. The chart at the top is
-Leduc. Some of the rows it prints, from runs of 100,000 iterations:
+`cfr-solver compare -g GAME -n N --svg FILE` runs all six algorithms on the
+same budget of work and plots exploitability of the average strategy. Work is
+counted in nodes touched, because an iteration means very different things: a
+full-tree pass over Leduc visits 1,939 nodes, an external-sampling iteration
+about 45 and an outcome-sampling one about 16. The budget is what N iterations
+of an alternating full-tree variant cost (vanilla CFR updates both players in
+one pass, so it gets 2N iterations). The chart at the top is Leduc with
+N = 100,000, about 388 million nodes; dashed lines are the sampled methods.
 
-| game  | iterations | cfr      | cfr+     | lcfr     | dcfr     |
-|-------|-----------:|---------:|---------:|---------:|---------:|
-| Kuhn  | 100        | 2.57e-2  | 1.19e-3  | 1.09e-3  | 1.67e-3  |
-| Kuhn  | 10,000     | 2.32e-3  | 9.63e-6  | 8.61e-6  | 2.39e-5  |
-| Kuhn  | 100,000    | 6.76e-4  | 2.14e-6  | 8.36e-7  | 7.05e-7  |
-| Leduc | 100        | 1.73e-1  | 1.34e-2  | 3.45e-2  | 7.75e-3  |
-| Leduc | 10,000     | 9.85e-3  | 5.42e-6  | 1.23e-3  | 7.81e-6  |
-| Leduc | 100,000    | 3.18e-3  | 4.73e-7  | 2.43e-4  | 1.10e-6  |
+| Leduc, nodes | cfr      | cfr+     | lcfr     | dcfr     | es       | os       |
+|-------------:|---------:|---------:|---------:|---------:|---------:|---------:|
+| 1,000        | -        | -        | -        | -        | 2.51     | 2.87     |
+| 100,000      | 3.05e-1  | 1.60e-1  | 2.28e-1  | 1.57e-1  | 5.91e-1  | 1.08     |
+| 10^7         | 1.73e-2  | 7.50e-5  | 3.97e-3  | 3.35e-5  | 3.10e-2  | 9.29e-2  |
+| 3.88 x 10^8  | 2.03e-3  | 4.73e-7  | 2.43e-4  | 1.10e-6  | 4.79e-3  | 1.48e-2  |
+| cpu seconds  | 3.78     | 3.94     | 3.78     | 3.83     | 5.45     | 8.45     |
 
-Vanilla CFR sits on its O(1/sqrt T) worst-case rate. After 100,000 iterations
-on Leduc, CFR+ is 6,700 times less exploitable and DCFR 2,900 times. Linear
-CFR, which keeps negative regrets and only reweights them, does well on Kuhn
-but stalls on Leduc; Brown and Sandholm saw the same kind of game dependence
-(it was poor on Goofspiel). DCFR leads on Leduc for the first few thousand
-iterations, then flattens out between 5,000 and 30,000 while CFR+ passes it
-near 8,000. The Kuhn chart is in [docs/kuhn.svg](docs/kuhn.svg), and the raw
-curves are in `docs/*.csv`.
+Per node touched, neither sampler beats vanilla CFR on Leduc: external sampling
+ends about 2.4 times more exploitable and outcome sampling about 7 times. They
+do something else well. Each iteration is cheap, so they start learning before a
+single full pass has finished, and their cost per iteration doesn't grow with
+the tree, which is what matters once a game is too big to walk. CFR+ and DCFR
+are in another league on a game this small: after the same work CFR+ is about
+4,000 times less exploitable than vanilla CFR. Linear CFR, which keeps negative
+regrets and only reweights them, stalls on Leduc; Brown and Sandholm saw the
+same kind of game dependence (it was poor on Goofspiel). The Kuhn chart is in
+[docs/kuhn.svg](docs/kuhn.svg), and the raw curves are in `docs/*.csv`.
 
 ## Building
 
@@ -137,9 +146,14 @@ lists and infoset-key strings on every visit. The solver builds the tree once
 instead, numbers the infosets, and keeps regrets, strategy sums and the cached
 strategy in flat float arrays where infoset i owns a contiguous slice. On Leduc
 that took 10,000 iterations of vanilla CFR from 3.63 s to 0.17 s with the same
-output to the last printed digit. `dune exec ./bench/bench.exe` measures it: about 1.9
-million iterations a second on Kuhn and 61,000 on Leduc (vanilla CFR on a
-Windows laptop; the alternating variants do two passes and run at half that).
+output to the last printed digit. The walks don't allocate either: reach
+probabilities live in a per-depth float array and each call writes its value
+into a one-slot float array, because OCaml boxes a float passed to or returned
+from a recursive function. `dune exec ./bench/bench.exe` measures it on a
+Windows laptop: full-tree CFR walks about 100 million nodes a second (1.7
+million vanilla iterations a second on Kuhn, 57,000 on Leduc), external
+sampling about 76 million and outcome sampling about 50 million, with 0 words
+allocated per sampled iteration.
 
 **CFR** (`lib/cfr.ml`). Each iteration walks the tree once, carrying both
 players' reach probabilities and chance's. At a decision it adds
@@ -163,6 +177,24 @@ one switch: all except vanilla update the players alternately, player 1 on
 each iteration playing against player 0's freshly updated strategy. That
 switch matters. CFR+ with simultaneous updates fails OpenSpiel's CFR+
 convergence test.
+
+**Monte Carlo CFR** (`lib/mccfr.ml`). Instead of walking the whole tree,
+each iteration samples part of it and updates regrets with estimates whose
+expectation is exactly the full-tree update. External sampling (Lanctot et al.,
+2009) takes one traversal per player: chance and the opponent each sample one
+action from their current strategy, while every action of the traversing
+player is explored. The sampling probabilities cancel against the reach
+weights, so the regret update is just `v(a) - v` on the sampled values. The
+opponent's strategy sum gets their current strategy added at every visit,
+which in expectation is their own reach times chance reach; the chance factor
+is the same on every iteration for a given infoset, so it drops out when the
+sum is normalized. Outcome sampling follows a single path: the traversing
+player samples from a mix of 60% uniform and 40% current strategy (OpenSpiel's
+default), the terminal payoff is divided by the probability of having sampled
+that path, and the regret of the sampled action gets `w (1 - sigma(a))` while
+the others get `-w sigma(a)`. Both share the regret tables and the per-pass
+strategy cache with full-tree CFR (`lib/table.ml`). Each solver owns a
+`Random.State`, and `split` hands out a copy with an independent stream.
 
 **Best response** (`lib/best_response.ml`). The responder has to pick one
 action per infoset without seeing the opponent's card. So the solver first
@@ -200,10 +232,27 @@ The tests check against numbers that come from outside this code:
 - CFR+ meets OpenSpiel's own CFR+ test (value within 1e-3 and exploitability
   under 1e-3 after 200 Kuhn iterations), and gets Leduc's value to 1e-4 in 500.
 
+- Monte Carlo CFR against exact expectations: from a solver state after a few
+  iterations, the test splits off thousands of copies, runs one sampled
+  traversal on each, and compares the mean change of every regret and
+  strategy-sum entry with the exact expected change computed by a separate
+  full-tree walk, within five standard errors. That runs for both samplers,
+  both players, on Kuhn and on Leduc. For entries that are rarely sampled the
+  standard error gets a floor from Var X <= max|X| E|X|.
+- An exact identity: weighted by the current strategy, one traversal's regret
+  changes sum to zero at every infoset (qcheck, 200 random states per sampler).
+- External sampling gets Kuhn under 0.01 exploitability in 20,000 iterations
+  and Leduc under 0.06 in 100,000, with the game values close to -1/18 and
+  -0.0856.
+
 Hand-made bugs get caught: a best response that decides from a single history,
 a CFR without the strategy cache, an average weighted by t + 1 instead of t, a
 discount applied with the previous iteration's t, and CFR+ with simultaneous
-updates each fail at least two tests.
+updates each fail at least two tests. So do five MCCFR bugs: dropping the
+(1 - sigma) factor in outcome sampling, dropping its importance weight in the
+strategy sum, weighting by the current strategy instead of the sampling
+policy, sampling the opponent uniformly in external sampling, and adding the
+square root of the opponent's strategy to its strategy sum.
 
 ## License
 
