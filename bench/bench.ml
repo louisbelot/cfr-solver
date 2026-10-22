@@ -1,22 +1,47 @@
 open Cfr_solver
 
-let measure (module G : Game.S) algorithm iterations =
+let report game name ~iterations ~elapsed ~words ~nodes =
+  let n = float_of_int iterations in
+  Printf.printf "%-6s %-14s %10.0f it/s %8.1f Mnodes/s %8.1f words/it\n" game
+    name (n /. elapsed)
+    (float_of_int nodes /. elapsed /. 1e6)
+    (words /. n)
+
+let time f =
+  let words = Gc.minor_words () and start = Unix.gettimeofday () in
+  f ();
+  (Unix.gettimeofday () -. start, Gc.minor_words () -. words)
+
+let full (module G : Game.S) algorithm iterations =
   let module C = Cfr.Make (G) in
   let t = C.create ~algorithm () in
   C.run t 10;
-  let words = Gc.minor_words () and start = Unix.gettimeofday () in
-  C.run t iterations;
-  let elapsed = Unix.gettimeofday () -. start in
-  let words = Gc.minor_words () -. words in
-  Printf.printf "%-6s %-14s %10.0f it/s %10.1f words/it\n" G.name
+  let before = C.touched t in
+  let elapsed, words = time (fun () -> C.run t iterations) in
+  report G.name
     (Cfr.algorithm_name algorithm)
-    (float_of_int iterations /. elapsed)
-    (words /. float_of_int iterations)
+    ~iterations ~elapsed ~words
+    ~nodes:(C.touched t - before)
+
+let sampled (module G : Game.S) sampling iterations =
+  let module M = Mccfr.Make (G) in
+  let t = M.create sampling in
+  M.run t 10;
+  let before = M.touched t in
+  let elapsed, words = time (fun () -> M.run t iterations) in
+  report G.name
+    (Mccfr.sampling_name sampling)
+    ~iterations ~elapsed ~words
+    ~nodes:(M.touched t - before)
 
 let () =
   List.iter
-    (fun (game, iterations) ->
+    (fun (game, iterations, samples) ->
       List.iter
-        (fun alg -> measure game alg iterations)
-        Cfr.[ Vanilla; Plus; Linear; dcfr ])
-    [ ((module Kuhn : Game.S), 200_000); ((module Leduc), 20_000) ]
+        (fun alg -> full game alg iterations)
+        Cfr.[ Vanilla; Plus; Linear; dcfr ];
+      List.iter (fun s -> sampled game s samples) Mccfr.[ External; outcome ])
+    [
+      ((module Kuhn : Game.S), 200_000, 2_000_000);
+      ((module Leduc), 20_000, 2_000_000);
+    ]
