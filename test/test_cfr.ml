@@ -110,6 +110,15 @@ let variants_beat_vanilla () =
         Alcotest.failf "%s: %g vs vanilla %g" (Cfr.algorithm_name alg) x base)
     Cfr.[ Plus; Linear; dcfr ]
 
+let touched () =
+  let after algorithm =
+    let t = C.create ~algorithm () in
+    C.run t 3;
+    C.touched t
+  in
+  Alcotest.(check int) "vanilla" (3 * 55) (after Vanilla);
+  Alcotest.(check int) "cfr+" (6 * 55) (after Plus)
+
 let tests =
   List.map
     (fun alg ->
@@ -130,4 +139,5 @@ let tests =
         every_algorithm_starts_uniform;
       Alcotest.test_case "OpenSpiel CFR+" `Quick openspiel_cfr_plus;
       Alcotest.test_case "variants beat vanilla" `Quick variants_beat_vanilla;
+      Alcotest.test_case "nodes touched" `Quick touched;
     ]

@@ -38,83 +38,36 @@ let factor e t =
 
 module Make (G : Game.S) = struct
   type t = {
-    tree : Tree.t;
-    player : Game.player array;
-    offset : int array;
-    regret : float array;
-    strategy_sum : float array;
-    current : float array;
-    stamp : int array;
+    root : Tree.node;
+    table : Table.t;
+    size : int;
     values : float array;
     width : int;
     schedule : schedule;
     mutable iterations : int;
     mutable passes : int;
+    mutable touched : int;
     mutable weight : float;
   }
 
-  let rec shape = function
-    | Tree.Terminal _ -> (0, 0)
-    | Chance { children; _ } ->
-        Array.fold_left
-          (fun (d, w) c ->
-            let d', w' = shape c in
-            (max d d', max w w'))
-          (0, 0) children
-    | Decision { children; _ } ->
-        Array.fold_left
-          (fun (d, w) c ->
-            let d', w' = shape c in
-            (max d (d' + 1), max w w'))
-          (0, Array.length children)
-          children
-
   let create ?(algorithm = Vanilla) () =
     let tree = Tree.build (module G) in
-    let n = Array.length tree.infosets in
-    let offset = Array.make (n + 1) 0 in
-    Array.iteri
-      (fun i (info : Tree.infoset) ->
-        offset.(i + 1) <- offset.(i) + Array.length info.actions)
-      tree.infosets;
-    let slots = offset.(n) in
-    let depth, width = shape tree.root in
+    let height, width = Tree.shape tree.root in
     {
-      tree;
-      player =
-        Array.map (fun (info : Tree.infoset) -> info.player) tree.infosets;
-      offset;
-      regret = Array.make slots 0.;
-      strategy_sum = Array.make slots 0.;
-      current = Array.make slots 0.;
-      stamp = Array.make n (-1);
-      values = Array.make (depth * width) 0.;
+      root = tree.root;
+      table = Table.create tree;
+      size = Tree.size tree.root;
+      values = Array.make (height * width) 0.;
       width;
       schedule = schedule algorithm;
       iterations = 0;
       passes = 0;
+      touched = 0;
       weight = 1.;
     }
 
   let iterations t = t.iterations
-
-  let match_regrets t i =
-    let base = t.offset.(i) and n = t.offset.(i + 1) - t.offset.(i) in
-    let total = ref 0. in
-    for a = base to base + n - 1 do
-      total := !total +. Float.max t.regret.(a) 0.
-    done;
-    for a = base to base + n - 1 do
-      t.current.(a) <-
-        (if !total > 0. then Float.max t.regret.(a) 0. /. !total
-         else 1. /. float_of_int n)
-    done
-
-  let refresh t i =
-    if t.stamp.(i) <> t.passes then begin
-      match_regrets t i;
-      t.stamp.(i) <- t.passes
-    end
+  let touched t = t.touched
 
   let rec walk t updating node depth pi0 pi1 pc =
     match node with
@@ -123,16 +76,19 @@ module Make (G : Game.S) = struct
         let v = ref 0. in
         for k = 0 to Array.length children - 1 do
           let p = probs.(k) in
-          v := !v +. (p *. walk t updating children.(k) depth pi0 pi1 (pc *. p))
+          v :=
+            !v
+            +. (p *. walk t updating children.(k) (depth + 1) pi0 pi1 (pc *. p))
         done;
         !v
     | Decision { infoset = i; children } ->
-        refresh t i;
-        let player = t.player.(i) and base = t.offset.(i) in
+        let tab = t.table in
+        Table.refresh tab i t.passes;
+        let player = tab.player.(i) and base = tab.offset.(i) in
         let row = depth * t.width and n = Array.length children in
         let v = ref 0. in
         for a = 0 to n - 1 do
-          let s = t.current.(base + a) in
+          let s = tab.current.(base + a) in
           let va =
             match player with
             | P0 -> walk t updating children.(a) (depth + 1) (pi0 *. s) pi1 pc
@@ -148,27 +104,30 @@ module Make (G : Game.S) = struct
           let w = Game.sign player *. opp *. pc and own = t.weight *. own in
           for a = 0 to n - 1 do
             let k = base + a in
-            t.regret.(k) <- t.regret.(k) +. (w *. (t.values.(row + a) -. !v));
-            t.strategy_sum.(k) <- t.strategy_sum.(k) +. (own *. t.current.(k))
+            tab.regret.(k) <- tab.regret.(k) +. (w *. (t.values.(row + a) -. !v));
+            tab.strategy_sum.(k) <-
+              tab.strategy_sum.(k) +. (own *. tab.current.(k))
           done
         end;
         !v
 
   let discount t updating n =
     let pos = factor t.schedule.alpha n and neg = factor t.schedule.beta n in
+    let tab = t.table in
     if pos <> 1. || neg <> 1. then
       Array.iteri
         (fun i p ->
           if updating p then
-            for k = t.offset.(i) to t.offset.(i + 1) - 1 do
-              let r = t.regret.(k) in
-              t.regret.(k) <- (r *. if r > 0. then pos else neg)
+            for k = tab.offset.(i) to tab.offset.(i + 1) - 1 do
+              let r = tab.regret.(k) in
+              tab.regret.(k) <- (r *. if r > 0. then pos else neg)
             done)
-        t.player
+        tab.player
 
   let pass t updating n =
-    ignore (walk t updating t.tree.root 0 1. 1. 1.);
+    ignore (walk t updating t.root 0 1. 1. 1.);
     t.passes <- t.passes + 1;
+    t.touched <- t.touched + t.size;
     discount t updating n
 
   let iterate t =
@@ -186,19 +145,6 @@ module Make (G : Game.S) = struct
       iterate t
     done
 
-  let to_strategy t f =
-    let s = ref Strategy.empty in
-    Array.iteri
-      (fun i (info : Tree.infoset) ->
-        let slice a = Array.sub a t.offset.(i) (Array.length info.actions) in
-        s := Strategy.add info.key ~actions:info.actions ~probs:(f slice) !s)
-      t.tree.infosets;
-    !s
-
-  let average_strategy t =
-    to_strategy t (fun slice ->
-        Regret_matching.normalize (slice t.strategy_sum))
-
-  let current_strategy t =
-    to_strategy t (fun slice -> Regret_matching.strategy (slice t.regret))
+  let average_strategy t = Table.average_strategy t.table
+  let current_strategy t = Table.current_strategy t.table
 end
