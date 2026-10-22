@@ -42,6 +42,8 @@ module Make (G : Game.S) = struct
     table : Table.t;
     size : int;
     values : float array;
+    reach : float array;
+    ret : float array;
     width : int;
     schedule : schedule;
     mutable iterations : int;
@@ -58,6 +60,8 @@ module Make (G : Game.S) = struct
       table = Table.create tree;
       size = Tree.size tree.root;
       values = Array.make (height * width) 0.;
+      reach = Array.make (3 * (height + 1)) 1.;
+      ret = [| 0. |];
       width;
       schedule = schedule algorithm;
       iterations = 0;
@@ -69,38 +73,43 @@ module Make (G : Game.S) = struct
   let iterations t = t.iterations
   let touched t = t.touched
 
-  let rec walk t updating node depth pi0 pi1 pc =
+  let rec walk t updating node d =
+    let r = 3 * d in
     match node with
-    | Tree.Terminal u -> u
+    | Tree.Terminal u -> t.ret.(0) <- u
     | Chance { probs; children } ->
-        let v = ref 0. in
+        let pc = t.reach.(r + 2) and v = ref 0. in
+        t.reach.(r + 3) <- t.reach.(r);
+        t.reach.(r + 4) <- t.reach.(r + 1);
         for k = 0 to Array.length children - 1 do
           let p = probs.(k) in
-          v :=
-            !v
-            +. (p *. walk t updating children.(k) (depth + 1) pi0 pi1 (pc *. p))
+          t.reach.(r + 5) <- pc *. p;
+          walk t updating children.(k) (d + 1);
+          v := !v +. (p *. t.ret.(0))
         done;
-        !v
+        t.ret.(0) <- !v
     | Decision { infoset = i; children } ->
         let tab = t.table in
         Table.refresh tab i t.passes;
         let player = tab.player.(i) and base = tab.offset.(i) in
-        let row = depth * t.width and n = Array.length children in
+        let row = d * t.width and n = Array.length children in
+        let pi0 = t.reach.(r) and pi1 = t.reach.(r + 1) in
+        let pc = t.reach.(r + 2) in
+        let own, opp, slot =
+          match player with P0 -> (pi0, pi1, r + 3) | P1 -> (pi1, pi0, r + 4)
+        in
+        t.reach.(r + 3) <- pi0;
+        t.reach.(r + 4) <- pi1;
+        t.reach.(r + 5) <- pc;
         let v = ref 0. in
         for a = 0 to n - 1 do
           let s = tab.current.(base + a) in
-          let va =
-            match player with
-            | P0 -> walk t updating children.(a) (depth + 1) (pi0 *. s) pi1 pc
-            | P1 -> walk t updating children.(a) (depth + 1) pi0 (pi1 *. s) pc
-          in
-          t.values.(row + a) <- va;
-          v := !v +. (s *. va)
+          t.reach.(slot) <- own *. s;
+          walk t updating children.(a) (d + 1);
+          t.values.(row + a) <- t.ret.(0);
+          v := !v +. (s *. t.ret.(0))
         done;
         if updating player then begin
-          let own, opp =
-            match player with P0 -> (pi0, pi1) | P1 -> (pi1, pi0)
-          in
           let w = Game.sign player *. opp *. pc and own = t.weight *. own in
           for a = 0 to n - 1 do
             let k = base + a in
@@ -109,7 +118,7 @@ module Make (G : Game.S) = struct
               tab.strategy_sum.(k) +. (own *. tab.current.(k))
           done
         end;
-        !v
+        t.ret.(0) <- !v
 
   let discount t updating n =
     let pos = factor t.schedule.alpha n and neg = factor t.schedule.beta n in
@@ -125,7 +134,7 @@ module Make (G : Game.S) = struct
         tab.player
 
   let pass t updating n =
-    ignore (walk t updating t.root 0 1. 1. 1.);
+    walk t updating t.root 0;
     t.passes <- t.passes + 1;
     t.touched <- t.touched + t.size;
     discount t updating n
