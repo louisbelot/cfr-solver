@@ -286,3 +286,155 @@ Next: parallel MCCFR on OCaml 5 domains, with one split solver per domain and
 regrets merged or shared; then linear and discounted weighting inside MCCFR
 (the averaging Pluribus used), to see how much of CFR+'s lead the sampled
 methods can recover.
+
+## 2026-10-22: Parallel MCCFR on OCaml 5 domains
+
+Monte Carlo CFR now runs on several domains, in a shared-table mode and a
+deterministic private-table mode, and the sampled solvers can be discounted
+like linear CFR, DCFR and CFR+.
+
+What exists now:
+
+- `Parallel.Make (G)`: `create ~domains ?mode ?batch ?weighting`, `run`, and
+  the same readers as `Mccfr` (`average_strategy`, `regrets`, ...). `Shared`
+  (default) shares one regret table between domains with no locks; `Private`
+  gives each domain its own tables and merges them every `batch` iterations
+  per domain.
+- `Barrier`: a reusable barrier on `Mutex` and `Condition` with a generation
+  counter, so a fast domain can't run through the next phase's wait.
+- `Rng`: SplitMix64 with its state in a 64-byte `Bytes`. Replaces
+  `Random.State` everywhere in MCCFR, so every seeded result changed and the
+  charts in `docs/` were regenerated.
+- `Mccfr.create ?weighting ?interval`: discount regrets and strategy sums with
+  the `Cfr` schedules (`Cfr.discounts algorithm t` gives the three factors)
+  every `interval` iterations.
+- CLI: `solve --domains D [--private] [--batch B] [-w lcfr|dcfr|cfr+]`, and
+  `scale`, which runs serial, shared on each domain count and private on the
+  largest, prints a timing table from one uninterrupted run each, and plots
+  exploitability against iterations from a second run with checkpoints.
+- The bench prints parallel external-sampling throughput up to the machine's
+  recommended domain count.
+
+Design notes:
+
+- Private mode merges as `master + sum_j (table_j - master)`. Each domain
+  merges its own stripe of slots between two barrier waits, then copies the
+  master back. Worker 0's table goes first in the sum, so on one domain the
+  merge is `master <- table_0` exactly and the result is bit for bit the
+  serial solver. Workers are created with `Array.init` (left to right), and the
+  merge always sums in domain order, so private runs are deterministic.
+- Shared mode keeps the strategy sums per domain and folds them into the master
+  at each sync point. They are write-only accumulators that never feed back
+  into play, so sharding them changes nothing but the rounding. Regrets stay
+  shared because the next strategy is read from them.
+- Without weighting, shared mode doesn't sync at all until the end of `run`.
+  With weighting both modes discount once per round, by stripes, between the
+  barrier waits, so nobody writes while the discount runs.
+- Each domain re-allocates its worker (record, scratch arrays, RNG and private
+  tables) inside the domain at the start of `run`. OCaml 5 gives every domain
+  its own minor heap and its own major-heap pools, so the hot data of two
+  domains never ends up on one cache line.
+- The current-strategy cache needs no invalidation after a merge: the stamp is
+  the per-worker pass counter, which only grows, so the first visit of every
+  traversal recomputes.
+- Data races in shared mode are defined behaviour in OCaml 5. Float array
+  elements are single 64-bit stores, so a racing read sees some written value;
+  the only effect is an occasional lost increment.
+
+The debugging, in order:
+
+1. The first version gave 1.0x on 2 domains. The new `iterate` built a
+   discount tuple on every iteration even when unweighted, and OCaml 5 minor
+   collections stop every domain. Skipping it for unweighted runs: 1.45x.
+2. Suspected false sharing next. Re-allocating workers inside their domains
+   changed nothing by itself, but a microbenchmark of two domains drawing from
+   `Random.State`s created back to back took 1.33 s against 0.45 s for one
+   domain doing all the draws. The state is a bigarray whose 32 bytes come
+   from `malloc`, so placement is luck. The SplitMix64 replacement also made
+   serial external sampling faster (76 to 80 Mnodes/s); its tests check the
+   published outputs for seed 1234567, which a Python version reproduces.
+3. Still only 1.6x on 2 domains, and fully independent solvers in separate
+   domains (no shared data at all) scaled exactly as badly. Pinning the process
+   to one logical CPU per core (`start /affinity 5555`) gave independent
+   solvers 1.99x on 2 and 3.6x on 4. Windows had been putting two domains on
+   the two threads of one core.
+4. Shared tables reached the same exploitability as serial per iteration at
+   any domain count, but private tables did not. With 2 domains and a batch of
+   1, private matched serial; with batches of 1,000 it ended 3 times worse
+   after 4 million iterations, and with 10,000 twelve times worse after 1
+   million. That fits the delayed-feedback bound for
+   regret matching, which grows like sqrt(T x delay).
+5. Shared x8 stopped at about 3.4x. Sharding the strategy sums took a 4M-iteration
+   run from 0.67 s to 0.54 s.
+6. `scale` first timed its checkpointed runs, and each `run` call costs about
+   10 to 13 ms of domain start-up with 8 domains (40 chunks: 0.84 s against
+   0.50 s for one chunk; spawning and joining 7 idle domains takes about 1 ms,
+   so most of it is something else in starting real work). The table now
+   comes from separate uninterrupted runs and the chart plots iterations.
+   `scale` also spawns and joins its domains once before timing anything,
+   because the first spawn in a process cost 16 ms on its own.
+
+Results, Leduc, 4 million external-sampling iterations, Ryzen 7 7800X3D,
+pinned to one logical CPU per core:
+
+| config     | wall (s) | speedup | exploitability |
+|------------|---------:|--------:|---------------:|
+| serial     | 2.25     | 1.00    | 6.44e-3        |
+| shared x2  | 1.30     | 1.73    | 6.14e-3        |
+| shared x4  | 0.75     | 2.99    | 7.02e-3        |
+| shared x8  | 0.47     | 4.75    | 8.09e-3        |
+| private x8 | 0.33     | 6.83    | 5.45e-2        |
+
+Unpinned the speedups are 1.64, 2.25, 3.68 and 4.00. Shared tables give the
+best exploitability at any fixed wall time on Leduc. Private tables would look
+better on a game whose table doesn't fit in L1, where contention drops and the
+delay is small next to the run.
+
+Weighting inside MCCFR, mean exploitability over 8 seeds, external sampling on
+Leduc, discounting every iteration:
+
+| iterations | none   | lcfr   | dcfr   | cfr+   |
+|-----------:|-------:|-------:|-------:|-------:|
+| 1,000      | 0.759  | 0.597  | 0.677  | 0.717  |
+| 10,000     | 0.158  | 0.140  | 0.195  | 0.193  |
+| 100,000    | 0.0467 | 0.0481 | 0.0634 | 0.0626 |
+| 1,000,000  | 0.0129 | 0.0150 | 0.0207 | 0.0207 |
+
+So the question from last time (how much of CFR+'s lead can the sampled
+methods recover by weighting) has a short answer on Leduc: none. Linear
+weighting helps early and fades; DCFR and CFR+ end 60% worse, plausibly
+because cutting negative sampled regrets clips noise on one side only.
+Discounting every 100 iterations instead of every one gave the same picture,
+and so did discounting only the first 10,000 or 100,000 iterations (Pluribus
+style): 0.0127 and 0.0117 against 0.0118 with none, mean of 4 seeds.
+
+Checks:
+
+- 81 tests, 4.7 s.
+- Rng: published SplitMix64 outputs, the 30-bit draws for seed 1 (from the
+  Python version), copy and split, and a uniformity check on `Rng.int`.
+- Barrier: 4 domains through 500 phases, counting arrivals with an atomic; no
+  domain ever sees fewer arrivals than its phase requires.
+- Weighting: a qcheck property that discounting with the linear factors after
+  every step leaves sum t x_t / (T + 1) of the raw increments, and DCFR's
+  strategy factor leaves sum t^2 x_t / (T + 1)^2. CFR+ factors zero negative
+  regrets. With an interval of 10, the first discount halves every entry of a
+  plain run with the same seed, exactly. Linear weighting beats none at 1,000
+  iterations over 8 seeds on Leduc (0.60 against 0.76).
+- Parallel: one domain equals the serial solver bit for bit (regrets; strategy
+  sums to 1e-9, since shared mode folds them in a different order) for both
+  modes, both samplers, with and without weighting. Three private rounds on
+  three domains equal a merge written out separately. Same seed, same private
+  result. Iteration and round counts exact. Both modes converge on Kuhn and
+  shared converges on Leduc (bounds checked against 10 to 20 seeds first).
+- Mutation runs: merging without the master subtracted fails 2 tests, an
+  off-by-one in splitting iterations 3, no copy back after a merge 3, a
+  private master in shared mode 1, no per-round discount 1, and folding the
+  shared strategy sums without resetting them 1.
+- The serial Kuhn convergence test used to check seed 1 alone against 0.01.
+  With the new generator seed 1 lands at 0.0101, the worst of 20 seeds (mean
+  0.0060), so it now checks the mean of five seeds.
+
+Next: a persistent domain pool, so `run` stops paying the start-up cost on
+every call; then card abstraction (hand-strength buckets), which also gives
+the parallel solver a game big enough that private tables should pay off.
