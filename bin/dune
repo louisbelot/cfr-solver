@@ -1,4 +1,4 @@
 (executable
  (public_name cfr-solver)
  (name main)
- (libraries cfr_solver cmdliner))
+ (libraries cfr_solver cmdliner unix))

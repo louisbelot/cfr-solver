@@ -21,10 +21,6 @@ let short_name = function
   | Sampled External -> "es"
   | Sampled (Outcome _) -> "os"
 
-let long_name = function
-  | Full a -> Cfr.algorithm_name a
-  | Sampled s -> Mccfr.sampling_name s
-
 type solver = {
   run : int -> unit;
   iterations : unit -> int;
@@ -32,7 +28,16 @@ type solver = {
   average : unit -> Strategy.t;
 }
 
-let solver (module G : Game.S) seed = function
+type parallel = {
+  domains : int;
+  mode : Parallel.mode;
+  batch : int;
+  weighting : Cfr.algorithm;
+}
+
+let serial = { domains = 1; mode = Shared; batch = 1000; weighting = Vanilla }
+
+let solver ?(par = serial) (module G : Game.S) seed = function
   | Full algorithm ->
       let module C = Cfr.Make (G) in
       let t = C.create ~algorithm () in
@@ -42,15 +47,45 @@ let solver (module G : Game.S) seed = function
         touched = (fun () -> C.touched t);
         average = (fun () -> C.average_strategy t);
       }
-  | Sampled sampling ->
+  | Sampled sampling when par.domains = 1 ->
       let module M = Mccfr.Make (G) in
-      let t = M.create ~seed sampling in
+      let t =
+        M.create ~seed ~weighting:par.weighting ~interval:par.batch sampling
+      in
       {
         run = M.run t;
         iterations = (fun () -> M.iterations t);
         touched = (fun () -> M.touched t);
         average = (fun () -> M.average_strategy t);
       }
+  | Sampled sampling ->
+      let module P = Parallel.Make (G) in
+      let t =
+        P.create ~seed ~weighting:par.weighting ~batch:par.batch ~mode:par.mode
+          ~domains:par.domains sampling
+      in
+      {
+        run = P.run t;
+        iterations = (fun () -> P.iterations t);
+        touched = (fun () -> P.touched t);
+        average = (fun () -> P.average_strategy t);
+      }
+
+let describe par = function
+  | Full a -> Cfr.algorithm_name a
+  | Sampled s ->
+      String.concat ""
+        [
+          Mccfr.sampling_name s;
+          (match par.weighting with
+          | Vanilla -> ""
+          | w -> " weighted as " ^ Cfr.algorithm_name w);
+          (if par.domains = 1 then ""
+           else
+             Printf.sprintf " on %d domains (%s tables, batch %d)" par.domains
+               (Parallel.mode_name par.mode)
+               par.batch);
+        ]
 
 let max_table = 24
 
@@ -85,16 +120,16 @@ let write_file path contents =
   Out_channel.with_open_text path (fun oc ->
       Out_channel.output_string oc contents)
 
-let solve game algorithm seed iterations json trace =
+let solve game algorithm seed par iterations json trace =
   let (module G : Game.S) = List.assoc game games in
   let module B = Best_response.Make (G) in
   let module E = Eval.Make (G) in
-  let t = solver (module G) seed algorithm in
-  let cpu = ref 0. in
+  let t = solver ~par (module G) seed algorithm in
+  let wall = ref 0. in
   let run_to k =
-    let start = Sys.time () in
+    let start = Unix.gettimeofday () in
     t.run (k - t.iterations ());
-    cpu := !cpu +. (Sys.time () -. start)
+    wall := !wall +. (Unix.gettimeofday () -. start)
   in
   let rows =
     match trace with
@@ -114,7 +149,7 @@ let solve game algorithm seed iterations json trace =
   let players = [ Game.P0; P1 ] in
   let keys p = List.map fst (E.infosets p) in
   Format.printf "%s: %d iterations of %s in %.2f s@." G.name iterations
-    (long_name algorithm) !cpu;
+    (describe par algorithm) !wall;
   Format.printf "nodes touched   %d@." (t.touched ());
   Format.printf "game value      %.6f (player 0)@." value;
   Format.printf "exploitability  %s@." (sci expl);
@@ -134,7 +169,7 @@ let solve game algorithm seed iterations json trace =
         Json.Object
           [
             ("game", String G.name);
-            ("algorithm", String (long_name algorithm));
+            ("algorithm", String (describe par algorithm));
             ("iterations", Int iterations);
             ("nodes_touched", Int (t.touched ()));
             ("game_value", Float value);
@@ -242,6 +277,89 @@ let compare_algorithms game seed iterations csv svg =
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
 
+let scale game seed iterations domains batch csv svg =
+  let (module G : Game.S) = List.assoc game games in
+  let module P = Parallel.Make (G) in
+  let module B = Best_response.Make (G) in
+  let top = List.fold_left max 1 domains in
+  let configs =
+    List.map (fun d -> (Parallel.Shared, d)) domains
+    @ if top > 1 then [ (Parallel.Private, top) ] else []
+  in
+  List.iter Domain.join (List.init (top - 1) (fun _ -> Domain.spawn ignore));
+  let label (mode, d) =
+    if d = 1 then "serial"
+    else Printf.sprintf "%s x%d" (Parallel.mode_name mode) d
+  in
+  let runs =
+    List.map
+      (fun (mode, d) ->
+        let create () = P.create ~seed ~batch ~mode ~domains:d External in
+        let t = create () in
+        let start = Unix.gettimeofday () in
+        P.run t iterations;
+        let wall = Unix.gettimeofday () -. start in
+        let e = B.exploitability (P.average_strategy t)
+        and touched = P.touched t in
+        let t = create () in
+        let rows =
+          List.map
+            (fun k ->
+              P.run t (k - P.iterations t);
+              (k, B.exploitability (P.average_strategy t)))
+            (List.filter
+               (fun k -> k >= min iterations 1000)
+               (log_checkpoints 5 iterations))
+        in
+        ((mode, d), rows, (wall, touched, e)))
+      configs
+  in
+  let base = match runs with (_, _, (w, _, _)) :: _ -> w | [] -> 1. in
+  Format.printf
+    "%s: %d external-sampling iterations, batch %d, %d domains available@.@."
+    G.name iterations batch
+    (Domain.recommended_domain_count ());
+  Format.printf "%-12s %9s %9s %8s %15s@." "config" "wall (s)" "Mnodes/s"
+    "speedup" "exploitability";
+  List.iter
+    (fun (c, _, (wall, touched, e)) ->
+      Format.printf "%-12s %9.2f %9.1f %8.2f %15s@." (label c) wall
+        (float_of_int touched /. wall /. 1e6)
+        (base /. wall) (sci e))
+    runs;
+  try
+    Option.iter
+      (fun path ->
+        runs
+        |> List.concat_map (fun (c, rows, _) ->
+            List.map
+              (fun (k, e) ->
+                Printf.sprintf "%s,%d,%s\n" (label c) k (short_float e))
+              rows)
+        |> String.concat ""
+        |> ( ^ ) "config,iterations,exploitability\n"
+        |> write_file path)
+      csv;
+    Option.iter
+      (fun path ->
+        Plot.loglog
+          ~title:
+            (Printf.sprintf "%s: external sampling on OCaml 5 domains"
+               (String.capitalize_ascii G.name))
+          ~xlabel:"iterations, summed over domains" ~ylabel:"exploitability"
+          (List.map
+             (fun (((mode, _) as c), rows, _) ->
+               {
+                 Plot.label = label c;
+                 dashed = mode = Parallel.Private;
+                 points = rows;
+               })
+             runs)
+        |> write_file path)
+      svg;
+    Ok ()
+  with Sys_error msg -> Error (`Msg msg)
+
 open Cmdliner
 
 let game =
@@ -269,18 +387,68 @@ let seed =
     value & opt int 1
     & info [ "seed" ] ~docv:"SEED" ~doc:"Random seed for es and os.")
 
-let iterations =
-  let positive =
-    let parse s =
-      match int_of_string_opt s with
-      | Some n when n > 0 -> Ok n
-      | _ -> Error (`Msg "expected a positive integer")
-    in
-    Arg.conv (parse, Format.pp_print_int)
+let positive =
+  let parse s =
+    match int_of_string_opt s with
+    | Some n when n > 0 -> Ok n
+    | _ -> Error (`Msg "expected a positive integer")
   in
+  Arg.conv (parse, Format.pp_print_int)
+
+let iterations =
   Arg.(
     value & opt positive 10_000
     & info [ "n"; "iterations" ] ~docv:"N" ~doc:"Number of CFR iterations.")
+
+let batch =
+  Arg.(
+    value & opt positive 1000
+    & info [ "batch" ] ~docv:"B"
+        ~doc:
+          "Iterations each domain runs between synchronizations, and \
+           between            discounts when $(b,--weighting) is set.")
+
+let par =
+  let domains =
+    Arg.(
+      value & opt positive 1
+      & info [ "domains" ] ~docv:"D"
+          ~doc:"Run es or os on $(docv) OCaml domains.")
+  and private_ =
+    Arg.(
+      value & flag
+      & info [ "private" ]
+          ~doc:
+            "Give each domain its own tables and merge them every \
+             batch              (deterministic) instead of sharing one set of \
+             tables.")
+  and weighting =
+    Arg.(
+      value
+      & opt
+          (enum
+             Cfr.
+               [
+                 ("none", Vanilla);
+                 ("lcfr", Linear);
+                 ("dcfr", dcfr);
+                 ("cfr+", Plus);
+               ])
+          Vanilla
+      & info [ "w"; "weighting" ] ~docv:"W"
+          ~doc:
+            "Discount es or os regrets and strategy sums like lcfr, dcfr \
+             or              cfr+ once per batch.")
+  in
+  Term.(
+    const (fun domains private_ batch weighting ->
+        {
+          domains;
+          mode = (if private_ then Parallel.Private else Shared);
+          batch;
+          weighting;
+        })
+    $ domains $ private_ $ batch $ weighting)
 
 let json =
   Arg.(
@@ -302,7 +470,7 @@ let solve_cmd =
     (Cmd.info "solve" ~doc:"Run CFR and print the average strategy.")
     Term.(
       term_result
-        (const solve $ game $ algorithm $ seed $ iterations $ json $ trace))
+        (const solve $ game $ algorithm $ seed $ par $ iterations $ json $ trace))
 
 let csv =
   Arg.(
@@ -328,6 +496,25 @@ let compare_cmd =
       term_result
         (const compare_algorithms $ game $ seed $ iterations $ csv $ svg))
 
+let scale_cmd =
+  let domains =
+    Arg.(
+      value
+      & opt (list positive) [ 1; 2; 4; 8 ]
+      & info [ "domains" ] ~docv:"LIST"
+          ~doc:
+            "Domain counts to run with shared tables; the largest also \
+             runs              with private tables.")
+  in
+  Cmd.v
+    (Cmd.info "scale"
+       ~doc:
+         "Run external sampling on several domain counts and track           \
+          exploitability against wall time.")
+    Term.(
+      term_result
+        (const scale $ game $ seed $ iterations $ domains $ batch $ csv $ svg))
+
 let () =
   exit
     (Cmd.eval
@@ -335,4 +522,4 @@ let () =
           (Cmd.info "cfr-solver" ~version:"0.1.0"
              ~doc:
                "Equilibrium strategies by counterfactual regret minimization.")
-          [ solve_cmd; compare_cmd ]))
+          [ solve_cmd; compare_cmd; scale_cmd ]))

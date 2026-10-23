@@ -99,7 +99,7 @@ let loglog ~title ~xlabel ~ylabel series =
       (fun i s ->
         match List.rev s.points with
         | [] -> None
-        | (x, y) :: _ -> Some (i, s.label, sx (float_of_int x), sy y))
+        | (x, y) :: _ -> Some (i, s, sx (float_of_int x), sy y))
       series
     |> List.filter_map Fun.id
     |> List.sort (fun (_, _, _, a) (_, _, _, b) -> compare a b)
@@ -116,12 +116,20 @@ let loglog ~title ~xlabel ~ylabel series =
         s.points;
       add "\"/>")
     series;
+  let key = left +. plot_w +. 12. in
   ignore
     (List.fold_left
-       (fun prev (i, label, x, y) ->
-         let ly = Float.max y (prev +. 15.) in
+       (fun prev (i, s, x, y) ->
+         let ly = Float.max y (prev +. 16.) in
          add "<circle class=\"d%d\" cx=\"%.1f\" cy=\"%.1f\" r=\"4\"/>" i x y;
-         add "<text x=\"%.1f\" y=\"%.1f\">%s</text>" (x +. 10.) (ly +. 4.) label;
+         add
+           "<line class=\"s%d\" stroke-width=\"2\"%s x1=\"%.1f\" \
+            y1=\"%.1f\"             x2=\"%.1f\" y2=\"%.1f\"/>"
+           i
+           (if s.dashed then " stroke-dasharray=\"4 3\"" else "")
+           key ly (key +. 18.) ly;
+         add "<text x=\"%.1f\" y=\"%.1f\">%s</text>" (key +. 24.) (ly +. 4.)
+           s.label;
          ly)
        neg_infinity ends);
   add "</svg>\n";
