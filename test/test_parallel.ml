@@ -94,7 +94,7 @@ let shared_on_leduc () =
   let p = PL.create ~domains:4 External in
   PL.run p 200_000;
   let e = BL.exploitability (PL.average_strategy p) in
-  if not (e <= 0.04) then Alcotest.failf "exploitability %g" e
+  if not (e <= 0.05) then Alcotest.failf "exploitability %g" e
 
 let rejects () =
   Alcotest.check_raises "domains"

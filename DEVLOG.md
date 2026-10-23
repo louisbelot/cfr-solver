@@ -530,6 +530,11 @@ Checks:
   all labelings, EMD against sorted samples, median, blobs, fixed point), and
   the evaluator (all 2,598,960 five-card hands, best of 21 subsets, tricky
   hands).
+- The shared-table Leduc test failed once in a full run (0.0411 against a
+  bound of 0.04). Shared mode depends on how the domains interleave, so the
+  same seed gives a spread: 40 runs on 4 domains ranged 0.024 to 0.039 with
+  the pool and 0.022 to 0.037 at the commit before it. The pool didn't cause
+  it; the bound was just at the tail. It is 0.05 now.
 - Mutations caught: a pool that lets every worker run, a lift that drops part
   of the abstract strategy, ties counted as wins, round 2 labels transposed,
   k-medians picking the farthest center, an off-by-one in the k-means split,
