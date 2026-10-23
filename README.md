@@ -3,8 +3,9 @@
 Nash-equilibrium strategies for imperfect-information games, computed in OCaml
 with counterfactual regret minimization (CFR). It solves Kuhn poker and Leduc
 hold'em with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
-discounted CFR) and two Monte Carlo ones (external and outcome sampling), and
-measures how far any strategy is from equilibrium with an exact best response.
+discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
+the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
+strategy is from equilibrium with an exact best response.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
@@ -49,7 +50,9 @@ queen call at 0.551 (alpha + 1/3 = 0.541). Player 1's equilibrium is unique
 `--json FILE` writes the strategy as JSON, `--trace FILE` writes
 exploitability at 1, 2, 5, 10, 20, ... iterations as CSV, and `-a` picks the
 algorithm (`cfr`, `cfr+`, `lcfr`, `dcfr`, `es`, `os`). The sampled ones take
-`--seed`.
+`--seed`, `--domains D` to run on D domains (`--private` for the deterministic
+mode below) and `-w lcfr|dcfr|cfr+` to discount them like the full-tree
+variants.
 
 ## Leduc hold'em
 
@@ -96,14 +99,14 @@ N = 100,000, about 388 million nodes; dashed lines are the sampled methods.
 
 | Leduc, nodes | cfr      | cfr+     | lcfr     | dcfr     | es       | os       |
 |-------------:|---------:|---------:|---------:|---------:|---------:|---------:|
-| 1,000        | -        | -        | -        | -        | 2.51     | 2.87     |
-| 100,000      | 3.05e-1  | 1.60e-1  | 2.28e-1  | 1.57e-1  | 5.91e-1  | 1.08     |
-| 10^7         | 1.73e-2  | 7.50e-5  | 3.97e-3  | 3.35e-5  | 3.10e-2  | 9.29e-2  |
-| 3.88 x 10^8  | 2.03e-3  | 4.73e-7  | 2.43e-4  | 1.10e-6  | 4.79e-3  | 1.48e-2  |
-| cpu seconds  | 3.78     | 3.94     | 3.78     | 3.83     | 5.45     | 8.45     |
+| 1,000        | -        | -        | -        | -        | 2.92     | 2.59     |
+| 100,000      | 3.05e-1  | 1.60e-1  | 2.28e-1  | 1.57e-1  | 5.16e-1  | 1.43     |
+| 10^7         | 1.73e-2  | 7.50e-5  | 3.97e-3  | 3.35e-5  | 2.83e-2  | 1.13e-1  |
+| 3.88 x 10^8  | 2.03e-3  | 4.73e-7  | 2.43e-4  | 1.10e-6  | 5.26e-3  | 1.09e-2  |
+| cpu seconds  | 3.47     | 3.77     | 3.64     | 3.64     | 4.94     | 7.50     |
 
 Per node touched, neither sampler beats vanilla CFR on Leduc: external sampling
-ends about 2.4 times more exploitable and outcome sampling about 7 times. They
+ends about 2.6 times more exploitable and outcome sampling about 5 times. They
 do something else well. Each iteration is cheap, so they start learning before a
 single full pass has finished, and their cost per iteration doesn't grow with
 the tree, which is what matters once a game is too big to walk. CFR+ and DCFR
@@ -112,6 +115,96 @@ are in another league on a game this small: after the same work CFR+ is about
 regrets and only reweights them, stalls on Leduc; Brown and Sandholm saw the
 same kind of game dependence (it was poor on Goofspiel). The Kuhn chart is in
 [docs/kuhn.svg](docs/kuhn.svg), and the raw curves are in `docs/*.csv`.
+
+## Parallel Monte Carlo CFR
+
+External sampling looks embarrassingly parallel: given the regrets, every
+traversal is independent. The catch is that the regrets are what every
+traversal reads. `Parallel.Make (G)` runs MCCFR on several OCaml 5 domains in
+one of two modes.
+
+**Shared tables** (the default). Every domain reads and writes one regret
+table with no locks, the way multithreaded blueprint solvers do it. Two domains
+can update the same regret at the same moment and one increment gets lost. In
+OCaml 5 that is a data race with defined behaviour (no torn floats, no memory
+unsafety), and on Leduc it costs nothing measurable. Strategy sums never feed
+back into play, so they are not shared: each domain accumulates its own and
+they are added up when the run ends, the way per-CPU counters work. That halved
+the writes to shared cache lines and took 8 domains from 0.67 s to 0.54 s on a
+4-million-iteration run. With more than one domain the result is not
+reproducible.
+
+**Private tables** (`--private`). Each domain runs `--batch` iterations on its
+own copy of the tables, then the domains meet at a barrier and merge,
+`master += sum_j (table_j - master)`, each domain merging its own stripe of
+slots, and everyone copies the master back. The result is deterministic for a
+given seed, domain count, batch and sequence of `run` calls, and nothing races.
+The price is staleness: a domain plays a strategy that has not seen the other
+domains' last batch, and regret matching on stale regrets converges more slowly
+(the regret bound grows with the square root of the delay).
+
+```
+$ cfr-solver scale -g leduc -n 4000000 --svg docs/scale.svg
+```
+
+![Exploitability against iterations for serial, shared and private parallel MCCFR on Leduc](docs/scale.svg)
+
+The chart counts iterations summed over domains, so a mode that loses nothing
+to parallelism sits on the serial line. The shared runs do. Private tables on 8
+domains with batches of 1,000 end 8 times more exploitable after the same 4
+million iterations.
+
+Wall time for those 4 million iterations, one uninterrupted run each, on a
+Ryzen 7 7800X3D (8 cores, 16 threads) under Windows. The first pair of columns
+pins the process to one logical CPU per core (`start /affinity 5555`), the
+second lets Windows schedule it.
+
+| config      | pinned (s) | speedup | default (s) | speedup | exploitability |
+|-------------|-----------:|--------:|------------:|--------:|---------------:|
+| serial      | 2.25       | 1.00    | 2.25        | 1.00    | 6.44e-3        |
+| shared x2   | 1.30       | 1.73    | 1.37        | 1.64    | 6.14e-3        |
+| shared x4   | 0.75       | 2.99    | 1.00        | 2.25    | 7.02e-3        |
+| shared x8   | 0.47       | 4.75    | 0.61        | 3.68    | 8.09e-3        |
+| private x8  | 0.33       | 6.83    | 0.56        | 4.00    | 5.45e-2        |
+
+Shared tables flatten out past 4 domains because Leduc's whole regret table is
+672 floats (5.4 KB) and every domain writes all of it, so the cores spend their time
+passing cache lines back and forth. Private tables scale almost linearly and
+give it all back in staleness. On a game this small, shared tables win at any
+fixed wall time. Unpinned, Windows often puts two domains on the two threads of
+one core: fully independent solvers with no shared data at all hit the same
+ceiling (1.6x on 2 domains), so that part is the scheduler, not the solver.
+
+Two fixes came before any of this scaled. `Random.State` keeps its state in a
+32-byte bigarray allocated with `malloc`, so two domains' generators can land
+on one cache line, and two domains drawing random numbers ran 3 times slower
+than one. The solver now uses its own SplitMix64 (`lib/rng.ml`) with the state
+in a 64-byte `Bytes` that each domain allocates for itself. And one tuple
+allocated per iteration was enough to stall every domain, because OCaml 5
+minor collections stop the world. The walks and the iteration loop allocate
+nothing now.
+
+## Weighted Monte Carlo CFR
+
+`-w lcfr`, `-w dcfr` and `-w cfr+` apply the full-tree discounts to the sampled
+solvers once every `--batch` iterations (discounting per interval of
+iterations is how Pluribus did it). On Leduc it mostly hurts. Mean
+exploitability of external sampling over 8 seeds, discounting every iteration:
+
+| iterations | none   | lcfr   | dcfr   | cfr+   |
+|-----------:|-------:|-------:|-------:|-------:|
+| 1,000      | 0.759  | 0.597  | 0.677  | 0.717  |
+| 10,000     | 0.158  | 0.140  | 0.195  | 0.193  |
+| 100,000    | 0.0467 | 0.0481 | 0.0634 | 0.0626 |
+| 1,000,000  | 0.0129 | 0.0150 | 0.0207 | 0.0207 |
+
+Linear weighting helps early and the advantage is gone by 100,000 iterations.
+DCFR and CFR+ end 60% worse. Both cut negative regrets (DCFR halves them, CFR+
+zeroes them), and with sampled regrets that is not neutral: a noisy negative
+estimate gets cut while a noisy positive one is kept, so the regrets drift
+upward. Discounting only the first 10,000 or 100,000 iterations, as Pluribus
+did early in training, came out the same as no discounting at 1 million.
+Outcome sampling shows the same pattern.
 
 ## Building
 
@@ -150,9 +243,9 @@ output to the last printed digit. The walks don't allocate either: reach
 probabilities live in a per-depth float array and each call writes its value
 into a one-slot float array, because OCaml boxes a float passed to or returned
 from a recursive function. `dune exec ./bench/bench.exe` measures it on a
-Windows laptop: full-tree CFR walks about 100 million nodes a second (1.7
+Ryzen 7 7800X3D: full-tree CFR walks about 100 million nodes a second (1.8
 million vanilla iterations a second on Kuhn, 57,000 on Leduc), external
-sampling about 76 million and outcome sampling about 50 million, with 0 words
+sampling about 78 million and outcome sampling about 51 million, with 0 words
 allocated per sampled iteration.
 
 **CFR** (`lib/cfr.ml`). Each iteration walks the tree once, carrying both
@@ -194,7 +287,8 @@ default), the terminal payoff is divided by the probability of having sampled
 that path, and the regret of the sampled action gets `w (1 - sigma(a))` while
 the others get `-w sigma(a)`. Both share the regret tables and the per-pass
 strategy cache with full-tree CFR (`lib/table.ml`). Each solver owns a
-`Random.State`, and `split` hands out a copy with an independent stream.
+SplitMix64 generator, and `split` hands out a copy seeded from the parent's
+next output.
 
 **Best response** (`lib/best_response.ml`). The responder has to pick one
 action per infoset without seeing the opponent's card. So the solver first
@@ -242,8 +336,20 @@ The tests check against numbers that come from outside this code:
 - An exact identity: weighted by the current strategy, one traversal's regret
   changes sum to zero at every infoset (qcheck, 200 random states per sampler).
 - External sampling gets Kuhn under 0.01 exploitability in 20,000 iterations
-  and Leduc under 0.06 in 100,000, with the game values close to -1/18 and
-  -0.0856.
+  (mean of five seeds) and Leduc under 0.06 in 100,000, with the game values
+  close to -1/18 and -0.0856.
+- The random generator reproduces the published SplitMix64 outputs for seed
+  1234567, which a separate Python implementation also gives.
+- Discounting is weighting: after T iterations discounted with linear factors,
+  regrets and strategy sums equal sum t x_t / (T + 1) of the raw increments,
+  and DCFR's strategy sums equal sum t^2 x_t / (T + 1)^2 (qcheck, 200 random
+  sequences).
+- Parallel MCCFR on one domain is bit for bit the serial solver in both modes,
+  with and without weighting. Three private rounds on three domains match a
+  merge written out by hand. Private runs are deterministic, iteration and
+  round counts are exact when the batch doesn't divide the work, and both modes
+  converge on 4 domains. A barrier test runs 4 domains through 500 phases and
+  checks that none gets ahead.
 
 Hand-made bugs get caught: a best response that decides from a single history,
 a CFR without the strategy cache, an average weighted by t + 1 instead of t, a
@@ -252,7 +358,11 @@ updates each fail at least two tests. So do five MCCFR bugs: dropping the
 (1 - sigma) factor in outcome sampling, dropping its importance weight in the
 strategy sum, weighting by the current strategy instead of the sampling
 policy, sampling the opponent uniformly in external sampling, and adding the
-square root of the opponent's strategy to its strategy sum.
+square root of the opponent's strategy to its strategy sum. So do six
+parallel ones: merging without subtracting the master, an off-by-one in how
+iterations are split between domains, giving shared mode a private master,
+skipping the copy back after a merge, dropping the per-round discount, and
+folding the shared strategy sums without resetting them.
 
 ## License
 
