@@ -46,6 +46,20 @@ let parallel (module G : Game.S) mode domains iterations =
     (float_of_int iterations /. elapsed)
     (float_of_int (P.touched t - before) /. elapsed /. 1e6)
 
+let chunked (module G : Game.S) domains calls iterations =
+  let module P = Parallel.Make (G) in
+  let t = P.create ~domains External in
+  P.run t 1000;
+  let start = Unix.gettimeofday () in
+  for _ = 1 to calls do
+    P.run t (iterations / calls)
+  done;
+  let elapsed = Unix.gettimeofday () -. start in
+  Printf.printf "%-6s %-14s %10.0f it/s %8.2f ms/call\n" G.name
+    (Printf.sprintf "es x%d /%d" domains calls)
+    (float_of_int iterations /. elapsed)
+    (elapsed /. float_of_int calls *. 1e3)
+
 let () =
   List.iter
     (fun (game, iterations, samples) ->
@@ -63,4 +77,7 @@ let () =
         List.iter
           (fun mode -> parallel (module Leduc) mode d 4_000_000)
           Parallel.[ Shared; Private ])
-    [ 2; 4; 8 ]
+    [ 2; 4; 8 ];
+  List.iter
+    (fun calls -> chunked (module Leduc) 8 calls 4_000_000)
+    [ 1; 40; 400 ]
