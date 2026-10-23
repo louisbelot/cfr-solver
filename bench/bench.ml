@@ -34,6 +34,18 @@ let sampled (module G : Game.S) sampling iterations =
     ~iterations ~elapsed ~words
     ~nodes:(M.touched t - before)
 
+let parallel (module G : Game.S) mode domains iterations =
+  let module P = Parallel.Make (G) in
+  let t = P.create ~mode ~domains External in
+  P.run t 1000;
+  let before = P.touched t and start = Unix.gettimeofday () in
+  P.run t iterations;
+  let elapsed = Unix.gettimeofday () -. start in
+  Printf.printf "%-6s %-14s %10.0f it/s %8.1f Mnodes/s\n" G.name
+    (Printf.sprintf "es %s x%d" (Parallel.mode_name mode) domains)
+    (float_of_int iterations /. elapsed)
+    (float_of_int (P.touched t - before) /. elapsed /. 1e6)
+
 let () =
   List.iter
     (fun (game, iterations, samples) ->
@@ -44,4 +56,11 @@ let () =
     [
       ((module Kuhn : Game.S), 200_000, 2_000_000);
       ((module Leduc), 20_000, 2_000_000);
-    ]
+    ];
+  List.iter
+    (fun d ->
+      if d <= Domain.recommended_domain_count () then
+        List.iter
+          (fun mode -> parallel (module Leduc) mode d 4_000_000)
+          Parallel.[ Shared; Private ])
+    [ 2; 4; 8 ]
