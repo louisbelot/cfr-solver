@@ -14,7 +14,7 @@ let round1 ?(seed = 1) (d : Leduc.deck) feature k =
           (Array.map (Strength.histogram ~bins d) ranks)
           k
   in
-  { name = feature_name feature ^ string_of_int k; labels }
+  { name = Printf.sprintf "%s-%d" (feature_name feature) k; labels }
 
 let round2 (d : Leduc.deck) k =
   let pairs =
@@ -27,9 +27,10 @@ let round2 (d : Leduc.deck) k =
   let found = Cluster.optimal_1d ~weights hs k in
   let labels = Array.make (d.ranks * d.ranks) (-1) in
   Array.iteri (fun i (c, b, _) -> labels.((c * d.ranks) + b) <- found.(i)) pairs;
-  { name = "hs" ^ string_of_int k; labels }
+  { name = Printf.sprintf "hs-%d" k; labels }
 
-let abstraction ?round1 ?round2 ?(recall = true) (d : Leduc.deck) =
+let abstraction ?round1 ?round2 ?(recall = true) ?(board = false)
+    (d : Leduc.deck) =
   let first c =
     match round1 with
     | None -> Leduc.rank_name d c
@@ -37,17 +38,25 @@ let abstraction ?round1 ?round2 ?(recall = true) (d : Leduc.deck) =
   in
   let second =
     match round2 with
-    | None -> fun c b -> first c ^ Leduc.rank_name d b
+    | None -> fun c b -> Leduc.rank_name d c ^ Leduc.rank_name d b
     | Some r ->
         fun c b ->
           (if recall then first c else "")
+          ^ (if board then Leduc.rank_name d b else "")
           ^ "."
           ^ string_of_int r.labels.((c * d.ranks) + b)
   in
   let part = function None -> "exact" | Some r -> r.name in
   {
     Leduc.name =
-      (part round1 ^ "/" ^ part round2 ^ if recall then "" else " imperfect");
+      String.concat ""
+        [
+          part round1;
+          "/";
+          (if board && round2 <> None then "board+" else "");
+          part round2;
+          (if recall then "" else " imperfect");
+        ];
     round1 = first;
     round2 = second;
   }

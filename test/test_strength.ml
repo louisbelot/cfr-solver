@@ -86,12 +86,22 @@ let lossless () =
   let module G = (val Leduc.game ~abstraction d) in
   let module A = Abstraction.Make (Leduc) (G) in
   Alcotest.(check int) "size" 288 A.size;
+  let blind = Buckets.round1 d Ehs 1 in
+  let abstraction = Buckets.abstraction ~round1:blind d in
+  let module G = (val Leduc.game ~abstraction d) in
+  let module A = Abstraction.Make (Leduc) (G) in
+  Alcotest.(check int) "blind first round" (6 + 270) A.size;
   let round2 = Buckets.round2 d 1 in
   let abstraction = Buckets.abstraction ~round1 ~round2 ~recall:false d in
   let module G = (val Leduc.game ~abstraction d) in
   let module A = Abstraction.Make (Leduc) (G) in
   Alcotest.(check int) "forgetful" (18 + 30) A.size;
-  Alcotest.(check string) "name" "ehs3/hs1 imperfect" abstraction.name
+  Alcotest.(check string) "name" "ehs-3/hs-1 imperfect" abstraction.name;
+  let round2 = Buckets.round2 d 16 in
+  let abstraction = Buckets.abstraction ~round2 ~recall:false ~board:true d in
+  let module G = (val Leduc.game ~abstraction d) in
+  let module A = Abstraction.Make (Leduc) (G) in
+  Alcotest.(check int) "board and strength" 288 A.size
 
 let tests =
   [

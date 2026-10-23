@@ -6,4 +6,9 @@ val round1 : ?seed:int -> Leduc.deck -> feature -> int -> t
 val round2 : Leduc.deck -> int -> t
 
 val abstraction :
-  ?round1:t -> ?round2:t -> ?recall:bool -> Leduc.deck -> Leduc.abstraction
+  ?round1:t ->
+  ?round2:t ->
+  ?recall:bool ->
+  ?board:bool ->
+  Leduc.deck ->
+  Leduc.abstraction
