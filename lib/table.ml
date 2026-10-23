@@ -35,6 +35,21 @@ let copy t =
     stamp = Array.copy t.stamp;
   }
 
+let slots t = Array.length t.regret
+
+let discount_range t lo hi (pos, neg, avg) =
+  if pos <> 1. || neg <> 1. then
+    for k = lo to hi - 1 do
+      let r = t.regret.(k) in
+      t.regret.(k) <- (r *. if r > 0. then pos else neg)
+    done;
+  if avg <> 1. then
+    for k = lo to hi - 1 do
+      t.strategy_sum.(k) <- t.strategy_sum.(k) *. avg
+    done
+
+let discount t factors = discount_range t 0 (slots t) factors
+
 let match_regrets t i =
   let base = t.offset.(i) and n = t.offset.(i + 1) - t.offset.(i) in
   let total = ref 0. in

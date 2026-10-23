@@ -21,6 +21,8 @@ module Make (G : Game.S) = struct
     root : Tree.node;
     table : Table.t;
     sampling : sampling;
+    weighting : Cfr.algorithm;
+    interval : int;
     rng : Rng.t;
     values : float array;
     weights : float array;
@@ -31,17 +33,20 @@ module Make (G : Game.S) = struct
     mutable touched : int;
   }
 
-  let create ?(seed = 1) sampling =
+  let create ?(seed = 1) ?(weighting = Cfr.Vanilla) ?(interval = 1) sampling =
     (match sampling with
     | Outcome { epsilon } when not (epsilon > 0. && epsilon <= 1.) ->
         invalid_arg "Mccfr.create: epsilon must be in (0, 1]"
     | _ -> ());
+    if interval < 1 then invalid_arg "Mccfr.create: interval must be positive";
     let tree = Tree.build (module G) in
     let height, width = Tree.shape tree.root in
     {
       root = tree.root;
       table = Table.create tree;
       sampling;
+      weighting;
+      interval;
       rng = Rng.make seed;
       values = Array.make (height * width) 0.;
       weights = Array.make (2 * (height + 1)) 1.;
@@ -155,7 +160,12 @@ module Make (G : Game.S) = struct
   let iterate t =
     traverse t P0;
     traverse t P1;
-    t.iterations <- t.iterations + 1
+    t.iterations <- t.iterations + 1;
+    match t.weighting with
+    | Vanilla -> ()
+    | w ->
+        if t.iterations mod t.interval = 0 then
+          Table.discount t.table (Cfr.discounts w (t.iterations / t.interval))
 
   let run t n =
     for _ = 1 to n do

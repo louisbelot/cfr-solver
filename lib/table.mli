@@ -10,6 +10,9 @@ type t = {
 
 val create : Tree.t -> t
 val copy : t -> t
+val slots : t -> int
+val discount : t -> float * float * float -> unit
+val discount_range : t -> int -> int -> float * float * float -> unit
 val refresh : t -> int -> int -> unit
 val average_strategy : t -> Strategy.t
 val current_strategy : t -> Strategy.t

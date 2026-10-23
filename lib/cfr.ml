@@ -36,6 +36,12 @@ let factor e t =
     let x = Float.pow (float_of_int t) e in
     x /. (x +. 1.)
 
+let discounts algorithm t =
+  let s = schedule algorithm in
+  ( factor s.alpha t,
+    factor s.beta t,
+    Float.pow (float_of_int t /. float_of_int (t + 1)) s.gamma )
+
 module Make (G : Game.S) = struct
   type t = {
     root : Tree.node;

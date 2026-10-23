@@ -6,7 +6,9 @@ val sampling_name : sampling -> string
 module Make (G : Game.S) : sig
   type t
 
-  val create : ?seed:int -> sampling -> t
+  val create :
+    ?seed:int -> ?weighting:Cfr.algorithm -> ?interval:int -> sampling -> t
+
   val traverse : t -> Game.player -> unit
   val iterate : t -> unit
   val run : t -> int -> unit
