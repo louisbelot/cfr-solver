@@ -360,6 +360,136 @@ let scale game seed iterations domains batch csv svg =
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
 
+let sweep ranks iterations domains seed csv svg =
+  let d = { Leduc.ranks; suits = 2 } in
+  let module Full = (val Leduc.game d) in
+  let module B = Best_response.Make (Full) in
+  let ks = List.filter (fun k -> k <= ranks) [ 1; 2; 3; 4; 5; 6; 8; 10; 13 ] in
+  let first =
+    List.concat_map
+      (fun f ->
+        List.map
+          (fun k ->
+            ( Buckets.feature_name f,
+              k,
+              Buckets.abstraction ~round1:(Buckets.round1 ~seed d f k) d ))
+          ks)
+      Buckets.[ Ehs; Ehs2; Hist 20 ]
+  and splits =
+    List.fold_left
+      (fun acc m ->
+        let r = Buckets.round2 d m in
+        if List.exists (fun (p : Buckets.t) -> p.labels = r.labels) acc then acc
+        else acc @ [ r ])
+      []
+      [ 1; 2; 3; 4; 6; 8; 12; 16; 24; 32; 48 ]
+  in
+  let second =
+    List.concat_map
+      (fun (series, recall, board) ->
+        List.map
+          (fun round2 ->
+            ( series,
+              1 + Array.fold_left max 0 round2.Buckets.labels,
+              Buckets.abstraction ~round2 ~recall ~board d ))
+          splits)
+      [
+        ("perfect recall", true, false);
+        ("imperfect recall", false, false);
+        ("board, imperfect", false, true);
+      ]
+  in
+  let jobs =
+    Array.of_list ((("exact", ranks, Leduc.exact d) :: first) @ second)
+  in
+  let results = Array.make (Array.length jobs) (0, 0.) in
+  let next = Atomic.make 0 in
+  let solve (_, _, abstraction) =
+    let module G = (val Leduc.game ~abstraction d) in
+    let module A = Abstraction.Make (Full) (G) in
+    let module C = Cfr.Make (G) in
+    let t = C.create ~algorithm:Plus () in
+    C.run t iterations;
+    (A.size, B.exploitability (A.lift (C.average_strategy t)))
+  in
+  let start = Unix.gettimeofday () in
+  Pool.run (Pool.default ()) domains (fun _ ->
+      let rec loop () =
+        let i = Atomic.fetch_and_add next 1 in
+        if i < Array.length jobs then begin
+          results.(i) <- solve jobs.(i);
+          loop ()
+        end
+      in
+      loop ());
+  Format.printf
+    "%s: %d iterations of cfr+ per abstraction, %d jobs in %.1f s@.@." Full.name
+    iterations (Array.length jobs)
+    (Unix.gettimeofday () -. start);
+  Format.printf "%-28s %10s %15s@." "abstraction" "infosets" "exploitability";
+  Array.iteri
+    (fun i (_, _, (a : Leduc.abstraction)) ->
+      let size, e = results.(i) in
+      Format.printf "%-28s %10d %15s@." a.name size (sci e))
+    jobs;
+  let rows series =
+    List.filter_map Fun.id
+      (Array.to_list
+         (Array.mapi
+            (fun i (s, k, _) ->
+              if s = series then Some (k, fst results.(i), snd results.(i))
+              else None)
+            jobs))
+  in
+  try
+    Option.iter
+      (fun path ->
+        Array.to_list jobs
+        |> List.mapi (fun i (s, k, (a : Leduc.abstraction)) ->
+            let size, e = results.(i) in
+            Printf.sprintf "%s,%d,%s,%d,%s\n" s k a.name size (short_float e))
+        |> String.concat ""
+        |> ( ^ ) "series,buckets,abstraction,infosets,exploitability\n"
+        |> write_file path)
+      csv;
+    Option.iter
+      (fun path ->
+        let series x (name, dashed) =
+          {
+            Plot.label = name;
+            dashed;
+            points = List.map (fun (k, size, e) -> (x k size, e)) (rows name);
+          }
+        in
+        write_file path
+          (Plot.semilogy
+             ~title:
+               (Printf.sprintf "%s: round 1 abstracted, round 2 exact" Full.name)
+             ~xlabel:"round 1 buckets" ~ylabel:"exploitability in the full game"
+             (List.map
+                (series (fun k _ -> k))
+                [ ("ehs", false); ("ehs2", false); ("emd", false) ]));
+        write_file
+          (Filename.remove_extension path ^ "-round2.svg")
+          (Plot.loglog
+             ~title:
+               (Printf.sprintf
+                  "%s: round 1 exact, round 2 in hand-strength buckets"
+                  Full.name)
+             ~xlabel:"abstract infosets"
+             ~ylabel:"exploitability in the full game"
+             (List.map
+                (series (fun _ size -> size))
+                [
+                  ("perfect recall", false);
+                  ("imperfect recall", true);
+                  ("board, imperfect", true);
+                  ("exact", false);
+                ])))
+      svg;
+    Ok ()
+  with Sys_error msg -> Error (`Msg msg)
+
 open Cmdliner
 
 let game =
@@ -405,8 +535,8 @@ let batch =
     value & opt positive 1000
     & info [ "batch" ] ~docv:"B"
         ~doc:
-          "Iterations each domain runs between synchronizations, and \
-           between            discounts when $(b,--weighting) is set.")
+          "Iterations each domain runs between synchronizations, and between \
+           discounts when $(b,--weighting) is set.")
 
 let par =
   let domains =
@@ -419,9 +549,8 @@ let par =
       value & flag
       & info [ "private" ]
           ~doc:
-            "Give each domain its own tables and merge them every \
-             batch              (deterministic) instead of sharing one set of \
-             tables.")
+            "Give each domain its own tables and merge them every batch \
+             (deterministic) instead of sharing one set of tables.")
   and weighting =
     Arg.(
       value
@@ -437,8 +566,8 @@ let par =
           Vanilla
       & info [ "w"; "weighting" ] ~docv:"W"
           ~doc:
-            "Discount es or os regrets and strategy sums like lcfr, dcfr \
-             or              cfr+ once per batch.")
+            "Discount es or os regrets and strategy sums like lcfr, dcfr or \
+             cfr+ once per batch.")
   in
   Term.(
     const (fun domains private_ batch weighting ->
@@ -503,8 +632,8 @@ let scale_cmd =
       & opt (list positive) [ 1; 2; 4; 8 ]
       & info [ "domains" ] ~docv:"LIST"
           ~doc:
-            "Domain counts to run with shared tables; the largest also \
-             runs              with private tables.")
+            "Domain counts to run with shared tables; the largest also runs \
+             with private tables.")
   in
   Cmd.v
     (Cmd.info "scale"
@@ -515,6 +644,59 @@ let scale_cmd =
       term_result
         (const scale $ game $ seed $ iterations $ domains $ batch $ csv $ svg))
 
+let sweep_cmd =
+  let deck =
+    let parse s =
+      match int_of_string_opt s with
+      | Some n when n >= 2 && n <= 13 -> Ok n
+      | _ -> Error (`Msg "expected 2 to 13 ranks")
+    in
+    Arg.conv (parse, Format.pp_print_int)
+  in
+  let ranks =
+    Arg.(
+      value & opt deck 13
+      & info [ "ranks" ] ~docv:"R"
+          ~doc:"Leduc deck with $(docv) ranks, two suits.")
+  and iterations =
+    Arg.(
+      value & opt positive 1000
+      & info [ "n"; "iterations" ] ~docv:"N"
+          ~doc:"CFR+ iterations per abstraction.")
+  and domains =
+    Arg.(
+      value
+      & opt positive (Domain.recommended_domain_count ())
+      & info [ "domains" ] ~docv:"D"
+          ~doc:"Solve $(docv) abstractions at a time.")
+  and csv =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "csv" ] ~docv:"FILE"
+          ~doc:"Write every abstraction's size and exploitability to $(docv).")
+  and svg =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "svg" ] ~docv:"FILE"
+          ~doc:
+            "Plot the round 1 sweep to $(docv) and the round 2 sweep next \
+             to              it, with -round2 added to the name.")
+  and seed =
+    Arg.(
+      value & opt int 1
+      & info [ "seed" ] ~docv:"SEED"
+          ~doc:"Random seed for the k-medians restarts.")
+  in
+  Cmd.v
+    (Cmd.info "abstract"
+       ~doc:
+         "Solve card abstractions of a large Leduc deck with CFR+ and measure \
+          each abstract strategy's exploitability in the full game.")
+    Term.(
+      term_result (const sweep $ ranks $ iterations $ domains $ seed $ csv $ svg))
+
 let () =
   exit
     (Cmd.eval
@@ -522,4 +704,4 @@ let () =
           (Cmd.info "cfr-solver" ~version:"0.1.0"
              ~doc:
                "Equilibrium strategies by counterfactual regret minimization.")
-          [ solve_cmd; compare_cmd; scale_cmd ]))
+          [ solve_cmd; compare_cmd; scale_cmd; sweep_cmd ]))
