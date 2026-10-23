@@ -10,6 +10,7 @@ module Make (G : Game.S) : sig
     ?weighting:Cfr.algorithm ->
     ?batch:int ->
     ?mode:mode ->
+    ?pool:Pool.t ->
     domains:int ->
     Mccfr.sampling ->
     t

@@ -11,11 +11,13 @@ module Make (G : Game.S) = struct
     master : Table.t;
     weighting : Cfr.algorithm;
     batch : int;
+    pool : Pool.t;
+    mutable placed : bool;
     mutable rounds : int;
   }
 
   let create ?(seed = 1) ?(weighting = Cfr.Vanilla) ?(batch = 1000)
-      ?(mode = Shared) ~domains sampling =
+      ?(mode = Shared) ?(pool = Pool.default ()) ~domains sampling =
     if domains < 1 then invalid_arg "Parallel.create: domains must be positive";
     if batch < 1 then invalid_arg "Parallel.create: batch must be positive";
     let first = M.create ~seed sampling and shared = mode = Shared in
@@ -27,6 +29,8 @@ module Make (G : Game.S) = struct
       master = (if shared then M.table first else Table.copy (M.table first));
       weighting;
       batch;
+      pool;
+      placed = false;
       rounds = 0;
     }
 
@@ -68,7 +72,7 @@ module Make (G : Game.S) = struct
     let d = domains t and slots = Table.slots t.master in
     let lo = j * slots / d and hi = (j + 1) * slots / d in
     let shared = t.mode = Shared and per = round_size t n in
-    t.workers.(j) <- M.copy ~shared t.workers.(j);
+    if not t.placed then t.workers.(j) <- M.copy ~shared t.workers.(j);
     let w = t.workers.(j) in
     let rec loop left round =
       if left > 0 then begin
@@ -87,12 +91,8 @@ module Make (G : Game.S) = struct
   let run t n =
     let d = domains t and per = round_size t n in
     let barrier = Barrier.create d in
-    let others =
-      List.init (d - 1) (fun j ->
-          Domain.spawn (fun () -> work t barrier n (j + 1)))
-    in
-    work t barrier n 0;
-    List.iter Domain.join others;
+    Pool.run t.pool d (work t barrier n);
+    t.placed <- true;
     t.rounds <- t.rounds + ((n + per - 1) / per)
 
   let iterations t = Array.fold_left (fun n w -> n + M.iterations w) 0 t.workers

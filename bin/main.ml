@@ -286,7 +286,7 @@ let scale game seed iterations domains batch csv svg =
     List.map (fun d -> (Parallel.Shared, d)) domains
     @ if top > 1 then [ (Parallel.Private, top) ] else []
   in
-  List.iter Domain.join (List.init (top - 1) (fun _ -> Domain.spawn ignore));
+  Pool.run (Pool.default ()) top ignore;
   let label (mode, d) =
     if d = 1 then "serial"
     else Printf.sprintf "%s x%d" (Parallel.mode_name mode) d
