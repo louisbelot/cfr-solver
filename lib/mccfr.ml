@@ -57,18 +57,21 @@ module Make (G : Game.S) = struct
       touched = 0;
     }
 
-  let split t =
+  let clone shared rng t =
     {
       t with
-      table = Table.copy t.table;
-      rng = Rng.split t.rng;
+      table = (if shared then Table.share t.table else Table.copy t.table);
+      rng;
       values = Array.copy t.values;
       weights = Array.copy t.weights;
       ret = [| 0. |];
     }
 
+  let split ?(shared = false) t = clone shared (Rng.split t.rng) t
+  let copy ?(shared = false) t = clone shared (Rng.copy t.rng) t
   let iterations t = t.iterations
   let touched t = t.touched
+  let table t = t.table
 
   let rec external_walk t i node d =
     t.touched <- t.touched + 1;

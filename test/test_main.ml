@@ -12,6 +12,7 @@ let () =
       ("weighting", Test_weighting.tests);
       ("rng", Test_rng.tests);
       ("barrier", Test_barrier.tests);
+      ("parallel", Test_parallel.tests);
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
     ]

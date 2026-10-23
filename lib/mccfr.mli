@@ -12,9 +12,11 @@ module Make (G : Game.S) : sig
   val traverse : t -> Game.player -> unit
   val iterate : t -> unit
   val run : t -> int -> unit
-  val split : t -> t
+  val split : ?shared:bool -> t -> t
+  val copy : ?shared:bool -> t -> t
   val iterations : t -> int
   val touched : t -> int
+  val table : t -> Table.t
   val average_strategy : t -> Strategy.t
   val current_strategy : t -> Strategy.t
   val regrets : t -> (string * float array) list

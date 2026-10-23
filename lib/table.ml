@@ -50,6 +50,18 @@ let discount_range t lo hi (pos, neg, avg) =
 
 let discount t factors = discount_range t 0 (slots t) factors
 
+let blit ~src ~dst =
+  Array.blit src.regret 0 dst.regret 0 (slots src);
+  Array.blit src.strategy_sum 0 dst.strategy_sum 0 (slots src)
+
+let share t =
+  {
+    t with
+    strategy_sum = Array.make (Array.length t.strategy_sum) 0.;
+    current = Array.copy t.current;
+    stamp = Array.make (Array.length t.stamp) (-1);
+  }
+
 let match_regrets t i =
   let base = t.offset.(i) and n = t.offset.(i + 1) - t.offset.(i) in
   let total = ref 0. in
