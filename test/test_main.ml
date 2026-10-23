@@ -9,6 +9,7 @@ let () =
       ("tree", Test_tree.tests);
       ("cfr", Test_cfr.tests);
       ("mccfr", Test_mccfr.tests);
+      ("rng", Test_rng.tests);
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
     ]

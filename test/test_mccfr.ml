@@ -184,10 +184,13 @@ let rejects_epsilon () =
     [ 0.; -0.1; 1.5; Float.nan ]
 
 let converges sampling n bound () =
-  let s = K.average_strategy (solve sampling n) in
-  let e = B.exploitability s in
+  let runs =
+    List.init 5 (fun seed -> K.average_strategy (solve ~seed sampling n))
+  in
+  let mean f = List.fold_left (fun acc s -> acc +. f s) 0. runs /. 5. in
+  let e = mean B.exploitability in
   if not (e <= bound) then Alcotest.failf "exploitability %g after %d" e n;
-  let v = E.expected_value s in
+  let v = mean E.expected_value in
   if not (Float.abs (v +. (1. /. 18.)) <= 2. *. bound) then
     Alcotest.failf "value %g" v
 

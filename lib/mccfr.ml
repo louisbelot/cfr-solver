@@ -6,7 +6,7 @@ let sampling_name = function
   | External -> "es"
   | Outcome { epsilon } -> Printf.sprintf "os(%g)" epsilon
 
-let[@inline] uniform rng = float_of_int (Random.State.bits rng) *. 0x1p-30
+let[@inline] uniform rng = float_of_int (Rng.bits rng) *. 0x1p-30
 
 let pick rng probs base n =
   let x = ref (uniform rng) and a = ref 0 in
@@ -21,7 +21,7 @@ module Make (G : Game.S) = struct
     root : Tree.node;
     table : Table.t;
     sampling : sampling;
-    rng : Random.State.t;
+    rng : Rng.t;
     values : float array;
     weights : float array;
     ret : float array;
@@ -42,7 +42,7 @@ module Make (G : Game.S) = struct
       root = tree.root;
       table = Table.create tree;
       sampling;
-      rng = Random.State.make [| seed |];
+      rng = Rng.make seed;
       values = Array.make (height * width) 0.;
       weights = Array.make (2 * (height + 1)) 1.;
       ret = [| 0. |];
@@ -56,7 +56,7 @@ module Make (G : Game.S) = struct
     {
       t with
       table = Table.copy t.table;
-      rng = Random.State.split t.rng;
+      rng = Rng.split t.rng;
       values = Array.copy t.values;
       weights = Array.copy t.weights;
       ret = [| 0. |];
@@ -129,7 +129,7 @@ module Make (G : Game.S) = struct
         end
         else begin
           let a =
-            if uniform t.rng < epsilon then Random.State.int t.rng n
+            if uniform t.rng < epsilon then Rng.int t.rng n
             else pick t.rng tab.current base n
           in
           let p = tab.current.(base + a) in
