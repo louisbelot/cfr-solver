@@ -29,6 +29,9 @@ jobs:
           opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 20000 --seed 3 --json es.json
           opam exec -- dune exec cfr-solver -- solve -a os -n 20000 --trace os.csv
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --csv compare.csv --svg compare.svg
+          opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 200000 --domains 4
+          opam exec -- dune exec cfr-solver -- solve -g leduc -a os -n 200000 --domains 4 --private -w lcfr --batch 100
+          opam exec -- dune exec cfr-solver -- scale -g leduc -n 200000 --domains 1,2,4 --csv scale.csv --svg scale.svg
           opam exec -- dune exec ./bench/bench.exe
 
   format:
