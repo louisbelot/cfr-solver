@@ -438,3 +438,104 @@ Checks:
 Next: a persistent domain pool, so `run` stops paying the start-up cost on
 every call; then card abstraction (hand-strength buckets), which also gives
 the parallel solver a game big enough that private tables should pay off.
+
+## 2026-10-23: domain pool, card abstraction, hand evaluator
+
+What was built:
+
+- `Pool` (`lib/pool.ml`): worker domains spawned once and parked on a
+  condition variable. `run pool d f` runs `f 0` on the caller and `f 1` to
+  `f (d - 1)` on the workers, grows the pool if it needs more, re-raises the
+  first exception, and `shutdown` joins everything. `Parallel` uses a shared
+  default pool unless it is given one.
+- `Leduc.game ?abstraction deck`: any number of ranks (up to 13) and suits,
+  with infoset keys built from an abstraction (a label for the private card in
+  round 1, and for card and board in round 2). The history type is shared by
+  every instance, so a full game and its abstractions walk the same histories.
+- `Abstraction.Make (Full) (Abs)`: walks the full game, maps each infoset to
+  its abstract one (checking players, actions and that it really is a
+  coarsening) and lifts abstract strategies back to the full game.
+- `Strength`: hand strength of a Leduc card on a board, E[HS], E[HS^2] and HS
+  histograms over boards. `Cluster`: optimal 1D k-means by dynamic
+  programming, EMD on histograms, k-medians with k-means++ seeding. `Buckets`
+  turns them into Leduc abstractions.
+- `cfr-solver abstract`: 44 abstractions of a 13-rank deck solved with CFR+ on
+  the pool, each scored by exact exploitability in the full game, with a CSV
+  and two charts.
+- `Hand`: card parsing and a 5 to 7 card hold'em evaluator.
+
+Design notes:
+
+- The pool's caller takes index 0, so a one-domain run never touches the
+  workers and stays bit for bit the serial solver (the existing tests still
+  check that). Workers that are not part of a call still wake on the
+  broadcast and go back to sleep; with at most 15 of them that is cheaper than
+  one condition per worker.
+- `Parallel` copies each worker's state inside its domain only on the first
+  run. Index j always lands on the same domain (tested), so the copy stays
+  local. Before, every `run` re-copied.
+- Shared mutable state is the price of the default pool: a second pool would
+  mean more domains than cores. `Pool.run` holds a mutex for the whole call,
+  so two callers queue instead of interleaving. Calling `run` from inside a
+  job would deadlock; nothing does.
+- Infoset keys stay strings. An abstraction only changes the label, so
+  `Tree.build` gives the abstract game its own numbering for free and every
+  solver works on it unchanged.
+- 1D k-means works on distinct values (with summed weights), so equal
+  strengths always share a bucket and k is capped at the number of distinct
+  values. Bucket 0 is the weakest for every method, which makes the keys
+  readable and the tests simple.
+- k-medians instead of k-means for histograms: with EMD (L1 between CDFs) the
+  mean of the CDFs is not the best center, the pointwise weighted median is,
+  and it is monotone, so it is a CDF again. Each Lloyd step then lowers the
+  cost and the loop ends at a fixed point.
+- The first sweep had a bug: with round 2 "exact" the key used the round-1
+  bucket instead of the card, so every round-1 abstraction also merged round
+  2. The infoset counts gave it away (396 instead of 5,076 for one bucket). A
+  test now checks that size on standard Leduc.
+- The evaluator packs category and ranks into one int so comparing hands is
+  integer comparison. Ranks seen once, twice, three and four times are four
+  masks updated with `four |= thrice & b; thrice |= twice & b; ...`, which
+  replaces a counts array. Lookup tables for popcount, top bit and straights
+  (8,192 entries each) took it from 14.1 to 41.3 million seven-card hands a
+  second.
+
+Results (Ryzen 7 7800X3D, Windows):
+
+- Pool: 4 million external-sampling iterations on 8 domains in 400 calls went
+  from 15.85 ms a call to 1.88 ms (the work is about 1.63 ms a call). One
+  uninterrupted run is unchanged (650 ms).
+- leduc13 with 4,000 CFR+ iterations per abstraction, exact game at 3.1e-5.
+  Round 1 with round 2 exact: one bucket 0.821; E[HS] 0.049 at 3 buckets and
+  0.0097 at 10; E[HS^2] 0.0013 at 10; EMD histograms best at 2 and 4 buckets
+  (0.170, 0.032) and worst from 6 on. E[HS] gets worse from 5 to 6 buckets.
+- Round 2 by hand strength stalls near 0.1 with any number of buckets: HS on
+  leduc13 has only 13 values, and card c with the board above has the same HS
+  as card c + 1 with the board below. Imperfect recall (forget the card) gets
+  0.094 at 438 infosets, better than perfect recall at up to 1,188. Keeping the
+  board in the key and bucketing the card reaches the exact game.
+- At 1,000 iterations instead of 4,000 the round 2 numbers moved by up to 20%
+  but imperfect recall still beat perfect recall.
+- All 133,784,560 seven-card hands give the published category counts and
+  4,824 distinct values, at 41.3 million hands a second.
+
+Checks:
+
+- 112 tests, about 5 s. New: pool (indices, placement, 2,000 rounds,
+  exceptions, shutdown), abstraction (identity, renaming commutes with CFR+
+  exactly, lifted value equals abstract value for 40 random abstractions,
+  refinements rejected), Leduc decks (closed-form tree sizes, contract walk on
+  13x2 and 4x3), hand strength (by hand, mean 1/2 on 100 random decks, equal
+  to check-down payoffs from the game itself), clustering (brute force over
+  all labelings, EMD against sorted samples, median, blobs, fixed point), and
+  the evaluator (all 2,598,960 five-card hands, best of 21 subsets, tricky
+  hands).
+- Mutations caught: a pool that lets every worker run, a lift that drops part
+  of the abstract strategy, ties counted as wins, round 2 labels transposed,
+  k-medians picking the farthest center, an off-by-one in the k-means split,
+  and a median at a third of the weight.
+
+Next: limit hold'em river and turn subgames. That needs a public tree with
+range vectors instead of one history per deal (1,081 hands a player on the
+river), the evaluator above for showdowns, and hand-strength buckets for the
+turn. Bet-size abstraction comes with it.
