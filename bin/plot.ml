@@ -32,9 +32,14 @@ let decades lo hi =
 
 let power k = Printf.sprintf "10<tspan dy=\"-6\" font-size=\"9\">%d</tspan>" k
 
-let loglog ~title ~xlabel ~ylabel series =
+let step span =
+  List.find
+    (fun s -> span / s <= 10)
+    [ 1; 2; 5; 10; 20; 50; 100; 200; 500; 1000 ]
+
+let chart ~xlog ~title ~xlabel ~ylabel series =
   if List.length series > Array.length light then
-    invalid_arg "Plot.loglog: too many series";
+    invalid_arg "Plot: too many series";
   let series =
     List.map
       (fun s ->
@@ -43,17 +48,16 @@ let loglog ~title ~xlabel ~ylabel series =
   in
   let all = List.concat_map (fun s -> s.points) series in
   let fold f init g = List.fold_left (fun acc p -> f acc (g p)) init all in
+  let lo = fold min max_int fst and hi = fold max 0 fst in
   let x0, x1 =
-    decades
-      (fold Float.min infinity (fun (x, _) -> float_of_int x))
-      (fold Float.max 0. (fun (x, _) -> float_of_int x))
+    if xlog then decades (float_of_int lo) (float_of_int hi) else (lo, hi)
   in
   let y0, y1 = decades (fold Float.min infinity snd) (fold Float.max 0. snd) in
   let x1 = max x1 (x0 + 1) and y1 = max y1 (y0 + 1) in
   let plot_w = width -. left -. right and plot_h = height -. top -. bottom in
   let sx x =
-    left
-    +. (plot_w *. (Float.log10 x -. float_of_int x0) /. float_of_int (x1 - x0))
+    let x = if xlog then Float.log10 x else x in
+    left +. (plot_w *. (x -. float_of_int x0) /. float_of_int (x1 - x0))
   in
   let sy y =
     top +. plot_h
@@ -67,14 +71,28 @@ let loglog ~title ~xlabel ~ylabel series =
     width height width height style;
   add "<rect class=\"bg\" width=\"%g\" height=\"%g\"/>" width height;
   add "<text class=\"title\" x=\"%g\" y=\"28\">%s</text>" left title;
-  for k = x0 to x1 do
-    let x = sx (10. ** float_of_int k) in
-    add "<line class=\"grid\" x1=\"%.1f\" y1=\"%g\" x2=\"%.1f\" y2=\"%g\"/>" x
-      top x (top +. plot_h);
-    add "<text x=\"%.1f\" y=\"%g\" text-anchor=\"middle\">%s</text>" x
-      (top +. plot_h +. 20.)
-      (power k)
-  done;
+  let ticks =
+    if xlog then
+      List.init
+        (x1 - x0 + 1)
+        (fun k -> (10. ** float_of_int (x0 + k), power (x0 + k)))
+    else
+      let s = step (x1 - x0) in
+      List.init
+        (((x1 - x0) / s) + 1)
+        (fun k ->
+          let x = x0 + (k * s) in
+          (float_of_int x, string_of_int x))
+  in
+  List.iter
+    (fun (v, label) ->
+      let x = sx v in
+      add "<line class=\"grid\" x1=\"%.1f\" y1=\"%g\" x2=\"%.1f\" y2=\"%g\"/>" x
+        top x (top +. plot_h);
+      add "<text x=\"%.1f\" y=\"%g\" text-anchor=\"middle\">%s</text>" x
+        (top +. plot_h +. 20.)
+        label)
+    ticks;
   for k = y0 to y1 do
     let y = sy (10. ** float_of_int k) in
     add "<line class=\"grid\" x1=\"%g\" y1=\"%.1f\" x2=\"%g\" y2=\"%.1f\"/>"
@@ -134,3 +152,6 @@ let loglog ~title ~xlabel ~ylabel series =
        neg_infinity ends);
   add "</svg>\n";
   Buffer.contents b
+
+let loglog = chart ~xlog:true
+let semilogy = chart ~xlog:false
