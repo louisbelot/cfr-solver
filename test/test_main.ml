@@ -11,6 +11,7 @@ let () =
       ("mccfr", Test_mccfr.tests);
       ("weighting", Test_weighting.tests);
       ("rng", Test_rng.tests);
+      ("barrier", Test_barrier.tests);
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
     ]
