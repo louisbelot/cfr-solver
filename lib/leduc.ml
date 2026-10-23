@@ -1,33 +1,49 @@
-type rank = J | Q | K
+type deck = { ranks : int; suits : int }
+
+let standard = { ranks = 3; suits = 2 }
+let cards d = d.ranks * d.suits
+
+let rank_name d r =
+  if d.ranks = 13 then String.make 1 "23456789TJQKA".[r]
+  else String.make 1 "23456789TJQK".[12 - d.ranks + r]
+
+type abstraction = {
+  name : string;
+  round1 : int -> string;
+  round2 : int -> int -> string;
+}
+
+let exact d =
+  {
+    name = "exact";
+    round1 = rank_name d;
+    round2 = (fun c b -> rank_name d c ^ rank_name d b);
+  }
+
 type action = Fold | Call | Raise
 
 type history =
   | Start
-  | Dealt of rank
-  | Round1 of { hole : rank * rank; bets : action list }
+  | Dealt of int
+  | Round1 of { hole : int * int; bets : action list }
   | Round2 of {
-      hole : rank * rank;
-      board : rank;
+      hole : int * int;
+      board : int;
       first : action list;
       bets : action list;
     }
 
-let name = "leduc"
-let root = Start
-let ranks = [ J; Q; K ]
-let rank_to_string = function J -> "J" | Q -> "Q" | K -> "K"
 let action_to_string = function Fold -> "f" | Call -> "c" | Raise -> "r"
 let actions_to_string bets = String.concat "" (List.map action_to_string bets)
 let player_of i = if i mod 2 = 0 then Game.P0 else P1
 
-let deal dealt k =
-  let left = 6 - List.length dealt in
-  List.filter_map
-    (fun r ->
-      match 2 - List.length (List.filter (( = ) r) dealt) with
+let deal d dealt k =
+  let left = cards d - List.length dealt in
+  List.init d.ranks Fun.id
+  |> List.filter_map (fun r ->
+      match d.suits - List.length (List.filter (( = ) r) dealt) with
       | 0 -> None
       | n -> Some (float_of_int n /. float_of_int left, k r))
-    ranks
 
 type status = Acting of Game.player | Closed | Folded of Game.player
 
@@ -87,21 +103,21 @@ let decision player key bets k =
 
 let card player (c0, c1) = match player with Game.P0 -> c0 | P1 -> c1
 
-let node = function
-  | Start -> Game.Chance (deal [] (fun r -> Dealt r))
+let node d a = function
+  | Start -> Game.Chance (deal d [] (fun r -> Dealt r))
   | Dealt c0 ->
-      Chance (deal [ c0 ] (fun c1 -> Round1 { hole = (c0, c1); bets = [] }))
+      Chance (deal d [ c0 ] (fun c1 -> Round1 { hole = (c0, c1); bets = [] }))
   | Round1 { hole; bets } -> (
       match status bets with
       | Folded p -> Terminal (payoff hole bets [] (`Fold p))
       | Closed ->
           let c0, c1 = hole in
           Chance
-            (deal [ c0; c1 ] (fun board ->
+            (deal d [ c0; c1 ] (fun board ->
                  Round2 { hole; board; first = bets; bets = [] }))
       | Acting p ->
           decision p
-            (rank_to_string (card p hole) ^ ":" ^ actions_to_string bets)
+            (a.round1 (card p hole) ^ ":" ^ actions_to_string bets)
             bets
             (fun bets -> Round1 { hole; bets }))
   | Round2 { hole; board; first; bets } -> (
@@ -110,8 +126,35 @@ let node = function
       | Closed -> Terminal (payoff hole first bets (`Showdown board))
       | Acting p ->
           decision p
-            (rank_to_string (card p hole)
-            ^ rank_to_string board ^ ":" ^ actions_to_string first ^ "/"
-            ^ actions_to_string bets)
+            (a.round2 (card p hole) board
+            ^ ":" ^ actions_to_string first ^ "/" ^ actions_to_string bets)
             bets
             (fun bets -> Round2 { hole; board; first; bets }))
+
+let deck_name d =
+  if d = standard then "leduc"
+  else if d.suits = 2 then Printf.sprintf "leduc%d" d.ranks
+  else Printf.sprintf "leduc%dx%d" d.ranks d.suits
+
+let game ?abstraction d =
+  if d.ranks < 1 || d.ranks > 13 then invalid_arg "Leduc.game: 1 to 13 ranks";
+  if d.suits < 1 || cards d < 3 then invalid_arg "Leduc.game: too few cards";
+  let a = Option.value abstraction ~default:(exact d) in
+  let module G = struct
+    type nonrec history = history
+
+    let name =
+      match abstraction with
+      | None -> deck_name d
+      | Some a -> deck_name d ^ "/" ^ a.name
+
+    let root = Start
+    let node = node d a
+  end in
+  (module G : Game.S with type history = history)
+
+module Standard = (val game standard)
+
+let name = Standard.name
+let root = Standard.root
+let node = Standard.node
