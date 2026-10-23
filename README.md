@@ -5,7 +5,10 @@ with counterfactual regret minimization (CFR). It solves Kuhn poker and Leduc
 hold'em with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
 discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
-strategy is from equilibrium with an exact best response.
+strategy is from equilibrium with an exact best response. It also builds card
+abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
+mover's distance) and measures exactly what each one costs, and it has a
+seven-card hold'em evaluator for the hold'em work that comes next.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
@@ -184,6 +187,15 @@ allocated per iteration was enough to stall every domain, because OCaml 5
 minor collections stop the world. The walks and the iteration loop allocate
 nothing now.
 
+The domains are spawned once. `lib/pool.ml` keeps worker domains parked on a
+condition variable between calls; `Parallel.run` hands every worker the same
+job, runs its own share on the calling domain and waits for the rest. Worker j
+is always the same domain, so the tables it allocated on its first run stay
+where they are. Before the pool, every `run` call spawned and joined its
+domains. Splitting 4 million iterations into 400 calls on 8 domains
+(`dune exec ./bench/bench.exe`) cost 15.9 ms a call before and 1.9 ms after,
+and about 1.6 ms of that is the work itself.
+
 ## Weighted Monte Carlo CFR
 
 `-w lcfr`, `-w dcfr` and `-w cfr+` apply the full-tree discounts to the sampled
@@ -205,6 +217,93 @@ estimate gets cut while a noisy positive one is kept, so the regrets drift
 upward. Discounting only the first 10,000 or 100,000 iterations, as Pluribus
 did early in training, came out the same as no discounting at 1 million.
 Outcome sampling shows the same pattern.
+
+## Card abstraction
+
+Real poker has too many hands to give each its own strategy, so solvers group
+hands into buckets and solve the smaller game. How much that costs is usually
+hard to know, because the real game is too big to evaluate. Here it isn't.
+`Leduc.game` takes any deck, and with 13 ranks and two suits (`leduc13`, 26
+cards, 166,349 histories, 5,148 infosets) the hands differ enough for buckets
+to matter while an exact best response takes 0.2 s. An
+abstraction is a function from a player's private card (and the board) to a
+label. `Leduc.game ~abstraction` builds the abstract game over the same
+histories, CFR+ solves it, `Abstraction.Make (Full) (Abs)` maps every real
+infoset to its abstract one and lifts the strategy back, and the exploitability
+is measured in the full game.
+
+The features come from hand strength: HS(c, b) is the chance that card c beats
+a random opponent card on board b, ties counting half. Before the board is
+dealt the strength is a distribution, which the solver summarizes three ways:
+its mean E[HS], its second moment E[HS^2] (which rewards hands whose strength
+can still swing up), or the whole distribution as a 20-bin histogram. Scalar
+features are bucketed by exact 1D k-means: on sorted values the clusters are
+contiguous runs, so a dynamic program over split points finds the optimal
+partition in O(k n^2). Histograms are clustered by k-medians under earth
+mover's distance with k-means++ seeding. In one dimension EMD is the L1
+distance between the two CDFs, so the best center of a cluster is the
+pointwise weighted median of its members' CDFs (itself a valid CDF), and every
+Lloyd step can only lower the cost.
+
+```
+$ cfr-solver abstract -n 4000 --csv docs/abstraction.csv --svg docs/abstraction.svg
+leduc13: 4000 iterations of cfr+ per abstraction, 44 jobs in 112.5 s
+```
+
+The 44 abstract games run side by side on the domain pool. The exact game
+after the same 4,000 iterations is at 3.1e-5, so everything above that is the
+abstraction.
+
+![Exploitability of first-round abstractions of leduc13](docs/abstraction.svg)
+
+| round 1 buckets | 1     | 2     | 3      | 4      | 5      | 6      | 8       | 10      |
+|-----------------|------:|------:|-------:|-------:|-------:|-------:|--------:|--------:|
+| E[HS]           | 0.821 | 0.198 | 0.0493 | 0.0341 | 0.0219 | 0.0246 | 0.0115  | 0.0097  |
+| E[HS^2]         | 0.821 | 0.180 | 0.0555 | 0.0511 | 0.0292 | 0.0175 | 0.0068  | 0.0013  |
+| EMD histogram   | 0.821 | 0.170 | 0.157  | 0.0320 | 0.0290 | 0.0272 | 0.0223  | 0.0106  |
+
+Here round 2 keeps the exact card and board. Playing the first round blind
+costs 0.82 chips a hand; three E[HS] buckets bring it down to 0.049. No feature wins
+everywhere. The histograms are best at 2 and 4 buckets, E[HS^2] from 6 on, and
+at 10 buckets it is 7 to 8 times better than the other two. More buckets is not always
+better either: E[HS] gets worse from 5 to 6. The two partitions aren't nested,
+so this isn't quite the refinement pathology of Waugh et al. (2009), but it is
+the same warning. The histograms have less to work with than in hold'em: every
+card has the same spike of mass 1/25 at HS = 1 (pairing the board), and
+otherwise only two strengths, board above or below the card.
+
+![Exploitability of second-round abstractions of leduc13](docs/abstraction-round2.svg)
+
+The second chart keeps round 1 exact and buckets round 2 by HS. With perfect
+recall the key is the card plus the bucket; with imperfect recall the player
+forgets the card and keeps only the bucket (and the betting). Hand strength
+alone stalls at about 0.1 however many buckets it gets, because on leduc13 it
+takes only 13 values: card c with the board above it has HS (2c + 0.5)/24,
+exactly the same as card c + 1 with the board below it. Those are different
+spots (in the second the opponent can pair the board), and no bucketing of HS
+can tell them apart. Forgetting the card is cheap by comparison: imperfect
+recall reaches 0.094 with 438 infosets, better than any perfect-recall version
+up to 1,188 (best 0.109), which matches what Johanson et al. (2013) found in
+hold'em. Keeping the public board in the key and bucketing only the private
+card removes the floor and reaches the exact game at 13 buckets. CFR+ has no
+convergence guarantee with imperfect recall, so I also ran 1,000 iterations:
+the round 2 values moved by up to 20%, and imperfect recall still came out
+ahead of perfect recall.
+
+## Hand evaluator
+
+`Hand.eval` scores 5 to 7 hold'em cards as one int where higher wins: the
+category in the top bits, then up to five ranks in 4-bit fields. It builds a
+13-bit rank mask per suit and four masks for ranks seen once, twice, three and
+four times (each card ORs into the next mask up), and reads popcounts, top
+bits and straights from 8,192-entry tables. The tests enumerate all 2,598,960
+five-card hands and get the textbook category counts (40 straight flushes, 624
+quads, and so on up to 1,302,540 high cards) and 7,462 distinct values, and a
+qcheck property checks that seven cards score the best of their 21 five-card
+subsets. The bench enumerates all 133,784,560 seven-card hands, checks the
+published counts and 4,824 distinct values, and exits non-zero if anything is
+off. It does 41 million hands a second on one core, up from 14 million when
+popcount and the top bit were recursive functions.
 
 ## Building
 
@@ -350,6 +449,31 @@ The tests check against numbers that come from outside this code:
   round counts are exact when the batch doesn't divide the work, and both modes
   converge on 4 domains. A barrier test runs 4 domains through 500 phases and
   checks that none gets ahead.
+- The domain pool runs every index exactly once over changing domain counts,
+  keeps each index on the same domain across 50 calls, survives 2,000 rounds,
+  passes exceptions from workers and the caller back to the caller, and joins
+  its domains on shutdown.
+- Abstraction: the exact abstraction maps every infoset to itself; solving a
+  renamed copy of Leduc with CFR+ and lifting it back gives the full-game
+  result exactly; for 40 random abstractions (perfect and imperfect recall)
+  and random abstract strategies, the abstract game's value equals the full
+  game's value of the lifted strategy to 1e-12; an abstraction that refines
+  instead of coarsening is rejected.
+- Leduc decks: tree sizes for 13 ranks match the closed forms (6n + 30n^2
+  infosets), the contract walk passes for 13x2 and 4x3 decks, and both players
+  pairing the board splits the pot.
+- Hand strength: values worked out by hand for standard Leduc (E[HS] of 0.3,
+  0.5 and 0.7), a mean of exactly 1/2 for 100 random decks, and 2 E[HS] - 1
+  equal to the game's own expected payoff when both players check to the
+  showdown.
+- Clustering: optimal 1D k-means matches brute force over every labeling
+  (qcheck, 300 cases); EMD between equal-size samples on a grid equals the
+  mean distance between their sorted values; the weighted median minimizes
+  weighted L1; k-medians recovers three separated blobs and ends at a fixed
+  point where every histogram's nearest center is its own.
+- The hand evaluator: all five-card hands, the best-of-21 property, and hands
+  that trip up evaluators (wheels, a third pair as kicker, two sets of trips,
+  a flush and a straight in the same seven cards).
 
 Hand-made bugs get caught: a best response that decides from a single history,
 a CFR without the strategy cache, an average weighted by t + 1 instead of t, a
@@ -362,7 +486,12 @@ square root of the opponent's strategy to its strategy sum. So do six
 parallel ones: merging without subtracting the master, an off-by-one in how
 iterations are split between domains, giving shared mode a private master,
 skipping the copy back after a merge, dropping the per-round discount, and
-folding the shared strategy sums without resetting them.
+folding the shared strategy sums without resetting them. The newer code gets
+the same treatment: a pool that lets every worker run, a lift that drops part
+of the abstract strategy, ties counted as wins in hand strength, round 2
+buckets indexed with card and board swapped, k-medians assigning to the
+farthest center, an off-by-one in the k-means split points and a weighted
+median taken at a third of the weight.
 
 ## License
 

@@ -1,0 +1,53 @@
+series,buckets,abstraction,infosets,exploitability
+exact,13,exact,5148,3.09236e-05
+ehs,1,ehs-1/exact,5076,0.820602
+ehs,2,ehs-2/exact,5082,0.198409
+ehs,3,ehs-3/exact,5088,0.0493301
+ehs,4,ehs-4/exact,5094,0.0340534
+ehs,5,ehs-5/exact,5100,0.0218857
+ehs,6,ehs-6/exact,5106,0.0245777
+ehs,8,ehs-8/exact,5118,0.011485
+ehs,10,ehs-10/exact,5130,0.00974514
+ehs,13,ehs-13/exact,5148,3.09236e-05
+ehs2,1,ehs2-1/exact,5076,0.820602
+ehs2,2,ehs2-2/exact,5082,0.17957
+ehs2,3,ehs2-3/exact,5088,0.0555408
+ehs2,4,ehs2-4/exact,5094,0.0511424
+ehs2,5,ehs2-5/exact,5100,0.0292306
+ehs2,6,ehs2-6/exact,5106,0.0174512
+ehs2,8,ehs2-8/exact,5118,0.0067907
+ehs2,10,ehs2-10/exact,5130,0.00128486
+ehs2,13,ehs2-13/exact,5148,3.09236e-05
+emd,1,emd-1/exact,5076,0.820602
+emd,2,emd-2/exact,5082,0.169639
+emd,3,emd-3/exact,5088,0.156671
+emd,4,emd-4/exact,5094,0.0319928
+emd,5,emd-5/exact,5100,0.0289735
+emd,6,emd-6/exact,5106,0.0272475
+emd,8,emd-8/exact,5118,0.0223414
+emd,10,emd-10/exact,5130,0.0106412
+emd,13,emd-13/exact,5148,3.09236e-05
+perfect recall,1,exact/hs-1,468,0.137198
+perfect recall,2,exact/hs-2,678,0.126527
+perfect recall,3,exact/hs-3,768,0.118934
+perfect recall,4,exact/hs-4,828,0.117324
+perfect recall,6,exact/hs-6,918,0.108979
+perfect recall,8,exact/hs-8,1008,0.130843
+perfect recall,12,exact/hs-12,1128,0.114564
+perfect recall,13,exact/hs-16,1188,0.121803
+imperfect recall,1,exact/hs-1 imperfect,108,1.69523
+imperfect recall,2,exact/hs-2 imperfect,138,0.490586
+imperfect recall,3,exact/hs-3 imperfect,168,0.217989
+imperfect recall,4,exact/hs-4 imperfect,198,0.137871
+imperfect recall,6,exact/hs-6 imperfect,258,0.101607
+imperfect recall,8,exact/hs-8 imperfect,318,0.110004
+imperfect recall,12,exact/hs-12 imperfect,438,0.0939488
+imperfect recall,13,exact/hs-16 imperfect,468,0.101138
+board, imperfect,1,exact/board+hs-1 imperfect,468,1.52209
+board, imperfect,2,exact/board+hs-2 imperfect,858,0.495093
+board, imperfect,3,exact/board+hs-3 imperfect,1248,0.206537
+board, imperfect,4,exact/board+hs-4 imperfect,1638,0.108403
+board, imperfect,6,exact/board+hs-6 imperfect,2418,0.049771
+board, imperfect,8,exact/board+hs-8 imperfect,3198,0.0278427
+board, imperfect,12,exact/board+hs-12 imperfect,4758,0.00239252
+board, imperfect,13,exact/board+hs-16 imperfect,5148,3.09236e-05
