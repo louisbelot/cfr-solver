@@ -4,6 +4,7 @@ let () =
       ("kuhn", Test_kuhn.tests);
       ("leduc", Test_leduc.tests);
       ("abstraction", Test_abstraction.tests);
+      ("cluster", Test_cluster.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
