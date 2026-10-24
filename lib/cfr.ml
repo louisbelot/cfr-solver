@@ -42,6 +42,9 @@ let discounts algorithm t =
     factor s.beta t,
     Float.pow (float_of_int t /. float_of_int (t + 1)) s.gamma )
 
+let alternating algorithm = (schedule algorithm).alternating
+let weight algorithm t = Float.pow (float_of_int t) (schedule algorithm).gamma
+
 module Make (G : Game.S) = struct
   type t = {
     root : Tree.node;

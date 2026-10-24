@@ -7,6 +7,8 @@ type algorithm =
 val dcfr : algorithm
 val algorithm_name : algorithm -> string
 val discounts : algorithm -> int -> float * float * float
+val alternating : algorithm -> bool
+val weight : algorithm -> int -> float
 
 module Make (G : Game.S) : sig
   type t

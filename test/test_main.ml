@@ -9,6 +9,7 @@ let () =
       ("hand", Test_hand.tests);
       ("range", Test_range.tests);
       ("bet tree", Test_bet_tree.tests);
+      ("subgame", Test_subgame.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
