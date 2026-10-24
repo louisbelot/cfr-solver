@@ -1,3 +1,7 @@
+external ( .!() ) : float array -> int -> float = "%array_unsafe_get"
+external ( .!()<- ) : float array -> int -> float -> unit = "%array_unsafe_set"
+external ( .%() ) : int array -> int -> int = "%array_unsafe_get"
+
 type side = {
   range : Range.t;
   n : int;
@@ -221,49 +225,57 @@ let fold_values t ~win i opp out =
   Array.fill cards 0 52 0.;
   let total = ref 0. in
   for j = 0 to o.n - 1 do
-    let r = opp.(j) in
+    let r = opp.!(j) in
     if r <> 0. then begin
       total := !total +. r;
-      cards.(o.c1.(j)) <- cards.(o.c1.(j)) +. r;
-      cards.(o.c2.(j)) <- cards.(o.c2.(j)) +. r
+      let a = o.c1.%(j) and b = o.c2.%(j) in
+      cards.!(a) <- cards.!(a) +. r;
+      cards.!(b) <- cards.!(b) +. r
     end
   done;
   for h = 0 to s.n - 1 do
-    let same = if s.twin.(h) >= 0 then opp.(s.twin.(h)) else 0. in
-    out.(h) <- win *. (!total -. cards.(s.c1.(h)) -. cards.(s.c2.(h)) +. same)
+    let tw = s.twin.%(h) in
+    let same = if tw >= 0 then opp.!(tw) else 0. in
+    out.!(h) <-
+      win *. (!total -. cards.!(s.c1.%(h)) -. cards.!(s.c2.%(h)) +. same)
   done
 
 let showdown_values t ~win board i opp out =
   let s = t.sides.(i) and o = t.sides.(1 - i) and cards = t.cards in
   let mine = board.order.(i) and theirs = board.order.(1 - i) in
   let sm = board.strength.(i) and st = board.strength.(1 - i) in
+  let m = Array.length theirs in
   Array.fill out 0 s.n 0.;
-  let add j total =
-    let r = opp.(j) in
-    cards.(o.c1.(j)) <- cards.(o.c1.(j)) +. r;
-    cards.(o.c2.(j)) <- cards.(o.c2.(j)) +. r;
-    total +. r
-  in
   Array.fill cards 0 52 0.;
   let total = ref 0. and j = ref 0 in
   for x = 0 to Array.length mine - 1 do
-    let h = mine.(x) in
-    while !j < Array.length theirs && st.(theirs.(!j)) < sm.(h) do
-      total := add theirs.(!j) !total;
+    let h = mine.%(x) in
+    let sh = sm.%(h) in
+    while !j < m && st.%(theirs.%(!j)) < sh do
+      let k = theirs.%(!j) in
+      let r = opp.!(k) and a = o.c1.%(k) and b = o.c2.%(k) in
+      cards.!(a) <- cards.!(a) +. r;
+      cards.!(b) <- cards.!(b) +. r;
+      total := !total +. r;
       incr j
     done;
-    out.(h) <- win *. (!total -. cards.(s.c1.(h)) -. cards.(s.c2.(h)))
+    out.!(h) <- win *. (!total -. cards.!(s.c1.%(h)) -. cards.!(s.c2.%(h)))
   done;
   Array.fill cards 0 52 0.;
-  let total = ref 0. and j = ref (Array.length theirs - 1) in
+  let total = ref 0. and j = ref (m - 1) in
   for x = Array.length mine - 1 downto 0 do
-    let h = mine.(x) in
-    while !j >= 0 && st.(theirs.(!j)) > sm.(h) do
-      total := add theirs.(!j) !total;
+    let h = mine.%(x) in
+    let sh = sm.%(h) in
+    while !j >= 0 && st.%(theirs.%(!j)) > sh do
+      let k = theirs.%(!j) in
+      let r = opp.!(k) and a = o.c1.%(k) and b = o.c2.%(k) in
+      cards.!(a) <- cards.!(a) +. r;
+      cards.!(b) <- cards.!(b) +. r;
+      total := !total +. r;
       decr j
     done;
-    out.(h) <-
-      out.(h) -. (win *. (!total -. cards.(s.c1.(h)) -. cards.(s.c2.(h))))
+    out.!(h) <-
+      out.!(h) -. (win *. (!total -. cards.!(s.c1.%(h)) -. cards.!(s.c2.%(h))))
   done
 
 let terminal t node i opp out =
@@ -276,30 +288,31 @@ let terminal t node i opp out =
 let mask t p c src dst =
   let s = t.sides.(p) in
   for h = 0 to s.n - 1 do
-    dst.(h) <- (if holds s h c then 0. else src.(h))
+    dst.!(h) <- (if s.c1.%(h) = c || s.c2.%(h) = c then 0. else src.!(h))
   done
 
 let gather t i c weight src out =
   let s = t.sides.(i) in
   for h = 0 to s.n - 1 do
-    if not (holds s h c) then out.(h) <- out.(h) +. (weight *. src.(h))
+    if s.c1.%(h) <> c && s.c2.%(h) <> c then
+      out.!(h) <- out.!(h) +. (weight *. src.!(h))
   done
 
 let regret_matching dn n sc =
-  let k = Array.length dn.actions in
-  Array.fill sc.norm 0 n 0.;
+  let k = Array.length dn.actions and norm = sc.norm in
+  Array.fill norm 0 n 0.;
   for a = 0 to k - 1 do
     let r = dn.regret.(a) in
     for h = 0 to n - 1 do
-      sc.norm.(h) <- sc.norm.(h) +. Float.max r.(h) 0.
+      norm.!(h) <- norm.!(h) +. Float.max r.!(h) 0.
     done
   done;
   let u = 1. /. float_of_int k in
   for a = 0 to k - 1 do
     let r = dn.regret.(a) and s = sc.strat.(a) in
     for h = 0 to n - 1 do
-      let z = sc.norm.(h) in
-      s.(h) <- (if z > 0. then Float.max r.(h) 0. /. z else u)
+      let z = norm.!(h) in
+      s.!(h) <- (if z > 0. then Float.max r.!(h) 0. /. z else u)
     done
   done
 
@@ -330,32 +343,34 @@ let rec walk t node d active reach out =
       let n = t.sides.(p).n and m = t.sides.(o).n in
       let sc = t.scratch.(d) in
       regret_matching dn n sc;
-      if active.(p) then Array.fill out.(p) 0 n 0.;
-      if active.(o) then Array.fill out.(o) 0 m 0.;
-      let own = reach.(p) in
+      let own = reach.(p) and mine = out.(p) and theirs = out.(o) in
+      if active.(p) then Array.fill mine 0 n 0.;
+      if active.(o) then Array.fill theirs 0 m 0.;
       Array.iteri
         (fun a child ->
           let s = sc.strat.(a) and next = sc.next.(a) and v = sc.vals.(a) in
           for h = 0 to n - 1 do
-            next.(h) <- own.(h) *. s.(h)
+            next.!(h) <- own.!(h) *. s.!(h)
           done;
           walk t child (d + 1) active (pair p next reach.(o)) (pair p v sc.acc);
           if active.(p) then
             for h = 0 to n - 1 do
-              out.(p).(h) <- out.(p).(h) +. (s.(h) *. v.(h))
+              mine.!(h) <- mine.!(h) +. (s.!(h) *. v.!(h))
             done;
-          if active.(o) then
+          if active.(o) then begin
+            let acc = sc.acc in
             for h = 0 to m - 1 do
-              out.(o).(h) <- out.(o).(h) +. sc.acc.(h)
-            done)
+              theirs.!(h) <- theirs.!(h) +. acc.!(h)
+            done
+          end)
         dn.children;
       if active.(p) then
         for a = 0 to Array.length dn.actions - 1 do
           let r = dn.regret.(a) and sum = dn.sum.(a) in
-          let s = sc.strat.(a) and v = sc.vals.(a) in
+          let s = sc.strat.(a) and v = sc.vals.(a) and w = t.weight in
           for h = 0 to n - 1 do
-            r.(h) <- r.(h) +. (v.(h) -. out.(p).(h));
-            sum.(h) <- sum.(h) +. (t.weight *. own.(h) *. s.(h))
+            r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
+            sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
           done
         done
 
@@ -441,35 +456,35 @@ let rec eval t (prof : profile) mode node d i opp out =
         Array.iteri
           (fun a child -> eval t prof mode child (d + 1) i opp sc.vals.(a))
           dn.children;
-        for h = 0 to n - 1 do
-          out.(h) <-
-            (match mode with
-            | Best ->
-                let best = ref sc.vals.(0).(h) in
-                for a = 1 to Array.length dn.actions - 1 do
-                  best := Float.max !best sc.vals.(a).(h)
-                done;
-                !best
-            | Mean ->
-                let v = ref 0. in
-                for a = 0 to Array.length dn.actions - 1 do
-                  v := !v +. (sigma.(a).(h) *. sc.vals.(a).(h))
-                done;
-                !v)
+        let k = Array.length dn.actions in
+        (match mode with
+        | Best -> Array.blit sc.vals.(0) 0 out 0 n
+        | Mean -> Array.fill out 0 n 0.);
+        for a = 0 to k - 1 do
+          let v = sc.vals.(a) and s = sigma.(a) in
+          match mode with
+          | Best ->
+              for h = 0 to n - 1 do
+                out.!(h) <- Float.max out.!(h) v.!(h)
+              done
+          | Mean ->
+              for h = 0 to n - 1 do
+                out.!(h) <- out.!(h) +. (s.!(h) *. v.!(h))
+              done
         done
       end
       else begin
         Array.fill out 0 n 0.;
-        let m = t.sides.(1 - i).n in
+        let m = t.sides.(1 - i).n and acc = sc.acc in
         Array.iteri
           (fun a child ->
             let next = sc.next.(a) and s = sigma.(a) in
             for h = 0 to m - 1 do
-              next.(h) <- opp.(h) *. s.(h)
+              next.!(h) <- opp.!(h) *. s.!(h)
             done;
-            eval t prof mode child (d + 1) i next sc.acc;
+            eval t prof mode child (d + 1) i next acc;
             for h = 0 to n - 1 do
-              out.(h) <- out.(h) +. sc.acc.(h)
+              out.!(h) <- out.!(h) +. acc.!(h)
             done)
           dn.children
       end
