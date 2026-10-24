@@ -3,7 +3,7 @@ type series = { label : string; dashed : bool; points : (int * float) list }
 let width = 760.
 let height = 440.
 let left = 72.
-let right = 128.
+let right = 140.
 let top = 48.
 let bottom = 56.
 
@@ -78,10 +78,11 @@ let chart ~xlog ~title ~xlabel ~ylabel series =
         (fun k -> (10. ** float_of_int (x0 + k), power (x0 + k)))
     else
       let s = step (x1 - x0) in
+      let first = (x0 + s - 1) / s * s in
       List.init
-        (((x1 - x0) / s) + 1)
+        (((x1 - first) / s) + 1)
         (fun k ->
-          let x = x0 + (k * s) in
+          let x = first + (k * s) in
           (float_of_int x, string_of_int x))
   in
   List.iter
