@@ -17,6 +17,7 @@ type decision = {
   pot : float;
   committed : float;
   to_call : float;
+  all_in : float;
   actions : Bet_tree.action array;
   children : node array;
   regret : float array array;
@@ -140,7 +141,7 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
             cards
         in
         Chance { cards; weight = 1. /. float_of_int left; children }
-    | Decision { player; pot; committed; to_call; actions; children } ->
+    | Decision { player; pot; committed; to_call; all_in; actions; children } ->
         let id = !count in
         incr count;
         let k = Array.length actions and n = sides.(player).n in
@@ -162,6 +163,7 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
             pot;
             committed;
             to_call;
+            all_in;
             actions;
             children;
             regret = Array.init k (fun _ -> Array.make n 0.);
@@ -563,3 +565,148 @@ let lines ?(chance = false) t (prof : profile) =
   in
   go t.root (Array.map (fun s -> Array.copy s.w) t.sides);
   List.rev !out
+
+let combine t (p0 : profile) (p1 : profile) =
+  Array.map
+    (fun (dn : decision) -> if dn.player = 0 then p0.(dn.id) else p1.(dn.id))
+    t.decisions
+
+let kinds (dn : decision) =
+  Array.map
+    (function
+      | Bet_tree.Bet x as a ->
+          let pot = dn.pot
+          and committed = dn.committed
+          and to_call = dn.to_call in
+          `Bet (Bet_tree.fraction ~pot ~committed ~to_call a, x >= dn.all_in)
+      | Fold -> `Fold
+      | Check -> `Check
+      | Call -> `Call)
+    dn.actions
+
+let same x y =
+  match (x, y) with
+  | `Bet (f, a), `Bet (g, b) ->
+      (a && b) || ((not (a || b)) && Float.abs (f -. g) < 1e-9)
+  | x, y -> x = y
+
+let find_index p a =
+  let rec go i =
+    if i = Array.length a then None else if p a.(i) then Some i else go (i + 1)
+  in
+  go 0
+
+let map_action low kind targets =
+  match find_index (same kind) targets with
+  | Some i -> [ (i, 1.) ]
+  | None -> (
+      match kind with
+      | `Bet (x, _) -> (
+          let bets =
+            List.filter_map
+              (fun i ->
+                match targets.(i) with `Bet (f, _) -> Some (i, f) | _ -> None)
+              (List.init (Array.length targets) Fun.id)
+          in
+          let pick better =
+            List.fold_left
+              (fun acc (i, f) ->
+                match acc with
+                | Some (_, g) when not (better f g) -> acc
+                | _ -> Some (i, f))
+              None
+          in
+          let lower = pick ( > ) (List.filter (fun (_, f) -> f <= x) bets)
+          and upper = pick ( < ) (List.filter (fun (_, f) -> f >= x) bets) in
+          match (lower, upper) with
+          | Some (i, a), Some (k, b) when a < b ->
+              let p = low ~a ~b x in
+              List.filter (fun (_, q) -> q > 0.) [ (i, p); (k, 1. -. p) ]
+          | Some (i, _), _ | None, Some (i, _) -> [ (i, 1.) ]
+          | None, None -> invalid_arg "Subgame.translate: no bet to map to")
+      | _ ->
+          invalid_arg "Subgame.translate: action missing from the abstraction")
+
+let translate ~low ~abstract (prof : profile) full =
+  Array.iteri
+    (fun p s ->
+      let a = abstract.sides.(p) in
+      if a.range.hands <> s.range.hands || a.w <> s.w then
+        invalid_arg "Subgame.translate: ranges differ")
+    full.sides;
+  let out = Array.make (Array.length full.decisions) [||] in
+  let shape () = invalid_arg "Subgame.translate: trees differ in shape" in
+  let rec go node ms =
+    match node with
+    | Fold _ | Showdown _ -> ()
+    | Chance { children; _ } ->
+        Array.iteri
+          (fun j child ->
+            go child
+              (List.map
+                 (fun (m, w, r) ->
+                   match m with
+                   | Chance c -> (c.children.(j), w, r)
+                   | _ -> shape ())
+                 ms))
+          children
+    | Decision fd ->
+        let p = fd.player and n = full.sides.(fd.player).n in
+        let k = Array.length fd.actions and fk = kinds fd in
+        let ms =
+          List.map
+            (fun (m, w, r) ->
+              match m with
+              | Decision ad when ad.player = p -> (ad, w, r)
+              | _ -> shape ())
+            ms
+        in
+        let num = Array.init k (fun _ -> Array.make n 0.)
+        and flat = Array.init k (fun _ -> Array.make n 0.)
+        and den = Array.make n 0.
+        and total = ref 0. in
+        List.iter
+          (fun (ad, w, r) ->
+            let own = r.(p) and sigma = prof.(ad.id) in
+            Array.iteri
+              (fun i kind ->
+                match find_index (same kind) fk with
+                | None ->
+                    invalid_arg
+                      "Subgame.translate: abstract action missing from the \
+                       full tree"
+                | Some j ->
+                    for h = 0 to n - 1 do
+                      num.(j).(h) <-
+                        num.(j).(h) +. (w *. own.(h) *. sigma.(i).(h));
+                      flat.(j).(h) <- flat.(j).(h) +. (w *. sigma.(i).(h))
+                    done)
+              (kinds ad);
+            for h = 0 to n - 1 do
+              den.(h) <- den.(h) +. (w *. own.(h))
+            done;
+            total := !total +. w)
+          ms;
+        out.(fd.id) <-
+          Array.init k (fun j ->
+              Array.init n (fun h ->
+                  if den.(h) > 0. then num.(j).(h) /. den.(h)
+                  else flat.(j).(h) /. !total));
+        Array.iteri
+          (fun j child ->
+            go child
+              (List.concat_map
+                 (fun (ad, w, r) ->
+                   List.map
+                     (fun (i, q) ->
+                       let r = Array.copy r in
+                       r.(p) <-
+                         Array.mapi (fun h x -> x *. prof.(ad.id).(i).(h)) r.(p);
+                       (ad.children.(i), w *. q, r))
+                     (map_action low fk.(j) (kinds ad)))
+                 ms))
+          fd.children
+  in
+  go full.root
+    [ (abstract.root, 1., Array.map (fun s -> Array.copy s.w) abstract.sides) ];
+  out

@@ -32,3 +32,11 @@ type line = {
 }
 
 val lines : ?chance:bool -> t -> profile -> line list
+val combine : t -> profile -> profile -> profile
+
+val translate :
+  low:(a:float -> b:float -> float -> float) ->
+  abstract:t ->
+  profile ->
+  t ->
+  profile

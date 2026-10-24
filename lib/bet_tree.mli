@@ -9,6 +9,7 @@ type node =
       pot : float;
       committed : float;
       to_call : float;
+      all_in : float;
       actions : action array;
       children : node array;
     }

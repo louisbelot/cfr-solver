@@ -9,6 +9,7 @@ type node =
       pot : float;
       committed : float;
       to_call : float;
+      all_in : float;
       actions : action array;
       children : node array;
     }
@@ -95,6 +96,7 @@ let build cfg =
         pot = total;
         committed = c.(p);
         to_call;
+        all_in = left;
         actions;
         children = Array.map child actions;
       }

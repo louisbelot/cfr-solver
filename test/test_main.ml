@@ -10,6 +10,7 @@ let () =
       ("range", Test_range.tests);
       ("bet tree", Test_bet_tree.tests);
       ("subgame", Test_subgame.tests);
+      ("translation", Test_translation.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
