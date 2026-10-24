@@ -87,9 +87,11 @@ let subgame board oop ip tree algorithms iterations csv svg json =
   run_cmd @@ fun () ->
   let board, r0, r1 = setup board oop ip in
   let cfg = config tree (6 - Array.length board) in
+  let last = ref None in
   let runs =
     List.map
       (fun (name, algorithm) ->
+        last := None;
         let t = Subgame.create ~algorithm cfg ~board r0 r1 in
         let wall = ref 0. in
         let rows =
@@ -101,62 +103,65 @@ let subgame board oop ip tree algorithms iterations csv svg json =
               (k, exploitability t (Subgame.average t)))
             (log_checkpoints 4 iterations)
         in
-        (name, t, rows, !wall))
+        last := Some (name, t);
+        (name, rows, !wall))
       algorithms
   in
-  let _, t, _, _ = List.hd (List.rev runs) in
-  header board tree t;
-  Format.printf "exploitability, %% of the pot@.%10s" "iterations";
-  List.iter (fun (name, _, _, _) -> Format.printf "%10s" name) runs;
-  Format.printf "@.";
-  let _, _, first, _ = List.hd runs in
-  List.iteri
-    (fun i (k, _) ->
-      Format.printf "%10d" k;
-      List.iter
-        (fun (_, _, rows, _) ->
-          Format.printf "%10s" (sci (snd (List.nth rows i))))
-        runs;
-      Format.printf "@.")
-    first;
-  Format.printf "%10s" "time (s)";
-  List.iter (fun (_, _, _, wall) -> Format.printf "%10.2f" wall) runs;
-  let name, t, _, _ = List.hd (List.rev runs) in
-  let prof = Subgame.average t in
-  Format.printf "@.@.%s strategy, oop value %.4f (pot %g)@." name
-    (Subgame.value t prof) (Subgame.pot t);
-  summary t prof;
-  Option.iter
-    (fun path ->
-      runs
-      |> List.concat_map (fun (name, _, rows, _) ->
-          List.map
-            (fun (k, e) -> Printf.sprintf "%s,%d,%s\n" name k (short_float e))
-            rows)
-      |> String.concat ""
-      |> ( ^ ) "algorithm,iterations,exploitability_pct\n"
-      |> write_file path)
-    csv;
-  Option.iter
-    (fun path ->
-      Plot.loglog
-        ~title:
-          (Printf.sprintf "%s %s: exploitability of the average strategy"
-             (String.capitalize_ascii (street board))
-             (String.concat " "
-                (Array.to_list (Array.map Hand.to_string board))))
-        ~xlabel:"iterations" ~ylabel:"% of the pot"
-        (List.map
-           (fun (label, _, points, _) -> { Plot.label; dashed = false; points })
-           runs)
-      |> write_file path)
-    svg;
-  Option.iter
-    (fun path ->
-      write_file path
-        (Json.to_string (Strategy.to_json (Subgame.strategy t prof)) ^ "\n"))
-    json;
-  Ok ()
+  match (!last, runs) with
+  | None, _ | _, [] -> Error (`Msg "no algorithm to run")
+  | Some (name, t), (_, first, _) :: _ ->
+      header board tree t;
+      Format.printf "exploitability, %% of the pot@.%10s" "iterations";
+      List.iter (fun (name, _, _) -> Format.printf "%10s" name) runs;
+      Format.printf "@.";
+      List.iteri
+        (fun i (k, _) ->
+          Format.printf "%10d" k;
+          List.iter
+            (fun (_, rows, _) ->
+              Format.printf "%10s" (sci (snd (List.nth rows i))))
+            runs;
+          Format.printf "@.")
+        first;
+      Format.printf "%10s" "time (s)";
+      List.iter (fun (_, _, wall) -> Format.printf "%10.2f" wall) runs;
+      let prof = Subgame.average t in
+      Format.printf "@.@.%s strategy, oop value %.4f (pot %g)@." name
+        (Subgame.value t prof) (Subgame.pot t);
+      summary t prof;
+      Option.iter
+        (fun path ->
+          runs
+          |> List.concat_map (fun (name, rows, _) ->
+              List.map
+                (fun (k, e) ->
+                  Printf.sprintf "%s,%d,%s\n" name k (short_float e))
+                rows)
+          |> String.concat ""
+          |> ( ^ ) "algorithm,iterations,exploitability_pct\n"
+          |> write_file path)
+        csv;
+      Option.iter
+        (fun path ->
+          Plot.loglog
+            ~title:
+              (Printf.sprintf "%s %s: exploitability of the average strategy"
+                 (String.capitalize_ascii (street board))
+                 (String.concat " "
+                    (Array.to_list (Array.map Hand.to_string board))))
+            ~xlabel:"iterations" ~ylabel:"% of the pot"
+            (List.map
+               (fun (label, points, _) ->
+                 { Plot.label; dashed = false; points })
+               runs)
+          |> write_file path)
+        svg;
+      Option.iter
+        (fun path ->
+          write_file path
+            (Json.to_string (Strategy.to_json (Subgame.strategy t prof)) ^ "\n"))
+        json;
+      Ok ()
 
 let no_limit tree =
   if tree.limit <> None then invalid_arg "this experiment needs a no-limit tree"
