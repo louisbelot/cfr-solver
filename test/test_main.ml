@@ -7,6 +7,7 @@ let () =
       ("strength", Test_strength.tests);
       ("cluster", Test_cluster.tests);
       ("hand", Test_hand.tests);
+      ("range", Test_range.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
