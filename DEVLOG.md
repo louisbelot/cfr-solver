@@ -544,3 +544,104 @@ Next: limit hold'em river and turn subgames. That needs a public tree with
 range vectors instead of one history per deal (1,081 hands a player on the
 river), the evaluator above for showdowns, and hand-strength buckets for the
 turn. Bet-size abstraction comes with it.
+
+## 2026-10-23: hold'em subgames, bet sizes, action translation
+
+What was built:
+
+- `Range`: the 1,326 combos with a triangular index, range notation (AA, AKs,
+  KQo, TT+, A9s+, AhKh, weights like QJs:0.5, random) and board removal.
+- `Bet_tree`: public betting trees from a pot, an effective stack and per
+  street bet sizes (pot fractions, chips or all-in), raise sizes, a cap and
+  chance nodes between streets. `Bet_tree.limit` gives fixed-limit trees.
+- `Subgame`: vector-form CFR on the public tree for river and turn spots. One
+  regret and strategy-sum vector per decision node over the acting player's
+  hands, reach and value vectors per player, the river dealt as a chance node
+  on the turn. Vanilla CFR, CFR+, linear CFR and DCFR with the same schedule
+  as `Cfr` (two helpers, `Cfr.alternating` and `Cfr.weight`, are now public).
+  Exact best response and exploitability over the same tree, export to
+  `Strategy.t`, and range-weighted action frequencies per node.
+- `Translation` and `Subgame.translate`: nearest, arithmetic and
+  pseudo-harmonic mappings, and a translated profile for a bigger tree.
+- `cfr-solver subgame`, `translate` and `betsizes`, and bench entries for a
+  river and a turn with random ranges. The CLI helpers shared by every command
+  moved to `bin/report.ml`.
+
+Design notes:
+
+- Strategies are computed by regret matching when a node is visited, not
+  stored. Each node is visited once per pass, so that equals refreshing at the
+  start of the pass, and it saves a third of the memory. Vanilla CFR
+  still updates both players in one walk, which is what makes it simultaneous;
+  the other variants alternate. Scratch buffers are per depth, not per node.
+- Showdowns are O(n) with card removal by inclusion-exclusion over 52 per-card
+  sums, and the sorted order of each board is computed once, lazily, when the
+  first showdown under it is built.
+- Translation keeps one belief list per player: the player who acted follows
+  the abstract action they actually chose; the other player maps the real
+  action onto the abstract ones. The strategy at a node is the reach-weighted
+  mixture over the actor's beliefs. Belief nodes that hit a terminal while the
+  real game goes on are dropped. When an abstract action has no twin in the
+  real tree (a re-raise clamped to all-in in one tree and not the other) the
+  player bets the closest legal size, or calls.
+- Unchecked index operators in the subgame hot loops only, declared as
+  `external` on `float array` and `int array` so the float accesses stay
+  unboxed. A local alias of `Array.unsafe_get` would be a generic array access
+  with a tag check.
+
+Results (Ryzen 7 7800X3D, one core, both ranges random):
+
+- Fixed-limit river (pot 6, bet 1, 10 decisions): after 4,000 iterations,
+  exploitability as a share of the pot is 4.4e-2% for CFR, 2.3e-3% for linear
+  CFR, 4.2e-4% for CFR+ and 8.9e-5% for DCFR. 1,000 DCFR iterations take 0.61 s.
+- Fixed-limit turn (pot 4, bet 1, 4,330 decisions): after 300 iterations
+  CFR 0.82%, CFR+ 0.056%, linear CFR 0.047% and DCFR 0.018%. One solve with
+  random ranges peaks at 523 MB working set: regrets and strategy sums are
+  about 195 MB, and every exploitability checkpoint builds a full average
+  profile. The first version of the command kept all four solvers alive until
+  it printed, 2.1 GB; now only the last one is kept.
+- Speed: 0.87 ms per river iteration and 401 ms per turn iteration at first;
+  `-unsafe` on the whole library gave 0.63 and 294 ms; the unchecked
+  operators with hoisted loop invariants 0.59 and 277 ms.
+- Translation, bets of half pot and pot, x from 0.25 to 2 pots: worst case
+  between the sizes is 0.17% of the pot for pseudo-harmonic, 0.36% for
+  arithmetic and 2.4% for nearest. Outside the sizes they coincide, and a
+  2-pot overbet costs 8.5%.
+- Bet-size abstractions of a tree with seven sizes: without an overbet every
+  abstraction is above 13% of the pot in the full tree; 0.25, 0.5, 1 and 2
+  gets 0.26% with 26 decision nodes out of 44.
+
+Checks:
+
+- 141 tests, about 10 s. The vector solver against a scalar version of the
+  same subgame (`test/subgame_ref.ml`) run through `Cfr.Make`: identical
+  average strategies to 1e-9 after 25 iterations of CFR, CFR+ and DCFR on a
+  river with overlapping ranges, ties and uneven weights; identical values and
+  best responses on the river and the turn.
+- The turn comparison failed twice, both times on exact ties. First, vanilla
+  CFR split from iteration 2: KhKc on a jack river beats 7 of player 0's
+  combos and loses to 3, and with uniform strategies bet and check are worth
+  exactly the same when W/L = 7/3, so the regret is 0 and the two solvers
+  round it to opposite signs. Uneven range weights removed that one. Then CFR+
+  split from iteration 2 at KsKc facing a river bet after a 7 (the averages
+  differed from iteration 4): the scalar solver had all regrets at zero and
+  played uniform, the vector solver had a positive fold regret and folded. My
+  reading, from the hands involved, is that every player 0 hand reaching that
+  node held one of the kings, so the true compatible mass is 0 while
+  inclusion-exclusion leaves a residue of rounding size. I did not isolate it
+  further. The turn check now compares 3 iterations, plus the values and best
+  responses as before.
+- The clairvoyance game on real cards: value 1 and frequencies 1/2 within
+  0.02. DCFR on the full random river drops monotonically to under 0.1% of the
+  pot by 400 iterations.
+- Mutations caught: no identical-combo term in folds (4 failures), ties as
+  wins in the showdown (5), the wrong river-card probability (3), and naive
+  averaging in translation (fails linearity).
+- My first `extra size` test expected player 1's best response to stay put
+  when a size is added. It went up, correctly: bet sizes are per street, not
+  per player, so player 1 can use the new size too. The test now checks that
+  both best responses can only rise and that the value is unchanged.
+
+Next: suit isomorphism and turn trees that fit in memory with real ranges,
+then hand-strength buckets on the turn and a river re-solve from public belief
+states.

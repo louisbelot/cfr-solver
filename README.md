@@ -7,8 +7,10 @@ discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
 strategy is from equilibrium with an exact best response. It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
-mover's distance) and measures exactly what each one costs, and it has a
-seven-card hold'em evaluator for the hold'em work that comes next.
+mover's distance) and measures exactly what each one costs. For hold'em it
+solves river and turn subgames over full ranges with a vectorized CFR on the
+public tree, under fixed-limit or no-limit betting, and maps bet sizes that
+are missing from the tree onto the ones that are there (action translation).
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
@@ -305,6 +307,171 @@ published counts and 4,824 distinct values, and exits non-zero if anything is
 off. It does 41 million hands a second on one core, up from 14 million when
 popcount and the top bit were recursive functions.
 
+## Hold'em subgames
+
+`cfr-solver subgame` solves a heads-up spot from the river or the turn: a
+board, a pot, a range for each player and a betting tree. With both ranges
+random there are 1,081 hands each on a river, so walking one history per deal
+the way `Cfr.Make` does would mean 1,081^2 deals through every node. The
+subgame solver works on the public tree instead (Johanson et al. 2011, 2012):
+one node per betting sequence, and at each node a vector with one regret per
+hand of the player to act. A walk carries one reach vector per player and
+returns one value per hand, so an iteration touches every node once.
+
+```
+$ cfr-solver subgame --board "Qs Jh 8d 5c 2s" --pot 6 --limit 1 -n 1000
+river Qs Jh 8d 5c 2s, pot 6, limit 1, cap 4
+oop 1081 hands, ip 1081 hands, 10 decision nodes
+
+exploitability, % of the pot
+iterations      dcfr
+         1 2.923e+01
+        10 1.286e+00
+       100 3.290e-02
+      1000 1.333e-03
+  time (s)      0.61
+
+dcfr strategy, oop value -0.0822 (pot 6)
+  oop -             x 0.569  b1 0.431
+  ip  x             x 0.356  b1 0.644
+  oop xb1           f 0.181  c 0.667  b2 0.152
+  ip  xb1b2         f 0.232  c 0.618  b3 0.150
+  oop xb1b2b3       f 0.180  c 0.597  b4 0.223
+  ip  xb1b2b3b4     f 0.155  c 0.845
+  ip  b1            f 0.162  c 0.598  b2 0.240
+  oop b1b2          f 0.234  c 0.617  b3 0.149
+  ip  b1b2b3        f 0.176  c 0.610  b4 0.214
+  oop b1b2b3b4      f 0.142  c 0.858
+```
+
+That is fixed-limit betting with a pot of 6 and bets of 1, both ranges
+random, and DCFR. The table is trimmed to every tenfold; the real one prints
+four checkpoints per decade. Each row of the strategy is a public node with the actions' frequencies weighted by how often
+each hand gets there, so `xb1b2` is the second player facing a check-raise.
+With identical ranges the first player loses 0.08 chips a hand to position.
+`--oop` and `--ip` take ranges like `TT+, AQs+, KQ, QJs:0.5`, `--json` writes
+the strategy of every hand at every node, and `-a cfr,cfr+,lcfr,dcfr` runs
+several algorithms side by side:
+
+![Exploitability against iterations on a fixed-limit river](docs/river.svg)
+
+After 4,000 iterations, as a share of the pot: CFR 4.4e-2%, linear CFR
+2.3e-3%, CFR+ 4.2e-4% and DCFR 8.9e-5%. The ranking matches Leduc except
+that DCFR finishes ahead of CFR+ here.
+
+**Showdowns in O(n).** At a showdown each of my hands is worth
+`win x (opponent reach below me - opponent reach above me)`, counting only
+opponent hands that share no card with mine. Both players' hands are sorted by
+strength once per board, so one sweep up and one sweep down give the two sums
+for every hand. Card removal is inclusion-exclusion: while sweeping, keep the
+total reach and the reach per card (52 floats), and a hand with cards a and b
+subtracts the mass on a and on b. A fold is the same without the sort, plus the
+reach of the identical combo, which got subtracted twice. Done naively that is
+1,081^2 comparisons per showdown.
+
+**The turn.** A turn subgame deals the river as a chance node: 48 cards, each
+with its own copy of the river tree and its own sorted order. In a child, hands
+holding that card get zero reach, and a hand's value is the average over the 44
+river cards it doesn't block (52 minus 4 board cards minus 4 hole cards). With
+fixed-limit betting that is 4,330 decision nodes. An iteration takes 0.28 s with random ranges,
+and the solve peaks at 523 MB.
+
+![Exploitability against iterations on a fixed-limit turn](docs/turn.svg)
+
+After 300 iterations: CFR 0.82% of the pot, CFR+ 0.056%, linear CFR 0.047%
+and DCFR 0.018%. Linear CFR, which stalled on Leduc, catches CFR+ here.
+
+**Speed.** `dune exec ./bench/bench.exe` times DCFR iterations with both ranges
+random (Ryzen 7 7800X3D, one core). The first version took 0.87 ms per river
+iteration and 401 ms per turn iteration. Building with `-unsafe` cut 27%, so
+bounds checks were most of the overhead. The inner loops of `lib/subgame.ml`
+now use unchecked index operators, `a.!(i)` for float arrays and `a.%(i)` for
+int arrays, declared as `external` so the compiler keeps the unboxed float
+array access, and the rest of the library stays checked. With the loop
+invariants hoisted it runs 0.59 ms on the river and 277 ms on the turn, 32%
+and 31% faster. Every index in those loops is a hand below the side's count or
+a card below 52 by construction, and the test suite passes unchanged.
+
+## Bet sizes and action translation
+
+No-limit trees are built from bet sizes as fractions of the pot, raise sizes as
+fractions of the pot after calling, an optional all-in, a cap on bets per
+street and the effective stack (`lib/bet_tree.ml`). Sizes that would exceed the
+stack become all-in and duplicates merge, so `--stack 35 --bets 0.5,1` in a
+pot of 10 gives a 10-chip bet one raise, to all-in, because a pot raise to 40
+gets clamped.
+
+Every tree is an abstraction of a game where any size is allowed, and a solver
+has to answer sizes it never planned for. Action translation maps an off-tree
+bet x (as a fraction of the pot) onto the nearest sizes A < x < B in the tree,
+going to A with probability f(x). Three mappings:
+
+- nearest: whichever of A and B is closer,
+- arithmetic: f = (B - x) / (B - A),
+- pseudo-harmonic (Ganzfried and Sandholm, 2013):
+  f = (B - x)(1 + A) / ((B - A)(1 + x)).
+
+The pseudo-harmonic one comes from a toy game where the caller should call a
+bet of x with probability 1 / (1 + x). Mixing the right calling frequencies at
+A and B with weight f gives exactly 1 / (1 + x), and the tests check that
+identity on a grid.
+
+`cfr-solver translate` solves a river with bets of half pot and pot, then for
+each x builds the tree where either player may also bet x, translates the
+strategy into it and measures its exploitability there.
+
+```
+$ cfr-solver translate --board "Qs Jh 8d 5c 2s" --pot 10 --stack 100 -n 2000 \
+    --grid 0.25,2,0.025 --svg docs/translation.svg
+```
+
+![Exploitability of a translated strategy against the off-tree bet size](docs/translation.svg)
+
+Both ranges are random and the solved tree is at 0.0021% of the pot. Between
+the two sizes, pseudo-harmonic peaks at 0.17% of the pot (x = 0.675),
+arithmetic at 0.36% and nearest at 2.4% (x = 0.75, where it switches from
+calling like a half-pot bet to calling like a pot bet). Outside [0.5, 1] every
+mapping sends x to the nearest size and the curves coincide; an overbet of 2
+pots costs 8.5% of the pot, which is what not having a large size in the tree
+costs.
+
+Translating is more than renaming nodes. Under a randomized mapping the
+translated player draws A or B once and then plays that subtree, and the
+behaviour that matches is a mixture weighted by that player's own reach in
+each subtree, not the plain average of the two strategies: mixing has to
+happen on realization plans, and turning the mixture back into a behaviour
+strategy brings in the reach. `Subgame.translate` carries one list of belief
+nodes per player.
+The player who acted follows the abstract action they took, and the other
+player follows the mapping. A test checks that the game value is linear in f
+for a fixed opponent, which only holds with the reach weights. Stacks get in
+the way too: after a 0.75 bet the pot-sized re-raise is clamped to all-in, but
+after a 0.5 bet it isn't, so an abstract action can be missing from the real
+tree. Then the player bets the closest legal size, or calls if no bet is left,
+the way a bot playing a translated strategy would.
+
+`cfr-solver betsizes` asks which sizes to keep. The full tree here has bets of
+0.25, 0.33, 0.5, 0.75, 1, 1.5 and 2 pots for both players (44 decision nodes).
+Each abstraction is solved on its own with 2,000 DCFR iterations, then
+translated pseudo-harmonically into the full tree:
+
+| bet sizes (pot)      | decisions | oop value | own tree (% pot) | full tree (% pot) |
+|----------------------|----------:|----------:|-----------------:|------------------:|
+| 1                    | 8         | -0.3556   | 9.7e-4           | 20.9              |
+| 0.5                  | 8         | -0.2866   | 1.1e-3           | 27.1              |
+| 0.5, 1               | 14        | -0.3163   | 2.1e-3           | 13.3              |
+| 0.33, 0.75           | 14        | -0.2849   | 1.3e-3           | 15.4              |
+| 0.33, 0.75, 1.5      | 20        | -0.2962   | 2.0e-3           | 2.99              |
+| 0.25, 0.5, 1, 2      | 26        | -0.2922   | 2.2e-3           | 0.26              |
+| all seven            | 44        | -0.2940   | 2.8e-3           | 2.8e-3            |
+
+The largest size decides it. Every abstraction without an overbet loses more
+than 13% of the pot in the full tree, because a 2-pot bet gets answered like a
+pot bet. Adding 1.5 cuts that to 3%, and 0.25, 0.5, 1 and 2 cuts it to 0.26%
+with 26 decision nodes instead of 44. The value column barely moves (the pot is
+10, so -0.29 is about 3% of it), which is why picking sizes by value alone
+would miss this.
+
 ## Building
 
 Needs OCaml 5.1 or newer and opam.
@@ -474,6 +641,36 @@ The tests check against numbers that come from outside this code:
 - The hand evaluator: all five-card hands, the best-of-21 property, and hands
   that trip up evaluators (wheels, a third pair as kicker, two sets of trips,
   a flush and a straight in the same seven cards).
+- Subgames against the scalar solver: `test/subgame_ref.ml` writes the same
+  river or turn as an ordinary `Game.S`, with chance dealing every compatible
+  pair of hands (weighted by the ranges) and then the river card, so
+  `Cfr.Make`, `Best_response.Make` and `Eval.Make` run on it unchanged. On a
+  river with overlapping ranges, ties and uneven weights, 25 iterations of
+  vanilla CFR, CFR+ and DCFR give the same average strategy as the vector
+  solver to 1e-9 at every infoset, and the game value and both best responses
+  agree to 1e-9. On a turn they agree for 3 iterations. After that the two
+  solvers break an exact tie differently: at one infoset all regrets are zero
+  in exact arithmetic, the scalar solver plays uniform and the vector solver,
+  with a rounding-size positive regret, a pure fold (most likely
+  inclusion-exclusion rounding where every opponent hand reaching the node
+  shares a card with mine). Both are valid CFR+ iterates, and the values and
+  best responses still agree to 1e-9.
+- The clairvoyance game from The Mathematics of Poker, on real cards: player 0
+  holds the nuts or air with equal weight, player 1 a bluff catcher, and the
+  only bet is the pot. Theory says bluff with air half the time, call half the
+  time, and player 0 makes 1 chip a hand in a pot of 4 that both players put 2
+  into. CFR+ gets the value within 1e-3 and both frequencies within 0.02.
+- Bet trees: the fixed-limit river has 10 decisions and 17 terminals with
+  payoffs worked out by hand, the turn 100 decisions, pot-fraction raises,
+  clamps to all-in and caps land on the amounts computed by hand.
+- Ranges: combo counts for every notation (6 per pair, 4 suited, 12 offsuit,
+  1,081 random hands on a river), board removal and weights.
+- Translation: the pseudo-harmonic identity above, the endpoints and
+  monotonicity of all three mappings, translating a tree into itself gives
+  the same strategy, adding a size that the translated player never uses
+  keeps the game value to 1e-9 and can only raise the best responses, the
+  value is linear in the mapping probability, and with a short stack where
+  re-raises clamp to all-in every translated node still sums to 1.
 
 Hand-made bugs get caught: a best response that decides from a single history,
 a CFR without the strategy cache, an average weighted by t + 1 instead of t, a
@@ -491,7 +688,11 @@ the same treatment: a pool that lets every worker run, a lift that drops part
 of the abstract strategy, ties counted as wins in hand strength, round 2
 buckets indexed with card and board swapped, k-medians assigning to the
 farthest center, an off-by-one in the k-means split points and a weighted
-median taken at a third of the weight.
+median taken at a third of the weight. For the subgames: dropping the
+identical-combo term from folds, counting ties as wins in the showdown sweep,
+and the wrong probability for the river card fail 4, 5 and 3 tests, and
+translating by a plain average of strategies instead of the reach-weighted
+mixture fails the linearity test.
 
 ## License
 
