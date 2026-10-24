@@ -596,6 +596,24 @@ let find_index p a =
   in
   go 0
 
+let play kind targets =
+  match (find_index (same kind) targets, kind) with
+  | Some j, _ -> j
+  | None, `Bet (x, _) -> (
+      let best = ref None in
+      Array.iteri
+        (fun j k ->
+          match (k, !best) with
+          | `Bet (f, _), Some (_, g) when Float.abs (f -. x) >= g -> ()
+          | `Bet (f, _), _ -> best := Some (j, Float.abs (f -. x))
+          | _ -> ())
+        targets;
+      match (!best, find_index (same `Call) targets) with
+      | Some (j, _), _ | None, Some j -> j
+      | None, None -> invalid_arg "Subgame.translate: no bet or call to play")
+  | None, _ ->
+      invalid_arg "Subgame.translate: action missing from the full tree"
+
 let map_action low kind targets =
   match find_index (same kind) targets with
   | Some i -> [ (i, 1.) ]
@@ -635,78 +653,88 @@ let translate ~low ~abstract (prof : profile) full =
         invalid_arg "Subgame.translate: ranges differ")
     full.sides;
   let out = Array.make (Array.length full.decisions) [||] in
-  let shape () = invalid_arg "Subgame.translate: trees differ in shape" in
-  let rec go node ms =
+  let rec go node beliefs =
     match node with
     | Fold _ | Showdown _ -> ()
     | Chance { children; _ } ->
         Array.iteri
           (fun j child ->
             go child
-              (List.map
-                 (fun (m, w, r) ->
-                   match m with
-                   | Chance c -> (c.children.(j), w, r)
-                   | _ -> shape ())
-                 ms))
+              (Array.map
+                 (List.filter_map (fun (m, w, r) ->
+                      match m with
+                      | Chance c -> Some (c.children.(j), w, r)
+                      | _ -> None))
+                 beliefs))
           children
     | Decision fd ->
         let p = fd.player and n = full.sides.(fd.player).n in
         let k = Array.length fd.actions and fk = kinds fd in
-        let ms =
-          List.map
-            (fun (m, w, r) ->
-              match m with
-              | Decision ad when ad.player = p -> (ad, w, r)
-              | _ -> shape ())
-            ms
+        let beliefs =
+          Array.map
+            (List.filter_map (fun (m, w, r) ->
+                 match m with
+                 | Decision ad when ad.player = p -> Some (ad, w, r)
+                 | _ -> None))
+            beliefs
         in
         let num = Array.init k (fun _ -> Array.make n 0.)
         and flat = Array.init k (fun _ -> Array.make n 0.)
         and den = Array.make n 0.
         and total = ref 0. in
         List.iter
-          (fun (ad, w, r) ->
-            let own = r.(p) and sigma = prof.(ad.id) in
+          (fun (ad, w, own) ->
+            let sigma = prof.(ad.id) in
             Array.iteri
               (fun i kind ->
-                match find_index (same kind) fk with
-                | None ->
-                    invalid_arg
-                      "Subgame.translate: abstract action missing from the \
-                       full tree"
-                | Some j ->
-                    for h = 0 to n - 1 do
-                      num.(j).(h) <-
-                        num.(j).(h) +. (w *. own.(h) *. sigma.(i).(h));
-                      flat.(j).(h) <- flat.(j).(h) +. (w *. sigma.(i).(h))
-                    done)
+                let j = play kind fk in
+                for h = 0 to n - 1 do
+                  num.(j).(h) <- num.(j).(h) +. (w *. own.(h) *. sigma.(i).(h));
+                  flat.(j).(h) <- flat.(j).(h) +. (w *. sigma.(i).(h))
+                done)
               (kinds ad);
             for h = 0 to n - 1 do
               den.(h) <- den.(h) +. (w *. own.(h))
             done;
             total := !total +. w)
-          ms;
+          beliefs.(p);
         out.(fd.id) <-
           Array.init k (fun j ->
               Array.init n (fun h ->
                   if den.(h) > 0. then num.(j).(h) /. den.(h)
-                  else flat.(j).(h) /. !total));
+                  else if !total > 0. then flat.(j).(h) /. !total
+                  else 1. /. float_of_int k));
         Array.iteri
           (fun j child ->
-            go child
-              (List.concat_map
-                 (fun (ad, w, r) ->
-                   List.map
-                     (fun (i, q) ->
-                       let r = Array.copy r in
-                       r.(p) <-
-                         Array.mapi (fun h x -> x *. prof.(ad.id).(i).(h)) r.(p);
-                       (ad.children.(i), w *. q, r))
-                     (map_action low fk.(j) (kinds ad)))
-                 ms))
+            let mine =
+              List.concat_map
+                (fun (ad, w, own) ->
+                  List.filter_map
+                    (fun (i, kind) ->
+                      if play kind fk <> j then None
+                      else
+                        let s = prof.(ad.id).(i) in
+                        Some
+                          ( ad.children.(i),
+                            w,
+                            Array.mapi (fun h x -> x *. s.(h)) own ))
+                    (List.mapi
+                       (fun i kind -> (i, kind))
+                       (Array.to_list (kinds ad))))
+                beliefs.(p)
+            and theirs =
+              List.concat_map
+                (fun (ad, w, own) ->
+                  List.map
+                    (fun (i, q) -> (ad.children.(i), w *. q, own))
+                    (map_action low fk.(j) (kinds ad)))
+                beliefs.(1 - p)
+            in
+            go child (if p = 0 then [| mine; theirs |] else [| theirs; mine |]))
           fd.children
   in
   go full.root
-    [ (abstract.root, 1., Array.map (fun s -> Array.copy s.w) abstract.sides) ];
+    (Array.map
+       (fun s -> [ (abstract.root, 1., Array.copy s.w) ])
+       abstract.sides);
   out

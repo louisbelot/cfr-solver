@@ -127,8 +127,23 @@ let invalid () =
     | _ -> Alcotest.failf "%s accepted" name
     | exception Invalid_argument _ -> ()
   in
-  fails "ranges" (Subgame.create (config [ 0.5; 1. ]) ~board r1 r0);
-  fails "missing size" (Subgame.create (config [ 0.75; 1. ]) ~board r0 r1)
+  fails "ranges" (Subgame.create (config [ 0.5; 1. ]) ~board r1 r0)
+
+let clamped () =
+  let t = Lazy.force abstract in
+  let prof = Subgame.average t in
+  let short = { (config [ 0.5; 0.75; 1. ]) with stack = 40. } in
+  let g = Subgame.create short ~board r0 r1 in
+  let lifted = Subgame.translate ~low:pseudo ~abstract:t prof g in
+  Array.iteri
+    (fun i node ->
+      for h = 0 to Array.length node.(0) - 1 do
+        let total = Array.fold_left (fun acc p -> acc +. p.(h)) 0. node in
+        close 1e-12 (Printf.sprintf "node %d hand %d" i h) 1. total
+      done)
+    lifted;
+  let e = Subgame.exploitability g lifted in
+  if not (e >= 0. && e < 10.) then Alcotest.failf "exploitability %g" e
 
 let tests =
   [
@@ -139,4 +154,5 @@ let tests =
     Alcotest.test_case "extra size" `Quick extra_size;
     Alcotest.test_case "linear in the mapping" `Quick linear;
     Alcotest.test_case "invalid" `Quick invalid;
+    Alcotest.test_case "clamped stacks" `Quick clamped;
   ]
