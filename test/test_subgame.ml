@@ -143,6 +143,26 @@ let single_precision () =
   if not (Float.abs (ed -. ef) <= 0.01 *. ed) then
     Alcotest.failf "exploitability %g against %g" ef ed
 
+let real0 = Range.of_string "TT+, AQ+, KQs, QJs, JTs, T9s, 98s"
+let real1 = Range.of_string "88+, AJ+, KQ, QJs, JTs, A5s"
+
+let prunes_exactly algorithm () =
+  let make prune =
+    Subgame.create ~algorithm ~prune turn ~board:mono_turn real0 real1
+  in
+  let a = make true and b = make false in
+  Subgame.run a 40;
+  Subgame.run b 40;
+  if Subgame.skipped a = 0 then Alcotest.fail "nothing pruned";
+  Alcotest.(check int) "unpruned" 0 (Subgame.skipped b);
+  let pa = Subgame.average a and pb = Subgame.average b in
+  if pa <> pb then Alcotest.fail "average strategies differ";
+  if Subgame.current a <> Subgame.current b then Alcotest.fail "regrets differ";
+  for i = 0 to 1 do
+    let x = Subgame.best_response a i pa and y = Subgame.best_response b i pb in
+    if x <> y then Alcotest.failf "best response %d: %.17g against %.17g" i x y
+  done
+
 let clairvoyance () =
   let cfg =
     {
@@ -221,6 +241,8 @@ let tests =
     Alcotest.test_case "symmetric strategy" `Quick symmetric_strategy;
     Alcotest.test_case "asymmetric ranges" `Quick asymmetric_ranges;
     Alcotest.test_case "single precision" `Quick single_precision;
+    Alcotest.test_case "pruning cfr+" `Quick (prunes_exactly Cfr.Plus);
+    Alcotest.test_case "pruning dcfr" `Quick (prunes_exactly Cfr.dcfr);
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;

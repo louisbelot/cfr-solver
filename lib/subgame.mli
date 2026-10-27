@@ -5,6 +5,7 @@ val create :
   ?algorithm:Cfr.algorithm ->
   ?iso:bool ->
   ?single:bool ->
+  ?prune:bool ->
   Bet_tree.config ->
   board:Hand.card array ->
   Range.t ->
@@ -16,6 +17,7 @@ val iterate : t -> unit
 val run : t -> int -> unit
 val iterations : t -> int
 val memory : t -> int
+val skipped : t -> int
 val decisions : t -> int
 val pot : t -> float
 val range : t -> int -> Range.t

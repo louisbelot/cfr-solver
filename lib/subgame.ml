@@ -85,6 +85,8 @@ type t = {
   total : float;
   algorithm : Cfr.algorithm;
   iso : bool;
+  prune : bool;
+  mutable skipped : int;
   mutable iterations : int;
   mutable weight : float;
 }
@@ -168,7 +170,7 @@ let hand_orbits maps group =
   Array.of_list (List.rev !out)
 
 let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
-    (cfg : Bet_tree.config) ~board r0 r1 =
+    ?(prune = true) (cfg : Bet_tree.config) ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
@@ -316,6 +318,8 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
       total = 0.;
       algorithm;
       iso;
+      prune;
+      skipped = 0;
       iterations = 0;
       weight = 1.;
     }
@@ -325,6 +329,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
   { t with total }
 
 let iterations t = t.iterations
+let skipped t = t.skipped
 
 let memory t =
   Array.fold_left
@@ -482,12 +487,71 @@ let regret_matching dn n sc =
 
 let pair p mine other = if p = 0 then [| mine; other |] else [| other; mine |]
 
+let dead t i v =
+  let n = t.sides.(i).n in
+  let rec go h = h = n || (v.!(h) = 0. && go (h + 1)) in
+  go 0
+
+let pruned t active reach =
+  t.prune
+  && active.(0) <> active.(1)
+  &&
+  let o = if active.(0) then 1 else 0 in
+  dead t o reach.(o)
+
+let add_sums dn n own sc w =
+  for a = 0 to Array.length dn.actions - 1 do
+    let s = sc.strat.(a) in
+    match dn.sum with
+    | Double sum ->
+        let sum = sum.(a) in
+        for h = 0 to n - 1 do
+          sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
+        done
+    | Single sum ->
+        let sum = sum.(a) in
+        for h = 0 to n - 1 do
+          sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
+        done
+  done
+
+let rec accumulate t node d p own =
+  if not (dead t p own) then
+    match node with
+    | Fold _ | Showdown _ -> ()
+    | Chance { cards; children; _ } ->
+        let sc = t.scratch.(d) in
+        Array.iteri
+          (fun j c ->
+            mask t p c own sc.mask.(p);
+            accumulate t children.(j) (d + 1) p sc.mask.(p))
+          cards
+    | Decision dn when dn.player <> p ->
+        Array.iter (fun child -> accumulate t child (d + 1) p own) dn.children
+    | Decision dn ->
+        let n = t.sides.(p).n and sc = t.scratch.(d) in
+        regret_matching dn n sc;
+        Array.iteri
+          (fun a child ->
+            let s = sc.strat.(a) and next = sc.next.(a) in
+            for h = 0 to n - 1 do
+              next.!(h) <- own.!(h) *. s.!(h)
+            done;
+            accumulate t child (d + 1) p next)
+          dn.children;
+        add_sums dn n own sc t.weight
+
 let rec walk t node d active reach out =
   match node with
   | Fold _ | Showdown _ ->
       for i = 0 to 1 do
         if active.(i) then terminal t node i reach.(1 - i) out.(i)
       done
+  | (Chance _ | Decision _) when pruned t active reach ->
+      let p = if active.(0) then 0 else 1 in
+      t.skipped <- t.skipped + 1;
+      Array.fill out.(p) 0 t.sides.(p).n 0.;
+      accumulate t node d p reach.(p)
   | Chance { cards; weight; children; images } ->
       let sc = t.scratch.(d) in
       for i = 0 to 1 do
@@ -631,6 +695,8 @@ type mode = Best | Mean
 let rec eval t (prof : profile) mode node d i opp out =
   match node with
   | Fold _ | Showdown _ -> terminal t node i opp out
+  | (Chance _ | Decision _) when t.prune && dead t (1 - i) opp ->
+      Array.fill out 0 t.sides.(i).n 0.
   | Chance { cards; weight; children; images } ->
       let sc = t.scratch.(d) in
       Array.fill out 0 t.sides.(i).n 0.;
