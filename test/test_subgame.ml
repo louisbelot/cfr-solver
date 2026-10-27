@@ -113,6 +113,36 @@ let asymmetric_ranges () =
   let b = Subgame.create ~iso:false turn ~board:mono_turn r sym1 in
   Alcotest.(check int) "decisions" (Subgame.decisions b) (Subgame.decisions a)
 
+let single_precision () =
+  let make single =
+    Subgame.create ~algorithm:Cfr.dcfr ~single turn ~board:mono_turn sym0 sym1
+  in
+  let d = make false and f = make true in
+  Alcotest.(check int) "half the bytes" (Subgame.memory d) (2 * Subgame.memory f);
+  let worst pd pf =
+    let w = ref 0. in
+    Array.iteri
+      (fun i node ->
+        Array.iteri
+          (fun a row ->
+            Array.iteri
+              (fun h x -> w := Float.max !w (Float.abs (x -. pf.(i).(a).(h))))
+              row)
+          node)
+      pd;
+    !w
+  in
+  Subgame.run d 2;
+  Subgame.run f 2;
+  let e = worst (Subgame.average d) (Subgame.average f) in
+  if not (e <= 1e-6) then Alcotest.failf "after 2 iterations: %g" e;
+  Subgame.run d 28;
+  Subgame.run f 28;
+  let ed = Subgame.exploitability d (Subgame.average d)
+  and ef = Subgame.exploitability f (Subgame.average f) in
+  if not (Float.abs (ed -. ef) <= 0.01 *. ed) then
+    Alcotest.failf "exploitability %g against %g" ef ed
+
 let clairvoyance () =
   let cfg =
     {
@@ -190,6 +220,7 @@ let tests =
       (folds_exactly flop mono_flop sym0 sym1 Cfr.Plus 2);
     Alcotest.test_case "symmetric strategy" `Quick symmetric_strategy;
     Alcotest.test_case "asymmetric ranges" `Quick asymmetric_ranges;
+    Alcotest.test_case "single precision" `Quick single_precision;
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;

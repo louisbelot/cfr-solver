@@ -2,6 +2,27 @@ external ( .!() ) : float array -> int -> float = "%array_unsafe_get"
 external ( .!()<- ) : float array -> int -> float -> unit = "%array_unsafe_set"
 external ( .%() ) : int array -> int -> int = "%array_unsafe_get"
 
+type f32 = (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+external ( .^() ) : f32 -> int -> float = "%caml_ba_unsafe_ref_1"
+external ( .^()<- ) : f32 -> int -> float -> unit = "%caml_ba_unsafe_set_1"
+
+type store = Double of float array array | Single of f32 array
+
+let store single k n =
+  if single then
+    Single
+      (Array.init k (fun _ ->
+           let b = Bigarray.(Array1.create Float32 C_layout n) in
+           Bigarray.Array1.fill b 0.;
+           b))
+  else Double (Array.init k (fun _ -> Array.make n 0.))
+
+let get st a h = match st with Double r -> r.(a).(h) | Single r -> r.(a).^(h)
+
+let set st a h x =
+  match st with Double r -> r.(a).(h) <- x | Single r -> r.(a).^(h) <- x
+
 type side = {
   range : Range.t;
   n : int;
@@ -24,8 +45,8 @@ type decision = {
   all_in : float;
   actions : Bet_tree.action array;
   children : node array;
-  regret : float array array;
-  sum : float array array;
+  regret : store;
+  sum : store;
   orbits : int array array;
 }
 
@@ -146,8 +167,8 @@ let hand_orbits maps group =
   done;
   Array.of_list (List.rev !out)
 
-let create ?(algorithm = Cfr.Vanilla) ?(iso = true) (cfg : Bet_tree.config)
-    ~board r0 r1 =
+let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
+    (cfg : Bet_tree.config) ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
@@ -256,8 +277,8 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) (cfg : Bet_tree.config)
             all_in;
             actions;
             children;
-            regret = Array.init k (fun _ -> Array.make n 0.);
-            sum = Array.init k (fun _ -> Array.make n 0.);
+            regret = store single k n;
+            sum = store single k n;
             orbits = orbits player g;
           }
         in
@@ -304,6 +325,18 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) (cfg : Bet_tree.config)
   { t with total }
 
 let iterations t = t.iterations
+
+let memory t =
+  Array.fold_left
+    (fun acc dn ->
+      let bytes = function
+        | Double r -> Array.fold_left (fun n x -> n + (8 * Array.length x)) 0 r
+        | Single r ->
+            Array.fold_left (fun n x -> n + (4 * Bigarray.Array1.dim x)) 0 r
+      in
+      acc + bytes dn.regret + bytes dn.sum)
+    0 t.decisions
+
 let decisions t = Array.length t.decisions
 let pot t = t.pot
 let range t p = t.sides.(p).range
@@ -397,35 +430,50 @@ let symmetrize dn =
   Array.iter
     (fun o ->
       let m = Array.length o in
-      Array.iter
-        (fun r ->
-          let z = ref 0. in
-          for x = 0 to m - 1 do
-            z := !z +. r.!(o.%(x))
-          done;
-          let mean = !z /. float_of_int m in
-          for x = 0 to m - 1 do
-            r.!(o.%(x)) <- mean
-          done)
-        dn.regret)
+      for a = 0 to Array.length dn.actions - 1 do
+        let z = ref 0. in
+        for x = 0 to m - 1 do
+          z := !z +. get dn.regret a o.(x)
+        done;
+        let mean = !z /. float_of_int m in
+        for x = 0 to m - 1 do
+          set dn.regret a o.(x) mean
+        done
+      done)
     dn.orbits
 
 let regret_matching dn n sc =
   let k = Array.length dn.actions and norm = sc.norm in
   Array.fill norm 0 n 0.;
   for a = 0 to k - 1 do
-    let r = dn.regret.(a) in
-    for h = 0 to n - 1 do
-      norm.!(h) <- norm.!(h) +. Float.max r.!(h) 0.
-    done
+    match dn.regret with
+    | Double r ->
+        let r = r.(a) in
+        for h = 0 to n - 1 do
+          norm.!(h) <- norm.!(h) +. Float.max r.!(h) 0.
+        done
+    | Single r ->
+        let r = r.(a) in
+        for h = 0 to n - 1 do
+          norm.!(h) <- norm.!(h) +. Float.max r.^(h) 0.
+        done
   done;
   let u = 1. /. float_of_int k in
   for a = 0 to k - 1 do
-    let r = dn.regret.(a) and s = sc.strat.(a) in
-    for h = 0 to n - 1 do
-      let z = norm.!(h) in
-      s.!(h) <- (if z > 0. then Float.max r.!(h) 0. /. z else u)
-    done
+    let s = sc.strat.(a) in
+    match dn.regret with
+    | Double r ->
+        let r = r.(a) in
+        for h = 0 to n - 1 do
+          let z = norm.!(h) in
+          s.!(h) <- (if z > 0. then Float.max r.!(h) 0. /. z else u)
+        done
+    | Single r ->
+        let r = r.(a) in
+        for h = 0 to n - 1 do
+          let z = norm.!(h) in
+          s.!(h) <- (if z > 0. then Float.max r.^(h) 0. /. z else u)
+        done
   done
 
 let pair p mine other = if p = 0 then [| mine; other |] else [| other; mine |]
@@ -481,16 +529,26 @@ let rec walk t node d active reach out =
             done
           end)
         dn.children;
-      if active.(p) then
+      if active.(p) then begin
         for a = 0 to Array.length dn.actions - 1 do
-          let r = dn.regret.(a) and sum = dn.sum.(a) in
           let s = sc.strat.(a) and v = sc.vals.(a) and w = t.weight in
-          for h = 0 to n - 1 do
-            r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
-            sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
-          done
+          match (dn.regret, dn.sum) with
+          | Double r, Double sum ->
+              let r = r.(a) and sum = sum.(a) in
+              for h = 0 to n - 1 do
+                r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
+                sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
+              done
+          | Single r, Single sum ->
+              let r = r.(a) and sum = sum.(a) in
+              for h = 0 to n - 1 do
+                r.^(h) <- r.^(h) +. (v.!(h) -. mine.!(h));
+                sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
+              done
+          | _ -> assert false
         done;
-      if active.(p) then symmetrize dn
+        symmetrize dn
+      end
 
 let discount t active n =
   let pos, neg, _ = Cfr.discounts t.algorithm n in
@@ -498,12 +556,23 @@ let discount t active n =
     Array.iter
       (fun dn ->
         if active.(dn.player) then
-          Array.iter
-            (fun r ->
-              Array.iteri
-                (fun h x -> r.(h) <- (x *. if x > 0. then pos else neg))
-                r)
-            dn.regret)
+          match dn.regret with
+          | Double rs ->
+              Array.iter
+                (fun r ->
+                  for h = 0 to Array.length r - 1 do
+                    let x = r.!(h) in
+                    r.!(h) <- (x *. if x > 0. then pos else neg)
+                  done)
+                rs
+          | Single rs ->
+              Array.iter
+                (fun r ->
+                  for h = 0 to Bigarray.Array1.dim r - 1 do
+                    let x = r.^(h) in
+                    r.^(h) <- (x *. if x > 0. then pos else neg)
+                  done)
+                rs)
       t.decisions
 
 let iterate t =
@@ -535,11 +604,11 @@ let average t =
       for h = 0 to n - 1 do
         let z = ref 0. in
         for a = 0 to k - 1 do
-          z := !z +. dn.sum.(a).(h)
+          z := !z +. get dn.sum a h
         done;
         for a = 0 to k - 1 do
           p.(a).(h) <-
-            (if !z > 0. then dn.sum.(a).(h) /. !z else 1. /. float_of_int k)
+            (if !z > 0. then get dn.sum a h /. !z else 1. /. float_of_int k)
         done
       done;
       p)
