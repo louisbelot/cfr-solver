@@ -212,6 +212,20 @@ let bucketed_matches_scalar buckets algorithm iterations () =
     (Strategy.bindings (Subgame.strategy t (Subgame.current t)));
   if !merged = 0 then Alcotest.fail "no bucketed infoset"
 
+let one_combo_buckets () =
+  let t =
+    Subgame.create ~algorithm:Cfr.Plus ~buckets:[ 2; 2 ] turn ~board:turn_board
+      (Range.of_string "QsQd") small1
+  in
+  Subgame.run t 5;
+  let prof = Subgame.average t in
+  Array.iter
+    (Array.iter
+       (Array.iter (fun p -> if Float.is_nan p then Alcotest.fail "nan")))
+    prof;
+  if not (Subgame.exploitability t prof >= 0.) then
+    Alcotest.fail "exploitability"
+
 let clairvoyance () =
   let cfg =
     {
@@ -298,6 +312,7 @@ let tests =
       (bucketed_matches_scalar [ 0; 4 ] Cfr.Vanilla 3);
     Alcotest.test_case "bucketed both" `Slow
       (bucketed_matches_scalar [ 2; 3 ] Cfr.dcfr 3);
+    Alcotest.test_case "one combo in buckets" `Quick one_combo_buckets;
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;
