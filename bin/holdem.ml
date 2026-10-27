@@ -311,6 +311,87 @@ let betsizes board oop ip tree iterations sets csv =
     csv;
   Ok ()
 
+let mb t = float_of_int (Subgame.memory t) /. 1e6
+
+let buckets board oop ip tree iterations sizes csv svg =
+  run_cmd @@ fun () ->
+  let board, r0, r1 = setup board oop ip in
+  if Array.length board <> 4 then invalid_arg "buckets needs a turn board";
+  let solve buckets =
+    let t =
+      Subgame.create ~algorithm:Cfr.dcfr ~buckets (config tree 2) ~board r0 r1
+    in
+    Subgame.run t iterations;
+    (t, exploitability t (Subgame.average t))
+  in
+  let exact, e0 = solve [] in
+  header board tree exact;
+  Format.printf
+    "dcfr, %d iterations; exploitability in the exact tree, %% of the pot@.@."
+    iterations;
+  Format.printf "%-8s %8s %8s %12s@." "streets" "buckets" "MB" "exploit";
+  Format.printf "%-8s %8s %8.2f %12s@." "exact" "-" (mb exact) (sci e0);
+  let series =
+    List.map
+      (fun (name, f) ->
+        let points =
+          List.map
+            (fun k ->
+              let t, e = solve (f k) in
+              Format.printf "%-8s %8d %8.2f %12s@." name k (mb t) (sci e);
+              (k, mb t, e))
+            sizes
+        in
+        (name, points))
+      [
+        ("turn", fun k -> [ k; 0 ]);
+        ("river", fun k -> [ 0; k ]);
+        ("both", fun k -> [ k; k ]);
+      ]
+  in
+  Option.iter
+    (fun path ->
+      series
+      |> List.concat_map (fun (name, points) ->
+          List.map
+            (fun (k, m, e) ->
+              Printf.sprintf "%s,%d,%s,%s\n" name k (short_float m)
+                (short_float e))
+            points)
+      |> String.concat ""
+      |> ( ^ )
+           (Printf.sprintf
+              "streets,buckets,mb,exploitability_pct\nexact,0,%s,%s\n"
+              (short_float (mb exact))
+              (short_float e0))
+      |> write_file path)
+    csv;
+  Option.iter
+    (fun path ->
+      Plot.loglog
+        ~title:
+          (Printf.sprintf "Turn %s: hand-strength buckets, %d iterations"
+             (String.concat " "
+                (Array.to_list (Array.map Hand.to_string board)))
+             iterations)
+        ~xlabel:"buckets per street" ~ylabel:"% of the pot"
+        ({
+           Plot.label = "exact";
+           dashed = true;
+           points = List.map (fun k -> (k, e0)) sizes;
+         }
+        :: List.map
+             (fun (label, points) ->
+               {
+                 Plot.label;
+                 dashed = false;
+                 points = List.map (fun (k, _, e) -> (k, e)) points;
+               })
+             series)
+      |> write_file path)
+    svg;
+  Ok ()
+
 let board =
   Arg.(
     required
@@ -460,4 +541,25 @@ let betsizes_cmd =
         $ iterations 1000 $ sets
         $ file [ "csv" ] "Write the table to $(docv)."))
 
-let cmds = [ subgame_cmd; translate_cmd; betsizes_cmd ]
+let buckets_cmd =
+  let sizes =
+    Arg.(
+      value
+      & opt (list positive) [ 2; 4; 8; 16; 32; 64 ]
+      & info [ "sizes" ] ~docv:"LIST" ~doc:"Bucket counts to try.")
+  in
+  Cmd.v
+    (Cmd.info "buckets"
+       ~doc:
+         "Solve a turn subgame with hands merged into E[HS^2] buckets on the \
+          turn, HS buckets on the river, or both, and measure each solution's \
+          exploitability in the exact tree.")
+    Term.(
+      term_result
+        (const buckets $ board $ oop $ ip
+        $ tree ~bets:[ 0.5; 1. ]
+        $ iterations 300 $ sizes
+        $ file [ "csv" ] "Write the sweep to $(docv)."
+        $ file [ "svg" ] "Plot the sweep to $(docv)."))
+
+let cmds = [ subgame_cmd; translate_cmd; betsizes_cmd; buckets_cmd ]
