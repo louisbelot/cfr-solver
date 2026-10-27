@@ -645,3 +645,112 @@ Checks:
 Next: suit isomorphism and turn trees that fit in memory with real ranges,
 then hand-strength buckets on the turn and a river re-solve from public belief
 states.
+
+## 2026-10-27: suit isomorphism, float32, pruning, turn buckets
+
+What was built:
+
+- `Suit`: the 24 suit permutations, applying them to cards and combos,
+  stabilizers and orbits of a set of cards.
+- `Subgame.create ?iso ?single ?prune ?buckets`. `iso` (default on) finds the
+  suit permutations that fix the board and both ranges' weights, deals one
+  river (or turn) card per orbit and maps the other cards' values back through
+  the permutation; `Subgame.symmetries` exposes the group. `single` stores
+  regrets and strategy sums in float32 bigarrays. `prune` (default on) skips
+  subtrees no opponent hand reaches. `buckets` (one count per street, 0 for
+  exact) merges hands into E[HS^2] buckets on the turn and HS buckets on the
+  river. `memory`, `skipped` and `bucket` report what happened.
+- `Equity`: hand strength of every combo against a uniform random hand on a
+  river in O(n log n) with card removal, and E[HS^2] on a turn.
+- CLI: `subgame --single --no-iso`, a memory column in the header, and
+  `cfr-solver buckets` for the sweep in `docs/buckets.svg`.
+- Bench rows for float32, folding and pruning.
+
+Design notes:
+
+- Folding is exact only if the strategies above the chance node are
+  symmetric, and floating point breaks symmetry: unfolded, on Ks 9s 5s 2s with
+  real ranges, twin hands drift from 4e-16 after one iteration to 0.01 after
+  five. So after every regret update each orbit of hands gets its mean regret,
+  which makes the solver CFR on the game where symmetric hands share a
+  strategy. That game contains an equilibrium of the real one by symmetry.
+  Postflop-solver (read the source) swaps values the same way but doesn't tie
+  the regrets.
+- The first version of that averaging re-averaged orbits that already agreed,
+  and (x + x + x) / 3 does not always round to x. Pruned and unpruned DCFR runs
+  then differed in the last bit at iteration 3, which is how it showed up. Now
+  an orbit whose regrets are already equal is left alone.
+- Group per node: the root has the full group, below a river card c only the
+  permutations that also fix c. Hand orbits are cached by (player, group), so
+  thousands of nodes share a handful of arrays.
+- The strategy export walks the tree with the composed suit permutation and
+  writes every real card and hand, so a folded solve exports the same keys as
+  an unfolded one and the tests can compare them directly.
+- float32 is a variant of the regret store (`Double | Single`) with the two hot
+  loops written out for each case; the cold paths go through `get` and `set`.
+  The walk computes in doubles either way.
+- Pruning: in an alternating pass the updating player's values are linear in
+  the opponent's reach, so an all-zero opponent reach means zero values and no
+  regret change below. The skipped subtree still gets a cheap walk that adds
+  the updating player's strategy sums, so the result is identical to the bit.
+  The best response skips such subtrees outright.
+- Buckets live in the regret store, not the tree: a bucketed node keeps one
+  row per bucket and a hand-to-bucket map, and everything else stays per hand,
+  so `exploitability` on a bucketed solve is the exact one. Bucket regrets
+  weight each hand by its range weight (the deal probability), which the
+  scalar comparison requires. The average strategy weights hands by reach
+  including the deal; `Cfr.Make` sums once per history instead, which under
+  imperfect recall counts hands with more compatible opponents more, so the
+  bucketed tests compare current strategies.
+
+Results (Ryzen 7 7800X3D, one core):
+
+| turn, both ranges random      | decisions | MB    | ms/it |
+|-------------------------------|----------:|------:|------:|
+| Qs Jh 8d 5c, double           | 4,330     | 203.2 | 243   |
+| Qs Jh 8d 5c, float32          | 4,330     | 101.6 | 243   |
+| Qs Js 8s 5s, unfolded         | 4,330     | 203.2 | 241   |
+| Qs Js 8s 5s, folded           | 1,990     | 93.4  | 126   |
+| Qs Js 8s 5s, folded, float32  | 1,990     | 46.7  | 127   |
+
+MB counts regrets and strategy sums. float32 cost between 0.4% and 4% per
+iteration across runs. Its strategies match double to 3e-8 after two
+iterations and then drift at near-ties; exploitability stays within 1% at 30
+iterations and was lower than double's at 100 (0.0039 against 0.0044 on a
+monotone turn).
+
+Pruning, real ranges on Qs Jh 8d 5c, DCFR iterations 101 to 200: 19.9 ms/it
+without and 17.9 with, 529 subtrees skipped per iteration. With random ranges
+nothing measurable: some hand reaches almost every line.
+
+Buckets, Qs Jh 8d 5c, 230 hands against 477, 300 DCFR iterations,
+exploitability in the exact tree as a share of the pot (exact: 0.014%, 63.7
+MB): river buckets reach 0.065% at 32 (5.7 MB) and 0.042% at 64 (6.7 MB);
+turn buckets save no memory, since the turn is one street against 44 rivers,
+and reach 0.023% at 64. Nothing changes past 64 because no flush is possible
+on a rainbow turn and many hands tie on strength.
+
+Checks:
+
+- 162 tests, about 19 s.
+- Folded against unfolded on a monotone turn (CFR, CFR+, DCFR, 6 iterations)
+  and a monotone flop (two nested chance levels): every infoset key the
+  unfolded solver exports matches to 1e-9, plus value and both best
+  responses. A folded strategy is bitwise equal across symmetric hands.
+- Bucketed vector CFR against `Cfr.Make` on the bucketed scalar game:
+  current strategies to 1e-9 for turn-only, river-only and both.
+- Pruned against unpruned, 40 iterations of CFR+ and DCFR: averages, current
+  strategies and best responses compared with `=`.
+- `Equity.hs` against brute force on three rivers, E[HS^2] against the mean of
+  brute-force HS^2.
+- Mutations caught: permutation instead of inverse, images skipped in the
+  best response, nested permutations composed in the wrong order (flop test
+  only), no regret tying, unweighted bucket regrets, a uniform bucket strategy,
+  float32 regret matching without the floor, float32 sums without the weight,
+  no float32 discount, pruning without the sums, without zeroing the values,
+  or checking the wrong player's reach.
+
+Next: subgame re-solving from public belief states on the river, using the
+turn solve's ranges at each river node; then real regret-based pruning (skip
+negative-regret actions for as many iterations as they provably stay
+negative), since skipping only zero-reach subtrees bought 10%.
