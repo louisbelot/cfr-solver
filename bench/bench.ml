@@ -104,24 +104,33 @@ let seven_cards () =
     exit 1
   end
 
-let subgame name cfg board iterations =
+let subgame ?(iso = true) ?(single = false) name cfg board iterations =
   let board = Hand.parse board in
   let t =
-    Subgame.create ~algorithm:Cfr.dcfr cfg ~board (Range.full ())
+    Subgame.create ~algorithm:Cfr.dcfr ~iso ~single cfg ~board (Range.full ())
       (Range.full ())
   in
   Subgame.run t 2;
   let start = Unix.gettimeofday () in
   Subgame.run t iterations;
   let elapsed = Unix.gettimeofday () -. start in
-  Printf.printf "%-6s %-14s %10.1f it/s %8.2f ms/it\n" name "dcfr"
+  Printf.printf "%-6s %-14s %10.1f it/s %8.2f ms/it %8.1f MB\n" name
+    (Printf.sprintf "dcfr%s%s"
+       (if single then " f32" else "")
+       (if iso then "" else " no-iso"))
     (float_of_int iterations /. elapsed)
     (elapsed /. float_of_int iterations *. 1e3)
+    (float_of_int (Subgame.memory t) /. 1e6)
 
 let () =
   seven_cards ();
   subgame "river" (Bet_tree.limit ~pot:6. ~bet:1. 1) "Qs Jh 8d 5c 2s" 2000;
-  subgame "turn" (Bet_tree.limit ~pot:4. ~bet:1. 2) "Qs Jh 8d 5c" 5;
+  let turn = Bet_tree.limit ~pot:4. ~bet:1. 2 in
+  subgame "turn" turn "Qs Jh 8d 5c" 5;
+  subgame ~single:true "turn" turn "Qs Jh 8d 5c" 5;
+  subgame ~iso:false "turn" turn "Qs Js 8s 5s" 5;
+  subgame "turn" turn "Qs Js 8s 5s" 5;
+  subgame ~single:true "turn" turn "Qs Js 8s 5s" 5;
   List.iter
     (fun (game, iterations, samples) ->
       List.iter
