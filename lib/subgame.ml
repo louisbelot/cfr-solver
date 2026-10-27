@@ -431,14 +431,18 @@ let symmetrize dn =
     (fun o ->
       let m = Array.length o in
       for a = 0 to Array.length dn.actions - 1 do
-        let z = ref 0. in
+        let first = get dn.regret a o.(0) and z = ref 0. and equal = ref true in
         for x = 0 to m - 1 do
-          z := !z +. get dn.regret a o.(x)
+          let r = get dn.regret a o.(x) in
+          z := !z +. r;
+          equal := !equal && r = first
         done;
-        let mean = !z /. float_of_int m in
-        for x = 0 to m - 1 do
-          set dn.regret a o.(x) mean
-        done
+        if not !equal then begin
+          let mean = !z /. float_of_int m in
+          for x = 0 to m - 1 do
+            set dn.regret a o.(x) mean
+          done
+        end
       done)
     dn.orbits
 
