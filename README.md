@@ -11,6 +11,9 @@ mover's distance) and measures exactly what each one costs. For hold'em it
 solves river and turn subgames over full ranges with a vectorized CFR on the
 public tree, under fixed-limit or no-limit betting, and maps bet sizes that
 are missing from the tree onto the ones that are there (action translation).
+Turn trees fold suit-isomorphic river cards, can store regrets in 32-bit
+floats, skip subtrees no opponent hand reaches, and can merge hands into
+hand-strength buckets whose cost is measured in the exact tree.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
@@ -392,6 +395,112 @@ invariants hoisted it runs 0.59 ms on the river and 277 ms on the turn, 32%
 and 31% faster. Every index in those loops is a hand below the side's count or
 a card below 52 by construction, and the test suite passes unchanged.
 
+## Making the turn smaller
+
+A turn tree is 44 to 48 copies of a river tree, and with random ranges its
+regrets and strategy sums take 203 MB in doubles. Three things cut that down,
+and one more trades exactness for size on purpose.
+
+**Suit isomorphism.** On Ks 9s 5s 2s nothing distinguishes hearts, diamonds and
+clubs, so the 7h river and the 7d river are the same game with two suits
+renamed, as long as both ranges treat the suits alike too. The solver finds the
+suit permutations that fix the board and both ranges' weights (6 here, 2 on a
+two-tone board like Ks 9s 5d 2d, only the identity on a rainbow board or with a
+random-weighted range), solves one river per class of cards and maps the
+values of each other river card back through the permutation. On a monotone
+turn that is 22 river trees instead of 48:
+
+| Ks 9s 5s 2s, both ranges random | decision nodes | regrets + sums | ms per iteration |
+|---------------------------------|---------------:|---------------:|-----------------:|
+| every river card                | 4,330          | 203.2 MB       | 241              |
+| one card per suit class         | 1,990          | 93.4 MB        | 126              |
+| same, 32-bit floats             | 1,990          | 46.7 MB        | 127              |
+
+Copying values is only exact if the strategies above the chance node are
+symmetric too, so that the reach coming into the 7h river is the 7d river's
+with suits swapped. In exact arithmetic CFR keeps a symmetric start symmetric,
+but floating point doesn't: without folding, on Ks 9s 5s 2s with real ranges,
+two hands that differ only by a heart/diamond swap drift apart from 4e-16 after
+one iteration to 0.01 after five, and from the second iteration on the folded
+and unfolded runs disagree completely at a node where the regrets tie. So the solver ties them: after
+each regret update, hands in the same orbit get the orbit's mean regret (and
+are left alone when they already agree, because (x + x + x) / 3 does not always
+round back to x). That makes it CFR on the game where symmetric hands share a
+strategy, which by symmetry still contains an equilibrium of the real game.
+Postflop-solver folds the same way but only swaps the values, relying on the
+reach being symmetric. The tests solve the same spots folded and unfolded
+(turn, and a flop with two nested chance levels) and compare every hand's
+strategy at every real node, river cards included, to 1e-9.
+
+**32-bit floats.** `--single` stores regrets and strategy sums in float32
+bigarrays, half the memory for 1 to 4% more time per iteration. The walk
+still computes in doubles. After two iterations the strategies match the
+double run to 3e-8, but the runs then drift apart wherever a hand is
+indifferent between actions, the same tie amplification as above. They are
+different trajectories with the same exploitability (within 1% after 30
+iterations, and after 100 the float32 run happened to be lower).
+
+**Skipping dead subtrees.** In an alternating pass the walk only needs values
+for the player being updated, and those values are linear in the opponent's
+reach. When no opponent hand reaches a node with positive probability every
+value below it is zero and no regret can change, so the walk skips it and only
+adds the updating player's strategy sums on the way down. The result is bit
+for bit the same as without skipping (tested over 40 iterations of CFR+ and
+DCFR, regrets, averages and best responses). It helps less than I hoped: with
+real ranges on Qs Jh 8d 5c it skips about 530 subtrees per iteration and goes
+from 19.9 to 17.9 ms an iteration, and with random ranges almost every line has
+some hand that reaches it.
+
+**Hand-strength buckets.** `cfr-solver buckets` merges hands into buckets
+inside the solver itself: on the turn by E[HS^2] (the mean over river cards of
+squared hand strength against a random hand), on each river by hand strength,
+both clustered with the optimal 1D k-means from the Leduc experiments. Hands in
+a bucket share one regret and one strategy-sum entry, but the tree, the
+showdowns and the best response stay per hand, so the exploitability printed is
+the exact one in the full turn tree. Nothing has to be lifted.
+
+```
+$ cfr-solver buckets --board "Qs Jh 8d 5c" --pot 4 --limit 1 -n 300 \
+    --oop "22+, A2s+, K9s+, QTs+, JTs, T9s, 98s, A9o+, KTo+, QJo" \
+    --ip "22+, A2+, K5+, Q8+, J8+, T8+, 97s+, 86s+, 75s+" \
+    --sizes 2,4,8,16,32,64,128 --svg docs/buckets.svg
+```
+
+![Exploitability in the exact turn tree against buckets per street](docs/buckets.svg)
+
+230 hands against 477, 300 DCFR iterations each, exploitability as a share of
+the pot:
+
+| buckets | turn only | river only | both    | MB (river only) |
+|--------:|----------:|-----------:|--------:|----------------:|
+| exact   | 1.40e-2   | 1.40e-2    | 1.40e-2 | 63.7            |
+| 2       | 4.05      | 5.57       | 9.85    | 0.51            |
+| 8       | 1.25      | 7.15e-1    | 1.82    | 1.58            |
+| 32      | 1.23e-1   | 6.51e-2    | 1.66e-1 | 5.74            |
+| 64      | 2.33e-2   | 4.17e-2    | 4.22e-2 | 6.73            |
+
+The memory is all on the river: 44 river trees against one turn street, so
+bucketing the turn saves nothing and only costs accuracy. River buckets are
+the trade worth making, 64 buckets for a tenth of the memory at three times
+the exact solve's exploitability (still 0.04% of the pot). Past 64 nothing
+changes, because k-means stops at the number of distinct values: on a rainbow
+turn no flush is possible, so hands that differ only in suits get the same
+strength and share a bucket whatever k is. River and both coincide there on
+the chart.
+
+Merging hands raises a weighting question that perfect recall hides. The
+regret of a bucket is the sum of its hands' counterfactual regrets, and each
+hand's has to be weighted by the probability of being dealt it, its range
+weight; summing the vector values unweighted fails the test against the scalar
+solver. The tests write the same bucketed game as a `Game.S` whose infoset
+keys are bucket labels and check that `Cfr.Make`'s current strategy matches
+the vector solver's at every hand and node, for turn buckets, river buckets
+and both, under CFR, CFR+ and DCFR. They compare current strategies rather
+than averages on purpose: `Cfr.Make` adds to the strategy sum once per
+history, which under imperfect recall overweights hands that have more
+compatible opponent hands. The vector solver weights each hand by its reach
+including the deal, the way a chance-sampled CFR would in expectation.
+
 ## Bet sizes and action translation
 
 No-limit trees are built from bet sizes as fractions of the pot, raise sizes as
@@ -655,6 +764,19 @@ The tests check against numbers that come from outside this code:
   inclusion-exclusion rounding where every opponent hand reaching the node
   shares a card with mine). Both are valid CFR+ iterates, and the values and
   best responses still agree to 1e-9.
+- Suit isomorphism: the 24 suit permutations, the symmetry group and number of
+  river classes for rainbow, two-tone, paired and monotone boards, and which
+  ranges keep the symmetry. Folded and unfolded solves agree to 1e-9 at every
+  real infoset on a monotone turn (CFR, CFR+, DCFR) and on a monotone flop
+  with two nested chance levels, and the folded strategy is bit for bit equal
+  across symmetric hands.
+- Hand strength against brute-force enumeration on three rivers, a mean of
+  exactly 1/2 over all 1,081 hands, 1 for the nuts and 1/2 for everyone when
+  the board plays, and E[HS^2] against the mean of brute-force HS^2 over the
+  river cards.
+- Bucketed subgames against `Cfr.Make` on the same abstracted game (above),
+  float32 runs against double runs, and pruned runs bit for bit equal to
+  unpruned ones.
 - The clairvoyance game from The Mathematics of Poker, on real cards: player 0
   holds the nuts or air with equal weight, player 1 a bluff catcher, and the
   only bet is the pot. Theory says bluff with air half the time, call half the
@@ -692,7 +814,12 @@ median taken at a third of the weight. For the subgames: dropping the
 identical-combo term from folds, counting ties as wins in the showdown sweep,
 and the wrong probability for the river card fail 4, 5 and 3 tests, and
 translating by a plain average of strategies instead of the reach-weighted
-mixture fails the linearity test.
+mixture fails the linearity test. Folding with the permutation
+instead of its inverse, skipping the images in the best response, composing
+nested suit permutations in the wrong order (only the flop test catches that
+one), not tying symmetric regrets, unweighted bucket regrets, a float32 path
+without the regret floor, and a pruned walk that forgets the strategy sums
+each fail at least one test.
 
 ## License
 
