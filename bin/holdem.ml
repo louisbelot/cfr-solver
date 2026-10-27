@@ -63,10 +63,11 @@ let header board tree t =
   Format.printf "%s %s, %s@." (street board)
     (String.concat " " (Array.to_list (Array.map Hand.to_string board)))
     (describe tree);
-  Format.printf "oop %d hands, ip %d hands, %d decision nodes@.@."
+  Format.printf "oop %d hands, ip %d hands, %d decision nodes, %.1f MB@.@."
     (Range.size (Subgame.range t 0))
     (Range.size (Subgame.range t 1))
     (Subgame.decisions t)
+    (float_of_int (Subgame.memory t) /. 1e6)
 
 let summary t prof =
   List.iter
@@ -83,7 +84,7 @@ let summary t prof =
 let run_cmd f =
   try f () with Invalid_argument msg | Sys_error msg -> Error (`Msg msg)
 
-let subgame board oop ip tree algorithms iterations csv svg json =
+let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
   run_cmd @@ fun () ->
   let board, r0, r1 = setup board oop ip in
   let cfg = config tree (6 - Array.length board) in
@@ -92,7 +93,9 @@ let subgame board oop ip tree algorithms iterations csv svg json =
     List.map
       (fun (name, algorithm) ->
         last := None;
-        let t = Subgame.create ~algorithm cfg ~board r0 r1 in
+        let t =
+          Subgame.create ~algorithm ~iso:(not no_iso) ~single cfg ~board r0 r1
+        in
         let wall = ref 0. in
         let rows =
           List.map
@@ -404,6 +407,14 @@ let subgame_cmd =
         (const subgame $ board $ oop $ ip
         $ tree ~bets:[ 0.5; 1. ]
         $ algorithms $ iterations 1000
+        $ Arg.(
+            value & flag
+            & info [ "no-iso" ]
+                ~doc:"Solve every card dealt instead of one per suit class.")
+        $ Arg.(
+            value & flag
+            & info [ "single" ]
+                ~doc:"Store regrets and strategy sums as 32-bit floats.")
         $ file [ "csv" ] "Write exploitability curves to $(docv)."
         $ file [ "svg" ] "Plot exploitability curves to $(docv)."
         $ file [ "json" ] "Write the last algorithm's strategy to $(docv)."))
