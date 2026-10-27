@@ -35,6 +35,9 @@ jobs:
           opam exec -- dune exec cfr-solver -- abstract --ranks 5 -n 200 --domains 2 --csv abs.csv --svg abs.svg
           opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c 2s" --pot 6 --limit 1 -a cfr,cfr+,lcfr,dcfr -n 200 --csv river.csv --svg river.svg --json river.json
           opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, KQ, QJs" --pot 4 --limit 1 -n 20
+          opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --single
+          opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --no-iso
+          opam exec -- dune exec cfr-solver -- buckets --board "Qs Jh 8d 5c" --oop "TT+, AQ+" --ip "88+, AJ+" --pot 4 --limit 1 -n 20 --sizes 2,8 --csv b.csv --svg b.svg
           opam exec -- dune exec cfr-solver -- translate --board "Qs Jh 8d 5c 2s" -n 200 --grid 0.25,2,0.25 --csv tr.csv --svg tr.svg
           opam exec -- dune exec cfr-solver -- betsizes --board "Qs Jh 8d 5c 2s" -n 100 --set 1 --set 0.5,1
           opam exec -- dune exec ./bench/bench.exe
