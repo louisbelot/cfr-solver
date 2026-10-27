@@ -52,6 +52,67 @@ let matches_scalar_values cfg board r0 r1 () =
       close 1e-9 "br1" (B.value P1 s) (Subgame.best_response t 1 prof))
     [ 0; 3; 20 ]
 
+let mono_turn = Hand.parse "Ks 9s 5s 2s"
+let mono_flop = Hand.parse "Ks 9s 5s"
+let flop = Bet_tree.limit ~cap:1 ~pot:4. ~bet:1. 3
+let sym0 = Range.of_string "AA:0.9, KQs, QJs:0.6, T9s, 76o:0.3, 33"
+let sym1 = Range.of_string "QQ:0.8, AKs, JTs, 98s:0.7, A5o:0.4"
+
+let folds_exactly cfg board r0 r1 algorithm iterations () =
+  let full = Subgame.create ~algorithm ~iso:false cfg ~board r0 r1 in
+  let folded = Subgame.create ~algorithm cfg ~board r0 r1 in
+  if Subgame.decisions folded >= Subgame.decisions full then
+    Alcotest.failf "%d decisions folded, %d full" (Subgame.decisions folded)
+      (Subgame.decisions full);
+  Subgame.run full iterations;
+  Subgame.run folded iterations;
+  let pf = Subgame.average full and pg = Subgame.average folded in
+  let sf = Subgame.strategy full pf and sg = Subgame.strategy folded pg in
+  Alcotest.(check int)
+    "infosets"
+    (List.length (Strategy.bindings sf))
+    (List.length (Strategy.bindings sg));
+  same_strategy (Cfr.algorithm_name algorithm) sf sg;
+  close 1e-9 "value" (Subgame.value full pf) (Subgame.value folded pg);
+  for i = 0 to 1 do
+    close 1e-9 "best response"
+      (Subgame.best_response full i pf)
+      (Subgame.best_response folded i pg)
+  done
+
+let symmetric_strategy () =
+  let t = Subgame.create ~algorithm:Cfr.dcfr turn ~board:mono_turn sym0 sym1 in
+  Subgame.run t 20;
+  let s = Subgame.strategy t (Subgame.average t) in
+  let group =
+    Subgame.symmetries (Array.to_list mono_turn) (Subgame.range t 0)
+      (Subgame.range t 1)
+  in
+  Alcotest.(check int) "group" 6 (List.length group);
+  let checked = ref 0 in
+  List.iter
+    (fun (key, (e : Strategy.entry)) ->
+      match String.split_on_char ':' key with
+      | [ combo; path ] when not (String.contains path '/') ->
+          let a = Hand.of_string (String.sub combo 0 2)
+          and b = Hand.of_string (String.sub combo 2 2) in
+          List.iter
+            (fun p ->
+              let image = Subgame.key (Suit.combo p (a, b)) path in
+              match Strategy.find s image with
+              | Some g when g.probs = e.probs -> incr checked
+              | _ -> Alcotest.failf "%s and %s differ" key image)
+            group
+      | _ -> ())
+    (Strategy.bindings s);
+  if !checked = 0 then Alcotest.fail "nothing checked"
+
+let asymmetric_ranges () =
+  let r = Range.of_string "AhAd:0.3, AhAc:0.5, AdAc" in
+  let a = Subgame.create turn ~board:mono_turn r sym1 in
+  let b = Subgame.create ~iso:false turn ~board:mono_turn r sym1 in
+  Alcotest.(check int) "decisions" (Subgame.decisions b) (Subgame.decisions a)
+
 let clairvoyance () =
   let cfg =
     {
@@ -119,6 +180,16 @@ let tests =
       (matches_scalar_cfr turn turn_board small0 small1 Cfr.Plus 3);
     Alcotest.test_case "turn values" `Slow
       (matches_scalar_values turn turn_board small0 small1);
+    Alcotest.test_case "folded turn cfr" `Quick
+      (folds_exactly turn mono_turn sym0 sym1 Cfr.Vanilla 6);
+    Alcotest.test_case "folded turn cfr+" `Quick
+      (folds_exactly turn mono_turn sym0 sym1 Cfr.Plus 6);
+    Alcotest.test_case "folded turn dcfr" `Quick
+      (folds_exactly turn mono_turn sym0 sym1 Cfr.dcfr 6);
+    Alcotest.test_case "folded flop" `Slow
+      (folds_exactly flop mono_flop sym0 sym1 Cfr.Plus 2);
+    Alcotest.test_case "symmetric strategy" `Quick symmetric_strategy;
+    Alcotest.test_case "asymmetric ranges" `Quick asymmetric_ranges;
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;

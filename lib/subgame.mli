@@ -3,12 +3,14 @@ type profile = float array array array
 
 val create :
   ?algorithm:Cfr.algorithm ->
+  ?iso:bool ->
   Bet_tree.config ->
   board:Hand.card array ->
   Range.t ->
   Range.t ->
   t
 
+val symmetries : Hand.card list -> Range.t -> Range.t -> Suit.perm list
 val iterate : t -> unit
 val run : t -> int -> unit
 val iterations : t -> int

@@ -60,9 +60,25 @@ let orbit_members () =
         members)
     orbits
 
+let ranges () =
+  let board = Array.to_list (Hand.parse "Ks 9s 5s 2s") in
+  let size r0 r1 =
+    List.length
+      (Subgame.symmetries board (Range.of_string r0) (Range.of_string r1))
+  in
+  Alcotest.(check int) "notation" 6 (size "AA, KQs, T9o:0.5" "random");
+  Alcotest.(check int) "one combo" 1 (size "AhQc" "random");
+  Alcotest.(check int) "one pair" 2 (size "AhAd" "random");
+  Alcotest.(check int) "two of three suits" 2 (size "AhAd, AhAc, AdAc" "QhQd");
+  Alcotest.(check int) "weights split" 2 (size "AhAd, AhAc:0.5, AdAc" "random");
+  Alcotest.(check int)
+    "weights differ" 1
+    (size "AhAd:0.3, AhAc:0.5, AdAc" "random")
+
 let tests =
   [
     Alcotest.test_case "perms" `Quick perms;
     Alcotest.test_case "boards" `Quick boards;
     Alcotest.test_case "orbit members" `Quick orbit_members;
+    Alcotest.test_case "ranges" `Quick ranges;
   ]

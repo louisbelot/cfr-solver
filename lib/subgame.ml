@@ -26,11 +26,19 @@ type decision = {
   children : node array;
   regret : float array array;
   sum : float array array;
+  orbits : int array array;
 }
+
+and image = { card : int; suit : Suit.perm; perm : int array array }
 
 and node =
   | Decision of decision
-  | Chance of { cards : int array; weight : float; children : node array }
+  | Chance of {
+      cards : int array;
+      weight : float;
+      children : node array;
+      images : image array array;
+    }
   | Fold of { folder : int; win : float }
   | Showdown of { win : float; board : board }
 
@@ -55,6 +63,7 @@ type t = {
   cards : float array;
   total : float;
   algorithm : Cfr.algorithm;
+  iso : bool;
   mutable iterations : int;
   mutable weight : float;
 }
@@ -104,7 +113,41 @@ let pair_mass t =
   done;
   !z
 
-let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
+let weights (r : Range.t) =
+  let w = Array.make 1326 0. in
+  Array.iteri (fun j c -> w.(Range.index c) <- r.weights.(j)) r.hands;
+  w
+
+let symmetries board r0 r1 =
+  let w0 = weights r0 and w1 = weights r1 in
+  let keeps w p =
+    Array.for_all
+      (fun c -> w.(Range.index (Suit.combo p c)) = w.(Range.index c))
+      Range.combos
+  in
+  List.filter
+    (fun p -> Suit.fixes p board && keeps w0 p && keeps w1 p)
+    (Array.to_list Suit.all)
+
+let hand_map s p =
+  let ids = Array.make 1326 (-1) in
+  Array.iteri (fun j c -> ids.(Range.index c) <- j) s.range.hands;
+  Array.map (fun c -> ids.(Range.index (Suit.combo p c))) s.range.hands
+
+let hand_orbits maps group =
+  let n = Array.length (maps Suit.identity) in
+  let seen = Array.make n false and out = ref [] in
+  for h = 0 to n - 1 do
+    if not seen.(h) then begin
+      let o = List.sort_uniq compare (List.map (fun p -> (maps p).(h)) group) in
+      List.iter (fun x -> seen.(x) <- true) o;
+      if List.length o > 1 then out := Array.of_list o :: !out
+    end
+  done;
+  Array.of_list (List.rev !out)
+
+let create ?(algorithm = Cfr.Vanilla) ?(iso = true) (cfg : Bet_tree.config)
+    ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
@@ -118,33 +161,76 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
   in
   let r0 = clean r0 and r1 = clean r1 in
   let sides = [| side r0 r1; side r1 r0 |] in
+  let group =
+    if iso then symmetries (Array.to_list board) r0 r1 else [ Suit.identity ]
+  in
+  let maps = Hashtbl.create 16 in
+  let map i p =
+    match Hashtbl.find_opt maps (i, p) with
+    | Some m -> m
+    | None ->
+        let m = hand_map sides.(i) p in
+        Hashtbl.add maps (i, p) m;
+        m
+  in
+  let orbit_cache = Hashtbl.create 16 in
+  let orbits i g =
+    match Hashtbl.find_opt orbit_cache (i, g) with
+    | Some o -> o
+    | None ->
+        let o = hand_orbits (map i) g in
+        Hashtbl.add orbit_cache (i, g) o;
+        o
+  in
   let decisions = ref []
   and count = ref 0
   and depth = ref 0
   and width = ref 1 in
-  let rec expand node dealt path d ev =
+  let rec expand node g dealt path d ev =
     depth := max !depth d;
     match (node : Bet_tree.node) with
     | Folded { folder; win } -> Fold { folder; win }
     | Showdown { win } -> Showdown { win; board = Lazy.force ev }
     | Chance child ->
         let seen = Array.to_list board @ dealt in
-        let cards =
+        let classes =
           Array.of_list
-            (List.filter (fun c -> not (List.mem c seen)) (List.init 52 Fun.id))
+            (Suit.orbits g
+               (List.filter
+                  (fun c -> not (List.mem c seen))
+                  (List.init 52 Fun.id)))
         in
         let left = 52 - List.length seen - 4 in
         let children =
           Array.map
-            (fun c ->
+            (fun (c, _) ->
               let dealt = dealt @ [ c ] in
-              expand child dealt
+              expand child (Suit.stabilizer g [ c ]) dealt
                 (path ^ "/" ^ Hand.to_string c)
                 (d + 1)
                 (lazy (eval_board sides (Array.to_list board @ dealt))))
-            cards
+            classes
         in
-        Chance { cards; weight = 1. /. float_of_int left; children }
+        let images =
+          Array.map
+            (fun (c, members) ->
+              Array.of_list
+                (List.filter_map
+                   (fun (card, suit) ->
+                     if card = c then None
+                     else
+                       let back = Suit.inverse suit in
+                       Some { card; suit; perm = [| map 0 back; map 1 back |] })
+                   members))
+            classes
+        in
+        Chance
+          {
+            cards = Array.map fst classes;
+            weight = 1. /. float_of_int left;
+            children;
+            images;
+          }
     | Decision { player; pot; committed; to_call; all_in; actions; children } ->
         let id = !count in
         incr count;
@@ -153,7 +239,7 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
         let children =
           Array.mapi
             (fun a c ->
-              expand c dealt
+              expand c g dealt
                 (path ^ Bet_tree.action_to_string actions.(a))
                 (d + 1) ev)
             children
@@ -172,13 +258,14 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
             children;
             regret = Array.init k (fun _ -> Array.make n 0.);
             sum = Array.init k (fun _ -> Array.make n 0.);
+            orbits = orbits player g;
           }
         in
         decisions := dn :: !decisions;
         Decision dn
   in
   let root =
-    expand (Bet_tree.build cfg) [] "" 0
+    expand (Bet_tree.build cfg) group [] "" 0
       (lazy (eval_board sides (Array.to_list board)))
   in
   let decisions = Array.of_list !decisions in
@@ -207,6 +294,7 @@ let create ?(algorithm = Cfr.Vanilla) (cfg : Bet_tree.config) ~board r0 r1 =
       cards = Array.make 52 0.;
       total = 0.;
       algorithm;
+      iso;
       iterations = 0;
       weight = 1.;
     }
@@ -298,6 +386,30 @@ let gather t i c weight src out =
       out.!(h) <- out.!(h) +. (weight *. src.!(h))
   done
 
+let gather_image t i im weight src out =
+  let s = t.sides.(i) and c = im.card and p = im.perm.(i) in
+  for h = 0 to s.n - 1 do
+    if s.c1.%(h) <> c && s.c2.%(h) <> c then
+      out.!(h) <- out.!(h) +. (weight *. src.!(p.%(h)))
+  done
+
+let symmetrize dn =
+  Array.iter
+    (fun o ->
+      let m = Array.length o in
+      Array.iter
+        (fun r ->
+          let z = ref 0. in
+          for x = 0 to m - 1 do
+            z := !z +. r.!(o.%(x))
+          done;
+          let mean = !z /. float_of_int m in
+          for x = 0 to m - 1 do
+            r.!(o.%(x)) <- mean
+          done)
+        dn.regret)
+    dn.orbits
+
 let regret_matching dn n sc =
   let k = Array.length dn.actions and norm = sc.norm in
   Array.fill norm 0 n 0.;
@@ -324,7 +436,7 @@ let rec walk t node d active reach out =
       for i = 0 to 1 do
         if active.(i) then terminal t node i reach.(1 - i) out.(i)
       done
-  | Chance { cards; weight; children } ->
+  | Chance { cards; weight; children; images } ->
       let sc = t.scratch.(d) in
       for i = 0 to 1 do
         if active.(i) then Array.fill out.(i) 0 t.sides.(i).n 0.
@@ -335,7 +447,12 @@ let rec walk t node d active reach out =
           mask t 1 c reach.(1) sc.mask.(1);
           walk t children.(j) (d + 1) active sc.mask sc.tmp;
           for i = 0 to 1 do
-            if active.(i) then gather t i c weight sc.tmp.(i) out.(i)
+            if active.(i) then begin
+              gather t i c weight sc.tmp.(i) out.(i);
+              Array.iter
+                (fun im -> gather_image t i im weight sc.tmp.(i) out.(i))
+                images.(j)
+            end
           done)
         cards
   | Decision dn ->
@@ -372,7 +489,8 @@ let rec walk t node d active reach out =
             r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
             sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
           done
-        done
+        done;
+      if active.(p) then symmetrize dn
 
 let discount t active n =
   let pos, neg, _ = Cfr.discounts t.algorithm n in
@@ -440,14 +558,17 @@ type mode = Best | Mean
 let rec eval t (prof : profile) mode node d i opp out =
   match node with
   | Fold _ | Showdown _ -> terminal t node i opp out
-  | Chance { cards; weight; children } ->
+  | Chance { cards; weight; children; images } ->
       let sc = t.scratch.(d) in
       Array.fill out 0 t.sides.(i).n 0.;
       Array.iteri
         (fun j c ->
           mask t (1 - i) c opp sc.mask.(1 - i);
           eval t prof mode children.(j) (d + 1) i sc.mask.(1 - i) sc.tmp.(i);
-          gather t i c weight sc.tmp.(i) out)
+          gather t i c weight sc.tmp.(i) out;
+          Array.iter
+            (fun im -> gather_image t i im weight sc.tmp.(i) out)
+            images.(j))
         cards
   | Decision dn ->
       let sc = t.scratch.(d) and sigma = prof.(dn.id) in
@@ -506,22 +627,47 @@ let exploitability t prof =
 let key (c1, c2) path = Range.combo_to_string (c1, c2) ^ ":" ^ path
 
 let strategy t (prof : profile) =
-  Array.fold_left
-    (fun acc dn ->
-      let s = t.sides.(dn.player) in
-      let actions = Array.map Bet_tree.action_to_string dn.actions in
-      let acc = ref acc in
-      for h = 0 to s.n - 1 do
-        if not (List.exists (holds s h) dn.dealt) then
-          acc :=
-            Strategy.add
-              (key s.range.hands.(h) dn.path)
-              ~actions
-              ~probs:(Array.map (fun p -> p.(h)) prof.(dn.id))
-              !acc
-      done;
-      !acc)
-    Strategy.empty t.decisions
+  let rec go node suit path acc =
+    match node with
+    | Fold _ | Showdown _ -> acc
+    | Chance { cards; children; images; _ } ->
+        let acc = ref acc in
+        Array.iteri
+          (fun j c ->
+            let deal card suit =
+              acc :=
+                go children.(j) suit
+                  (path ^ "/" ^ Hand.to_string (Suit.apply suit card))
+                  !acc
+            in
+            deal c suit;
+            Array.iter (fun im -> deal c (Suit.compose suit im.suit)) images.(j))
+          cards;
+        !acc
+    | Decision dn ->
+        let s = t.sides.(dn.player) in
+        let actions = Array.map Bet_tree.action_to_string dn.actions in
+        let acc = ref acc in
+        for h = 0 to s.n - 1 do
+          if not (List.exists (holds s h) dn.dealt) then
+            acc :=
+              Strategy.add
+                (key (Suit.combo suit s.range.hands.(h)) path)
+                ~actions
+                ~probs:(Array.map (fun p -> p.(h)) prof.(dn.id))
+                !acc
+        done;
+        let acc = ref !acc in
+        Array.iteri
+          (fun a child ->
+            acc :=
+              go child suit
+                (path ^ Bet_tree.action_to_string dn.actions.(a))
+                !acc)
+          dn.children;
+        !acc
+  in
+  go t.root Suit.identity "" Strategy.empty
 
 type line = {
   path : string;
@@ -667,6 +813,8 @@ let translate ~low ~abstract (prof : profile) full =
       if a.range.hands <> s.range.hands || a.w <> s.w then
         invalid_arg "Subgame.translate: ranges differ")
     full.sides;
+  if abstract.iso <> full.iso then
+    invalid_arg "Subgame.translate: one tree folds suits and the other not";
   let out = Array.make (Array.length full.decisions) [||] in
   let rec go node beliefs =
     match node with
