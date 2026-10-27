@@ -122,6 +122,28 @@ let subgame ?(iso = true) ?(single = false) name cfg board iterations =
     (elapsed /. float_of_int iterations *. 1e3)
     (float_of_int (Subgame.memory t) /. 1e6)
 
+let pruning () =
+  let board = Hand.parse "Qs Jh 8d 5c" in
+  let r0 = Range.of_string ~board "TT+, AQ+, KQs, QJs, JTs, T9s, 98s"
+  and r1 = Range.of_string ~board "88+, AJ+, KQ, QJs, JTs, A5s" in
+  List.iter
+    (fun prune ->
+      let t =
+        Subgame.create ~algorithm:Cfr.dcfr ~prune
+          (Bet_tree.limit ~pot:4. ~bet:1. 2)
+          ~board r0 r1
+      in
+      Subgame.run t 100;
+      let skipped = Subgame.skipped t in
+      let start = Unix.gettimeofday () in
+      Subgame.run t 100;
+      let elapsed = Unix.gettimeofday () -. start in
+      Printf.printf "%-6s %-14s %10.1f it/s %8.2f ms/it %5d skips/it\n" "turn"
+        (if prune then "dcfr prune" else "dcfr")
+        (100. /. elapsed) (elapsed *. 10.)
+        ((Subgame.skipped t - skipped) / 100))
+    [ false; true ]
+
 let () =
   seven_cards ();
   subgame "river" (Bet_tree.limit ~pot:6. ~bet:1. 1) "Qs Jh 8d 5c 2s" 2000;
@@ -131,6 +153,7 @@ let () =
   subgame ~iso:false "turn" turn "Qs Js 8s 5s" 5;
   subgame "turn" turn "Qs Js 8s 5s" 5;
   subgame ~single:true "turn" turn "Qs Js 8s 5s" 5;
+  pruning ();
   List.iter
     (fun (game, iterations, samples) ->
       List.iter
