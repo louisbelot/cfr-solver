@@ -48,6 +48,7 @@ type decision = {
   regret : store;
   sum : store;
   orbits : int array array;
+  bucket : int array;
 }
 
 and image = { card : int; suit : Suit.perm; perm : int array array }
@@ -86,6 +87,7 @@ type t = {
   algorithm : Cfr.algorithm;
   iso : bool;
   prune : bool;
+  labels : (int * int list, int array) Hashtbl.t;
   mutable skipped : int;
   mutable iterations : int;
   mutable weight : float;
@@ -170,13 +172,19 @@ let hand_orbits maps group =
   Array.of_list (List.rev !out)
 
 let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
-    ?(prune = true) (cfg : Bet_tree.config) ~board r0 r1 =
+    ?(prune = true) ?(buckets = []) (cfg : Bet_tree.config) ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
     invalid_arg "Subgame.create: repeated board card";
   if List.length cfg.streets <> 6 - b then
     invalid_arg "Subgame.create: one street per card left to deal";
+  if buckets <> [] && List.length buckets <> 6 - b then
+    invalid_arg "Subgame.create: one bucket count per street";
+  if List.exists (fun k -> k < 0) buckets then
+    invalid_arg "Subgame.create: negative bucket count";
+  if b = 3 && List.hd (buckets @ [ 0 ]) > 0 then
+    invalid_arg "Subgame.create: flop buckets are not supported";
   let clean (r : Range.t) =
     let w = Array.make 1326 0. in
     Array.iteri (fun j c -> w.(Range.index c) <- r.weights.(j)) r.hands;
@@ -204,6 +212,43 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
         let o = hand_orbits (map i) g in
         Hashtbl.add orbit_cache (i, g) o;
         o
+  in
+  let metrics = Hashtbl.create 64 and labels = Hashtbl.create 64 in
+  let metric dealt =
+    match Hashtbl.find_opt metrics dealt with
+    | Some m -> m
+    | None ->
+        let cards = Array.append board (Array.of_list dealt) in
+        let m =
+          if Array.length cards = 5 then Equity.hs cards else Equity.ehs2 cards
+        in
+        Hashtbl.add metrics dealt m;
+        m
+  in
+  let bucket p dealt =
+    match
+      ( List.nth_opt buckets (List.length dealt),
+        Hashtbl.find_opt labels (p, dealt) )
+    with
+    | _, Some out -> out
+    | Some k, None when k > 0 ->
+        let s = sides.(p) and m = metric dealt in
+        let live =
+          Array.of_list
+            (List.filter
+               (fun h -> not (List.exists (holds s h) dealt))
+               (List.init s.n Fun.id))
+        in
+        let found =
+          Cluster.optimal_1d
+            (Array.map (fun h -> m.(Range.index s.range.hands.(h))) live)
+            k
+        in
+        let out = Array.make s.n (-1) in
+        Array.iteri (fun j h -> out.(h) <- found.(j)) live;
+        Hashtbl.replace labels (p, dealt) out;
+        out
+    | _ -> [||]
   in
   let decisions = ref []
   and count = ref 0
@@ -267,6 +312,10 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
                 (d + 1) ev)
             children
         in
+        let bucket = bucket player dealt in
+        let rows =
+          if bucket = [||] then n else Array.fold_left max (-1) bucket + 1
+        in
         let dn =
           {
             id;
@@ -279,9 +328,10 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
             all_in;
             actions;
             children;
-            regret = store single k n;
-            sum = store single k n;
-            orbits = orbits player g;
+            regret = store single k rows;
+            sum = store single k rows;
+            orbits = (if bucket = [||] then orbits player g else [||]);
+            bucket;
           }
         in
         decisions := dn :: !decisions;
@@ -319,6 +369,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
       algorithm;
       iso;
       prune;
+      labels;
       skipped = 0;
       iterations = 0;
       weight = 1.;
@@ -329,6 +380,20 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
   { t with total }
 
 let iterations t = t.iterations
+
+let bucket t p dealt hand =
+  match Hashtbl.find_opt t.labels (p, dealt) with
+  | None -> None
+  | Some labels ->
+      let s = t.sides.(p) in
+      let rec find h =
+        if h = s.n then None
+        else if Range.index s.range.hands.(h) = Range.index hand then
+          Some labels.(h)
+        else find (h + 1)
+      in
+      find 0
+
 let skipped t = t.skipped
 
 let memory t =
@@ -451,39 +516,65 @@ let symmetrize dn =
       done)
     dn.orbits
 
-let regret_matching dn n sc =
-  let k = Array.length dn.actions and norm = sc.norm in
-  Array.fill norm 0 n 0.;
+let rows = function
+  | Double r -> Array.length r.(0)
+  | Single r -> Bigarray.Array1.dim r.(0)
+
+let bucketed_matching dn n sc =
+  let k = Array.length dn.actions and norm = sc.norm and b = dn.bucket in
+  let m = rows dn.regret in
+  Array.fill norm 0 m 0.;
   for a = 0 to k - 1 do
-    match dn.regret with
-    | Double r ->
-        let r = r.(a) in
-        for h = 0 to n - 1 do
-          norm.!(h) <- norm.!(h) +. Float.max r.!(h) 0.
-        done
-    | Single r ->
-        let r = r.(a) in
-        for h = 0 to n - 1 do
-          norm.!(h) <- norm.!(h) +. Float.max r.^(h) 0.
-        done
+    for x = 0 to m - 1 do
+      norm.(x) <- norm.(x) +. Float.max (get dn.regret a x) 0.
+    done
   done;
   let u = 1. /. float_of_int k in
   for a = 0 to k - 1 do
     let s = sc.strat.(a) in
-    match dn.regret with
-    | Double r ->
-        let r = r.(a) in
-        for h = 0 to n - 1 do
-          let z = norm.!(h) in
-          s.!(h) <- (if z > 0. then Float.max r.!(h) 0. /. z else u)
-        done
-    | Single r ->
-        let r = r.(a) in
-        for h = 0 to n - 1 do
-          let z = norm.!(h) in
-          s.!(h) <- (if z > 0. then Float.max r.^(h) 0. /. z else u)
-        done
+    for h = 0 to n - 1 do
+      let x = b.(h) in
+      s.(h) <-
+        (if x < 0 || norm.(x) <= 0. then u
+         else Float.max (get dn.regret a x) 0. /. norm.(x))
+    done
   done
+
+let regret_matching dn n sc =
+  if Array.length dn.bucket > 0 then bucketed_matching dn n sc
+  else
+    let k = Array.length dn.actions and norm = sc.norm in
+    Array.fill norm 0 n 0.;
+    for a = 0 to k - 1 do
+      match dn.regret with
+      | Double r ->
+          let r = r.(a) in
+          for h = 0 to n - 1 do
+            norm.!(h) <- norm.!(h) +. Float.max r.!(h) 0.
+          done
+      | Single r ->
+          let r = r.(a) in
+          for h = 0 to n - 1 do
+            norm.!(h) <- norm.!(h) +. Float.max r.^(h) 0.
+          done
+    done;
+    let u = 1. /. float_of_int k in
+    for a = 0 to k - 1 do
+      let s = sc.strat.(a) in
+      match dn.regret with
+      | Double r ->
+          let r = r.(a) in
+          for h = 0 to n - 1 do
+            let z = norm.!(h) in
+            s.!(h) <- (if z > 0. then Float.max r.!(h) 0. /. z else u)
+          done
+      | Single r ->
+          let r = r.(a) in
+          for h = 0 to n - 1 do
+            let z = norm.!(h) in
+            s.!(h) <- (if z > 0. then Float.max r.^(h) 0. /. z else u)
+          done
+    done
 
 let pair p mine other = if p = 0 then [| mine; other |] else [| other; mine |]
 
@@ -499,21 +590,42 @@ let pruned t active reach =
   let o = if active.(0) then 1 else 0 in
   dead t o reach.(o)
 
-let add_sums dn n own sc w =
+let bucketed_sums dn n own sc w =
   for a = 0 to Array.length dn.actions - 1 do
     let s = sc.strat.(a) in
-    match dn.sum with
-    | Double sum ->
-        let sum = sum.(a) in
-        for h = 0 to n - 1 do
-          sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
-        done
-    | Single sum ->
-        let sum = sum.(a) in
-        for h = 0 to n - 1 do
-          sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
-        done
+    for h = 0 to n - 1 do
+      let x = dn.bucket.(h) in
+      if x >= 0 then set dn.sum a x (get dn.sum a x +. (w *. own.(h) *. s.(h)))
+    done
   done
+
+let bucketed_regrets dn n w v mine =
+  for a = 0 to Array.length dn.actions - 1 do
+    let v = v.(a) in
+    for h = 0 to n - 1 do
+      let x = dn.bucket.(h) in
+      if x >= 0 then
+        set dn.regret a x (get dn.regret a x +. (w.(h) *. (v.(h) -. mine.(h))))
+    done
+  done
+
+let add_sums dn n own sc w =
+  if Array.length dn.bucket > 0 then bucketed_sums dn n own sc w
+  else
+    for a = 0 to Array.length dn.actions - 1 do
+      let s = sc.strat.(a) in
+      match dn.sum with
+      | Double sum ->
+          let sum = sum.(a) in
+          for h = 0 to n - 1 do
+            sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
+          done
+      | Single sum ->
+          let sum = sum.(a) in
+          for h = 0 to n - 1 do
+            sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
+          done
+    done
 
 let rec accumulate t node d p own =
   if not (dead t p own) then
@@ -597,7 +709,11 @@ let rec walk t node d active reach out =
             done
           end)
         dn.children;
-      if active.(p) then begin
+      if active.(p) && Array.length dn.bucket > 0 then begin
+        bucketed_regrets dn n t.sides.(p).w sc.vals mine;
+        bucketed_sums dn n own sc t.weight
+      end
+      else if active.(p) then begin
         for a = 0 to Array.length dn.actions - 1 do
           let s = sc.strat.(a) and v = sc.vals.(a) and w = t.weight in
           match (dn.regret, dn.sum) with
@@ -670,13 +786,15 @@ let average t =
       let k = Array.length dn.actions and n = t.sides.(dn.player).n in
       let p = Array.init k (fun _ -> Array.make n 0.) in
       for h = 0 to n - 1 do
+        let x = if Array.length dn.bucket > 0 then dn.bucket.(h) else h in
         let z = ref 0. in
-        for a = 0 to k - 1 do
-          z := !z +. get dn.sum a h
-        done;
+        if x >= 0 then
+          for a = 0 to k - 1 do
+            z := !z +. get dn.sum a x
+          done;
         for a = 0 to k - 1 do
           p.(a).(h) <-
-            (if !z > 0. then get dn.sum a h /. !z else 1. /. float_of_int k)
+            (if !z > 0. then get dn.sum a x /. !z else 1. /. float_of_int k)
         done
       done;
       p)

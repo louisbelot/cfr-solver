@@ -163,6 +163,55 @@ let prunes_exactly algorithm () =
     if x <> y then Alcotest.failf "best response %d: %.17g against %.17g" i x y
   done
 
+let bucketed_matches_scalar buckets algorithm iterations () =
+  let t =
+    Subgame.create ~algorithm ~iso:false ~buckets turn ~board:turn_board small0
+      small1
+  in
+  let label p dealt hand = Subgame.bucket t p dealt hand in
+  let (module G) =
+    Subgame_ref.make ~label turn ~board:turn_board small0 small1
+  in
+  let module C = Cfr.Make (G) in
+  let c = C.create ~algorithm () in
+  C.run c iterations;
+  Subgame.run t iterations;
+  let players = Hashtbl.create 64 in
+  List.iter
+    (fun (l : Subgame.line) -> Hashtbl.replace players l.path l.player)
+    (Subgame.lines ~chance:true t (Subgame.current t));
+  let expected = C.current_strategy c in
+  let merged = ref 0 in
+  List.iter
+    (fun (key, (e : Strategy.entry)) ->
+      let i = String.index key ':' in
+      let combo = String.sub key 0 i
+      and path = String.sub key (i + 1) (String.length key - i - 1) in
+      let hand =
+        ( Hand.of_string (String.sub combo 0 2),
+          Hand.of_string (String.sub combo 2 2) )
+      in
+      let dealt =
+        match String.index_opt path '/' with
+        | Some j -> [ Hand.of_string (String.sub path (j + 1) 2) ]
+        | None -> []
+      in
+      let scalar =
+        match label (Hashtbl.find players path) dealt hand with
+        | Some b ->
+            incr merged;
+            Printf.sprintf "b%d:%s" b path
+        | None -> key
+      in
+      match Strategy.find expected scalar with
+      | None -> Alcotest.failf "no %s for %s" scalar key
+      | Some g ->
+          Array.iteri
+            (fun a p -> close 1e-9 (Printf.sprintf "%s %d" key a) g.probs.(a) p)
+            e.probs)
+    (Strategy.bindings (Subgame.strategy t (Subgame.current t)));
+  if !merged = 0 then Alcotest.fail "no bucketed infoset"
+
 let clairvoyance () =
   let cfg =
     {
@@ -243,6 +292,12 @@ let tests =
     Alcotest.test_case "single precision" `Quick single_precision;
     Alcotest.test_case "pruning cfr+" `Quick (prunes_exactly Cfr.Plus);
     Alcotest.test_case "pruning dcfr" `Quick (prunes_exactly Cfr.dcfr);
+    Alcotest.test_case "bucketed turn" `Slow
+      (bucketed_matches_scalar [ 3; 0 ] Cfr.Plus 3);
+    Alcotest.test_case "bucketed river" `Slow
+      (bucketed_matches_scalar [ 0; 4 ] Cfr.Vanilla 3);
+    Alcotest.test_case "bucketed both" `Slow
+      (bucketed_matches_scalar [ 2; 3 ] Cfr.dcfr 3);
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;

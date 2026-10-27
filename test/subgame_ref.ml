@@ -11,7 +11,7 @@ type history =
 
 let conflict (a, b) (c, d) = a = c || a = d || b = c || b = d
 
-let make cfg ~board (r0 : Range.t) (r1 : Range.t) =
+let make ?(label = fun _ _ _ -> None) cfg ~board (r0 : Range.t) (r1 : Range.t) =
   let clean (r : Range.t) =
     let w = Array.make 1326 0. in
     Array.iteri (fun j c -> w.(Range.index c) <- r.weights.(j)) r.hands;
@@ -81,7 +81,10 @@ let make cfg ~board (r0 : Range.t) (r1 : Range.t) =
               Decision
                 {
                   player = (if player = 0 then Game.P0 else P1);
-                  infoset = Subgame.key hands.(player) path;
+                  infoset =
+                    (match label player dealt hands.(player) with
+                    | Some b -> Printf.sprintf "b%d:%s" b path
+                    | None -> Subgame.key hands.(player) path);
                   actions =
                     Array.to_list
                       (Array.mapi

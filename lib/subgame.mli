@@ -6,6 +6,7 @@ val create :
   ?iso:bool ->
   ?single:bool ->
   ?prune:bool ->
+  ?buckets:int list ->
   Bet_tree.config ->
   board:Hand.card array ->
   Range.t ->
@@ -16,6 +17,7 @@ val symmetries : Hand.card list -> Range.t -> Range.t -> Suit.perm list
 val iterate : t -> unit
 val run : t -> int -> unit
 val iterations : t -> int
+val bucket : t -> int -> Hand.card list -> Hand.card * Hand.card -> int option
 val memory : t -> int
 val skipped : t -> int
 val decisions : t -> int
