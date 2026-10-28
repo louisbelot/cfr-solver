@@ -163,6 +163,81 @@ let prunes_exactly algorithm () =
     if x <> y then Alcotest.failf "best response %d: %.17g against %.17g" i x y
   done
 
+let one_bet = Bet_tree.limit ~cap:1 ~pot:4. ~bet:1. 1
+
+let no_limit =
+  let sizes = Bet_tree.[ Pot 0.5; Pot 1.; Pot 2.; All_in ] in
+  {
+    Bet_tree.pot = 4.;
+    stack = 12.;
+    streets = [ { bets = sizes; raises = sizes; cap = 3 } ];
+  }
+
+let ran_windows t =
+  if Subgame.pruned t = 0 then Alcotest.fail "nothing pruned";
+  if Subgame.caught_up t = 0 then Alcotest.fail "no catch-up"
+
+let rbp_matches_plain algorithm () =
+  let make rbp =
+    Subgame.create ~algorithm ~rbp one_bet ~board:river_board r1 r0
+  in
+  let a = make true and b = make false in
+  Subgame.run a 400;
+  Subgame.run b 400;
+  ran_windows a;
+  Alcotest.(check int) "plain" 0 (Subgame.pruned b);
+  let pa = Subgame.average a and pb = Subgame.average b in
+  same_strategy "average" (Subgame.strategy b pb) (Subgame.strategy a pa);
+  for i = 0 to 1 do
+    close 1e-9 "best response"
+      (Subgame.best_response b i pb)
+      (Subgame.best_response a i pa)
+  done
+
+let rbp_converges algorithm () =
+  let make rbp =
+    Subgame.create ~algorithm ~rbp no_limit ~board:river_board r0 r1
+  in
+  let a = make true and b = make false in
+  Subgame.run a 2000;
+  Subgame.run b 2000;
+  ran_windows a;
+  let ea = Subgame.exploitability a (Subgame.average a)
+  and eb = Subgame.exploitability b (Subgame.average b) in
+  if not (ea < 1.33 *. eb && eb < 1.33 *. ea) then
+    Alcotest.failf "exploitability %g with pruning, %g without" ea eb
+
+let rbp_folds () =
+  let make iso =
+    Subgame.create ~algorithm:Cfr.Vanilla ~iso ~rbp:true turn ~board:mono_turn
+      sym0 sym1
+  in
+  let full = make false and folded = make true in
+  Subgame.run full 60;
+  Subgame.run folded 60;
+  ran_windows folded;
+  let pf = Subgame.average full and pg = Subgame.average folded in
+  same_strategy "folded" (Subgame.strategy full pf) (Subgame.strategy folded pg);
+  close 1e-9 "value" (Subgame.value full pf) (Subgame.value folded pg)
+
+let rbp_reads () =
+  let make () =
+    Subgame.create ~algorithm:Cfr.Linear ~rbp:true no_limit ~board:river_board
+      r0 r1
+  in
+  let a = make () and b = make () in
+  for _ = 1 to 200 do
+    Subgame.iterate a;
+    ignore (Subgame.average a)
+  done;
+  Subgame.run b 200;
+  ran_windows b;
+  if Subgame.current a <> Subgame.current b then
+    Alcotest.fail "reading the average changed the regrets";
+  same_strategy "average"
+    (Subgame.strategy b (Subgame.average b))
+    (Subgame.strategy a (Subgame.average a))
+
 let bucketed_matches_scalar buckets algorithm iterations () =
   let t =
     Subgame.create ~algorithm ~iso:false ~buckets turn ~board:turn_board small0
@@ -275,7 +350,15 @@ let invalid () =
       Subgame.create river ~board:(Hand.parse "Ah Ah 7c 7s 2h") r0 r1);
   fails "no pairs" (fun () ->
       Subgame.create river ~board:river_board (Range.of_string "AsAd")
-        (Range.of_string "AsAc"))
+        (Range.of_string "AsAc"));
+  fails "rbp with cfr+" (fun () ->
+      Subgame.create ~algorithm:Cfr.Plus ~rbp:true river ~board:river_board r0
+        r1);
+  fails "rbp with dcfr" (fun () ->
+      Subgame.create ~algorithm:Cfr.dcfr ~rbp:true river ~board:river_board r0
+        r1);
+  fails "rbp with buckets" (fun () ->
+      Subgame.create ~rbp:true ~buckets:[ 2; 2 ] turn ~board:turn_board r0 r1)
 
 let tests =
   [
@@ -306,6 +389,12 @@ let tests =
     Alcotest.test_case "single precision" `Quick single_precision;
     Alcotest.test_case "pruning cfr+" `Quick (prunes_exactly Cfr.Plus);
     Alcotest.test_case "pruning dcfr" `Quick (prunes_exactly Cfr.dcfr);
+    Alcotest.test_case "rbp exact cfr" `Quick (rbp_matches_plain Cfr.Vanilla);
+    Alcotest.test_case "rbp exact lcfr" `Quick (rbp_matches_plain Cfr.Linear);
+    Alcotest.test_case "rbp converges cfr" `Quick (rbp_converges Cfr.Vanilla);
+    Alcotest.test_case "rbp converges lcfr" `Quick (rbp_converges Cfr.Linear);
+    Alcotest.test_case "rbp folded" `Quick rbp_folds;
+    Alcotest.test_case "rbp reads" `Quick rbp_reads;
     Alcotest.test_case "bucketed turn" `Slow
       (bucketed_matches_scalar [ 3; 0 ] Cfr.Plus 3);
     Alcotest.test_case "bucketed river" `Slow
