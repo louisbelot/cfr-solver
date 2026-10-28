@@ -754,3 +754,128 @@ Next: subgame re-solving from public belief states on the river, using the
 turn solve's ranges at each river node; then real regret-based pruning (skip
 negative-regret actions for as many iterations as they provably stay
 negative), since skipping only zero-reach subtrees bought 10%.
+
+## 2026-10-28: regret-based pruning
+
+What was built:
+
+- `Subgame.create ?rbp` (vanilla and linear CFR only): interval regret-based
+  pruning from Brown and Sandholm, "Regret-Based Pruning in Extensive-Form
+  Games" (NeurIPS 2015), in the vector solver. An action whose regret is
+  negative for every live hand, so that regret matching gives it probability
+  zero, is skipped for as long as a per-iteration bound proves its regret
+  would still be negative, then caught up in one walk.
+- `Subgame.pruned` and `caught_up` count skipped subtrees and finished
+  windows. `Subgame.regrets` closes every open window and returns the
+  cumulative regrets.
+- CLI: `-a cfr-rbp,lcfr-rbp` and a pruned/it row under the timings.
+- Bench rows for vanilla CFR with and without pruning on the limit turn.
+
+Design notes:
+
+- The bound. For hand h at iteration t the regret change is v(h, a) - v(h),
+  and v(h) is known once the other actions are walked. v(h, a) is at most a
+  sum over the opponent hands o reaching the node of the best payoff h can get
+  against o below a. With a card still to come that is the largest payoff in
+  the subtree. Without one it is the larger of the biggest fold payoff and the
+  showdown payoff against o: the biggest showdown win if h beats o, 0 on a
+  tie, minus the smallest showdown pot if h loses. That needs the opponent
+  mass h beats and the mass that beats h, which two sweeps over the
+  strength-sorted hands give with card removal, like the showdown itself.
+  Over the first 512 iterations on the no-limit turn, windows lasted 3.3
+  iterations on average with only the flat bound and 4.0 with this one.
+- While an action is pruned, its window keeps the summed opponent reach, the
+  summed node value and the summed bound, each divided by the running
+  discount product D. Under vanilla CFR D is 1. Under linear CFR every regret
+  is multiplied by t/(t+1) each iteration, so a contribution from iteration s
+  is worth D(t-1)/D(s-1) of itself at iteration t, and dividing by D(s-1) on
+  the way in and multiplying by D(t-1) on the way out does that exactly.
+  CFR+ floors negative regrets and DCFR(1.5, 0, 2) halves them, both
+  sign-dependent, so the catch-up stops being linear and RBP is refused.
+  Discounted with alpha = beta would be uniform but can drive D to zero
+  (alpha = 0 halves it every iteration), so it is refused too.
+- Why one walk catches up the whole window: nothing below a pruned action
+  changes while it is pruned. The acting player's regrets there are not
+  updated (that is the point), the opponent's are updated with the acting
+  player's reach, which is zero, and linear CFR scales every row by the same
+  factor, which regret matching ignores. With the strategies below frozen,
+  every counterfactual value below is linear in the opponent's reach at the
+  top, so the sum over the window is one walk with the summed reach.
+- The catch-up plays a counterfactual best response below the action, as in
+  the paper: each of the acting player's nodes takes the max over actions,
+  and every action there gets regret D (V(a) - max), never positive. When the
+  subtree has no decision of the acting player the best response has nothing
+  to choose, so the run has to equal plain CFR up to rounding. That is the
+  main test.
+- The opponent's strategy sums below a pruned action are linear in its reach
+  at the top too, so they are deferred as one more summed vector and added in
+  one pass when the window closes or `average` is called. For speed in the
+  simultaneous vanilla pass this mattered more than anything else: before it,
+  a skipped subtree was still walked once for the opponent's sums, and
+  pruning came out slower than not pruning.
+- A window nested inside another one stays open when the outer one catches
+  up. The two cover disjoint iterations, so the outer best response and the
+  later inner catch-up add up correctly in either order. The first version
+  closed inner windows from inside the outer catch-up; a mutant without that
+  passed every test, and on reflection it was not a bug, so it went.
+- Hands blocked by a card already dealt never hold a window open. Hands with
+  zero reach do, because their regrets still change.
+- Tried and dropped: pruning only subtrees that contain a chance node. On the
+  no-limit turn those are about 1% of what gets pruned, and their catch-up
+  walks cost what the skips save.
+
+Results (Ryzen 7 7800X3D, one core; back-to-back timings vary by about 10%,
+so the limit turn alternates the two solvers in blocks of 100 iterations):
+
+| vanilla CFR unless noted                         | pruned/it | plain  | RBP    | exploit plain / RBP |
+|--------------------------------------------------|----------:|-------:|-------:|--------------------:|
+| limit turn Qs Jh 8d 5c, real ranges, 2,000 it    | 320       | 26.4 s | 23.4 s | 0.194% / 0.199%     |
+| no-limit turn, 3 sizes + all-in, 1,000 it        | 383       | 22.3 s | 20.8 s | 2.64% / 2.60%       |
+| same, linear CFR                                 | 293       | 31.1 s | 31.4 s | 0.111% / 0.120%     |
+| no-limit river, random ranges, 4 sizes, 3,000 it | 2.1       | 4.10 s | 4.54 s | 0.501% / 0.493%     |
+
+On the limit turn every block after iteration 400 was faster with pruning,
+13.0 against 11.2 ms an iteration at the end. A single bench sample of
+iterations 1,001 to 1,100 had it the other way (12.7 against 14.7 ms), which
+is why the README quotes the interleaved run. With pruning off, the old and
+new code time the same within noise on the random-range limit turn.
+
+The windows explain the small gain. A shared subtree can only be skipped when
+every hand in the range has given the action up, so a window is the minimum
+of all the hands' windows. On the no-limit turn they averaged 4 iterations over
+the first 512, and every one ended on the bound, never because some hand's
+probability went positive. On a no-limit river with the test ranges they grow
+with t, as the theory says: 7 iterations at 1,000, 21 at 16,000. Over those
+16,000 iterations the exploitability ratio against plain CFR wanders between
+0.81 and 1.18 for both CFR and linear CFR and ends lower.
+
+Checks:
+
+- 168 tests, about 22 s.
+- One-bet river, r1 against r0 (every prunable action there leads only to
+  opponent decisions): 400 iterations of CFR and of linear CFR, 294 subtrees
+  pruned and 60 windows caught up; averages and best responses match plain
+  CFR to 1e-9 and every regret to 1e-6. With the ranges the other way round,
+  player 0 bets every hand by iteration 98, the check line (which holds player
+  0's own call or fold) gets pruned, the best response kicks in and the runs
+  part, as they should. Found by bisecting iterations.
+- No-limit river with raises: exploitability after 2,000 iterations within a
+  third of plain CFR's for both algorithms.
+- Folded against unfolded with pruning on a monotone turn, 60 iterations:
+  every exported infoset to 1e-9.
+- Reading `average` every iteration leaves the regrets bit for bit the same
+  as never reading it.
+- Mutations caught: dropping the pruned action's own regret at catch-up
+  (caught only once the regrets were compared; a strategy can't show a
+  negative regret that is not negative enough), no bound, a bound with the
+  base payoff too low, linear CFR without the scale, deferred strategy sums
+  that are dropped or never flushed, and a mean instead of a best response in
+  the catch-up. Not caught: leaving tied hands out of the bound (too tight,
+  but never decisive in the tests) and dropping the symmetrization after a
+  catch-up (rounding level).
+
+Next: subgame re-solving from public belief states on the river with the
+turn solve's ranges, then EMD turn buckets from histograms of river hand
+strength against the E[HS^2] curve in docs/buckets.svg. Pruning per hand
+instead of per subtree would need a different walk and isn't worth it at
+these sizes.
