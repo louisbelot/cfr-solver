@@ -127,22 +127,26 @@ let pruning () =
   let r0 = Range.of_string ~board "TT+, AQ+, KQs, QJs, JTs, T9s, 98s"
   and r1 = Range.of_string ~board "88+, AJ+, KQ, QJs, JTs, A5s" in
   List.iter
-    (fun prune ->
+    (fun (name, algorithm, prune, rbp, warm) ->
       let t =
-        Subgame.create ~algorithm:Cfr.dcfr ~prune
+        Subgame.create ~algorithm ~prune ~rbp
           (Bet_tree.limit ~pot:4. ~bet:1. 2)
           ~board r0 r1
       in
-      Subgame.run t 100;
-      let skipped = Subgame.skipped t in
+      Subgame.run t warm;
+      let skipped = Subgame.skipped t + Subgame.pruned t in
       let start = Unix.gettimeofday () in
       Subgame.run t 100;
       let elapsed = Unix.gettimeofday () -. start in
       Printf.printf "%-6s %-14s %10.1f it/s %8.2f ms/it %5d skips/it\n" "turn"
-        (if prune then "dcfr prune" else "dcfr")
-        (100. /. elapsed) (elapsed *. 10.)
-        ((Subgame.skipped t - skipped) / 100))
-    [ false; true ]
+        name (100. /. elapsed) (elapsed *. 10.)
+        ((Subgame.skipped t + Subgame.pruned t - skipped) / 100))
+    [
+      ("dcfr", Cfr.dcfr, false, false, 100);
+      ("dcfr prune", Cfr.dcfr, true, false, 100);
+      ("cfr", Cfr.Vanilla, true, false, 1000);
+      ("cfr rbp", Cfr.Vanilla, true, true, 1000);
+    ]
 
 let () =
   seven_cards ();
