@@ -6,6 +6,7 @@ val create :
   ?iso:bool ->
   ?single:bool ->
   ?prune:bool ->
+  ?rbp:bool ->
   ?buckets:int list ->
   Bet_tree.config ->
   board:Hand.card array ->
@@ -20,6 +21,8 @@ val iterations : t -> int
 val bucket : t -> int -> Hand.card list -> Hand.card * Hand.card -> int option
 val memory : t -> int
 val skipped : t -> int
+val pruned : t -> int
+val caught_up : t -> int
 val decisions : t -> int
 val pot : t -> float
 val range : t -> int -> Range.t

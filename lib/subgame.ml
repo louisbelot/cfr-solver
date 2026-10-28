@@ -34,6 +34,13 @@ type side = {
 
 type board = { strength : int array array; order : int array array }
 
+type window = {
+  opp : float array;
+  mine : float array;
+  slack : float array;
+  own : float array;
+}
+
 type decision = {
   id : int;
   player : int;
@@ -49,6 +56,8 @@ type decision = {
   sum : store;
   orbits : int array array;
   bucket : int array;
+  top : float array;
+  windows : window option array;
 }
 
 and image = { card : int; suit : Suit.perm; perm : int array array }
@@ -72,6 +81,7 @@ type scratch = {
   norm : float array;
   mask : float array array;
   tmp : float array array;
+  skip : bool array;
 }
 
 type profile = float array array array
@@ -87,8 +97,12 @@ type t = {
   algorithm : Cfr.algorithm;
   iso : bool;
   prune : bool;
+  rbp : bool;
   labels : (int * int list, int array) Hashtbl.t;
   mutable skipped : int;
+  mutable pruned : int;
+  mutable caught_up : int;
+  mutable scale : float;
   mutable iterations : int;
   mutable weight : float;
 }
@@ -171,8 +185,15 @@ let hand_orbits maps group =
   done;
   Array.of_list (List.rev !out)
 
+let rec top p = function
+  | Fold { folder; win } -> if folder = p then -.win else win
+  | Showdown { win; _ } -> win
+  | Chance { children; _ } | Decision { children; _ } ->
+      Array.fold_left (fun m c -> Float.max m (top p c)) neg_infinity children
+
 let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
-    ?(prune = true) ?(buckets = []) (cfg : Bet_tree.config) ~board r0 r1 =
+    ?(prune = true) ?(rbp = false) ?(buckets = []) (cfg : Bet_tree.config)
+    ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
@@ -185,6 +206,10 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
     invalid_arg "Subgame.create: negative bucket count";
   if b = 3 && List.hd (buckets @ [ 0 ]) > 0 then
     invalid_arg "Subgame.create: flop buckets are not supported";
+  if rbp && buckets <> [] then
+    invalid_arg "Subgame.create: regret-based pruning with buckets";
+  if rbp && algorithm <> Cfr.Vanilla && algorithm <> Cfr.Linear then
+    invalid_arg "Subgame.create: regret-based pruning needs cfr or lcfr";
   let clean (r : Range.t) =
     let w = Array.make 1326 0. in
     Array.iteri (fun j c -> w.(Range.index c) <- r.weights.(j)) r.hands;
@@ -332,6 +357,8 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
             sum = store single k rows;
             orbits = (if bucket = [||] then orbits player g else [||]);
             bucket;
+            top = Array.map (top player) children;
+            windows = Array.make k None;
           }
         in
         decisions := dn :: !decisions;
@@ -355,6 +382,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
           norm = Array.make n 0.;
           mask = Array.init 2 (fun _ -> Array.make n 0.);
           tmp = Array.init 2 (fun _ -> Array.make n 0.);
+          skip = Array.make k false;
         })
   in
   let t =
@@ -369,8 +397,12 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
       algorithm;
       iso;
       prune;
+      rbp;
       labels;
       skipped = 0;
+      pruned = 0;
+      caught_up = 0;
+      scale = 1.;
       iterations = 0;
       weight = 1.;
     }
@@ -395,6 +427,8 @@ let bucket t p dealt hand =
       find 0
 
 let skipped t = t.skipped
+let pruned t = t.pruned
+let caught_up t = t.caught_up
 
 let memory t =
   Array.fold_left
@@ -653,6 +687,120 @@ let rec accumulate t node d p w own =
           dn.children;
         add_sums dn n own sc w
 
+let unused t dn sc a =
+  match dn.children.(a) with
+  | Fold _ | Showdown _ -> false
+  | Chance _ | Decision _ ->
+      let s = t.sides.(dn.player) and st = sc.strat.(a) in
+      let rec go h =
+        h = s.n
+        || ((st.!(h) = 0. || List.exists (holds s h) dn.dealt) && go (h + 1))
+      in
+      go 0
+
+let add_regret t dn a v base =
+  for h = 0 to t.sides.(dn.player).n - 1 do
+    set dn.regret a h (get dn.regret a h +. (t.scale *. (v.(h) -. base.(h))))
+  done
+
+let flush t dn a d w =
+  accumulate t dn.children.(a) d (1 - dn.player) 1. w.own;
+  Array.fill w.own 0 (Array.length w.own) 0.
+
+let rec settle t node d i opp out =
+  match node with
+  | Fold _ | Showdown _ -> terminal t node i opp out
+  | (Chance _ | Decision _) when dead t (1 - i) opp ->
+      Array.fill out 0 t.sides.(i).n 0.
+  | Chance { cards; weight; children; images } ->
+      let sc = t.scratch.(d) in
+      Array.fill out 0 t.sides.(i).n 0.;
+      Array.iteri
+        (fun j c ->
+          mask t (1 - i) c opp sc.mask.(1 - i);
+          settle t children.(j) (d + 1) i sc.mask.(1 - i) sc.tmp.(i);
+          gather t i c weight sc.tmp.(i) out;
+          Array.iter
+            (fun im -> gather_image t i im weight sc.tmp.(i) out)
+            images.(j))
+        cards
+  | Decision dn when dn.player = i ->
+      let sc = t.scratch.(d) and n = t.sides.(i).n in
+      let k = Array.length dn.actions in
+      Array.iteri
+        (fun a child -> settle t child (d + 1) i opp sc.vals.(a))
+        dn.children;
+      Array.blit sc.vals.(0) 0 out 0 n;
+      for a = 1 to k - 1 do
+        let v = sc.vals.(a) in
+        for h = 0 to n - 1 do
+          out.!(h) <- Float.max out.!(h) v.!(h)
+        done
+      done;
+      for a = 0 to k - 1 do
+        add_regret t dn a sc.vals.(a) out
+      done;
+      symmetrize dn
+  | Decision dn ->
+      let sc = t.scratch.(d) and n = t.sides.(i).n in
+      let m = t.sides.(dn.player).n and acc = sc.acc in
+      regret_matching dn m sc;
+      Array.fill out 0 n 0.;
+      Array.iteri
+        (fun a child ->
+          let next = sc.next.(a) and s = sc.strat.(a) in
+          for h = 0 to m - 1 do
+            next.!(h) <- opp.!(h) *. s.!(h)
+          done;
+          settle t child (d + 1) i next acc;
+          for h = 0 to n - 1 do
+            out.!(h) <- out.!(h) +. acc.!(h)
+          done)
+        dn.children
+
+let catch_up t dn a d w =
+  let v = t.scratch.(d).vals.(a) in
+  flush t dn a (d + 1) w;
+  settle t dn.children.(a) (d + 1) dn.player w.opp v;
+  add_regret t dn a v w.mine;
+  symmetrize dn;
+  dn.windows.(a) <- None;
+  t.caught_up <- t.caught_up + 1
+
+let window t dn a =
+  match dn.windows.(a) with
+  | Some w -> w
+  | None ->
+      let n = t.sides.(dn.player).n and m = t.sides.(1 - dn.player).n in
+      let w =
+        {
+          opp = Array.make m 0.;
+          mine = Array.make n 0.;
+          slack = Array.make n 0.;
+          own = Array.make m 0.;
+        }
+      in
+      dn.windows.(a) <- Some w;
+      w
+
+let add dst c src =
+  for h = 0 to Array.length dst - 1 do
+    dst.!(h) <- dst.!(h) +. (c *. src.!(h))
+  done
+
+let stays_negative t dn a slack =
+  let s = t.sides.(dn.player) in
+  let past h =
+    match dn.windows.(a) with Some w -> t.scale *. w.slack.(h) | None -> 0.
+  in
+  let rec go h =
+    h = s.n
+    || (List.exists (holds s h) dn.dealt
+       || get dn.regret a h +. past h +. slack.(h) <= 0.)
+       && go (h + 1)
+  in
+  go 0
+
 let rec walk t node d active reach out =
   match node with
   | Fold _ | Showdown _ ->
@@ -691,22 +839,57 @@ let rec walk t node d active reach out =
       let own = reach.(p) and mine = out.(p) and theirs = out.(o) in
       if active.(p) then Array.fill mine 0 n 0.;
       if active.(o) then Array.fill theirs 0 m 0.;
+      let skip = sc.skip in
+      for a = 0 to Array.length dn.actions - 1 do
+        skip.(a) <-
+          t.rbp && (active.(p) || dn.windows.(a) <> None) && unused t dn sc a
+      done;
+      let visit a child =
+        (match dn.windows.(a) with
+        | Some w when active.(p) || not (unused t dn sc a) ->
+            catch_up t dn a d w
+        | _ -> ());
+        let s = sc.strat.(a) and next = sc.next.(a) and v = sc.vals.(a) in
+        for h = 0 to n - 1 do
+          next.!(h) <- own.!(h) *. s.!(h)
+        done;
+        walk t child (d + 1) active (pair p next reach.(o)) (pair p v sc.acc);
+        if active.(p) then
+          for h = 0 to n - 1 do
+            mine.!(h) <- mine.!(h) +. (s.!(h) *. v.!(h))
+          done;
+        if active.(o) then begin
+          let acc = sc.acc in
+          for h = 0 to m - 1 do
+            theirs.!(h) <- theirs.!(h) +. acc.!(h)
+          done
+        end
+      in
+      Array.iteri
+        (fun a child -> if not skip.(a) then visit a child)
+        dn.children;
       Array.iteri
         (fun a child ->
-          let s = sc.strat.(a) and next = sc.next.(a) and v = sc.vals.(a) in
-          for h = 0 to n - 1 do
-            next.!(h) <- own.!(h) *. s.!(h)
-          done;
-          walk t child (d + 1) active (pair p next reach.(o)) (pair p v sc.acc);
-          if active.(p) then
+          if skip.(a) && not active.(p) then
+            add (window t dn a).own t.weight reach.(o)
+          else if skip.(a) then begin
+            let slack = sc.vals.(a) in
+            fold_values t ~win:dn.top.(a) p reach.(o) slack;
             for h = 0 to n - 1 do
-              mine.!(h) <- mine.!(h) +. (s.!(h) *. v.!(h))
+              slack.!(h) <- slack.!(h) -. mine.!(h)
             done;
-          if active.(o) then begin
-            let acc = sc.acc in
-            for h = 0 to m - 1 do
-              theirs.!(h) <- theirs.!(h) +. acc.!(h)
-            done
+            if stays_negative t dn a slack then begin
+              let w = window t dn a and c = 1. /. t.scale in
+              add w.opp c reach.(o);
+              add w.mine c mine;
+              add w.slack c slack;
+              if active.(o) then add w.own t.weight reach.(o);
+              t.pruned <- t.pruned + 1
+            end
+            else begin
+              skip.(a) <- false;
+              visit a child
+            end
           end)
         dn.children;
       if active.(p) && Array.length dn.bucket > 0 then begin
@@ -716,20 +899,21 @@ let rec walk t node d active reach out =
       else if active.(p) then begin
         for a = 0 to Array.length dn.actions - 1 do
           let s = sc.strat.(a) and v = sc.vals.(a) and w = t.weight in
-          match (dn.regret, dn.sum) with
-          | Double r, Double sum ->
-              let r = r.(a) and sum = sum.(a) in
-              for h = 0 to n - 1 do
-                r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
-                sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
-              done
-          | Single r, Single sum ->
-              let r = r.(a) and sum = sum.(a) in
-              for h = 0 to n - 1 do
-                r.^(h) <- r.^(h) +. (v.!(h) -. mine.!(h));
-                sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
-              done
-          | _ -> assert false
+          if not skip.(a) then
+            match (dn.regret, dn.sum) with
+            | Double r, Double sum ->
+                let r = r.(a) and sum = sum.(a) in
+                for h = 0 to n - 1 do
+                  r.!(h) <- r.!(h) +. (v.!(h) -. mine.!(h));
+                  sum.!(h) <- sum.!(h) +. (w *. own.!(h) *. s.!(h))
+                done
+            | Single r, Single sum ->
+                let r = r.(a) and sum = sum.(a) in
+                for h = 0 to n - 1 do
+                  r.^(h) <- r.^(h) +. (v.!(h) -. mine.!(h));
+                  sum.^(h) <- sum.^(h) +. (w *. own.!(h) *. s.!(h))
+                done
+            | _ -> assert false
         done;
         symmetrize dn
       end
@@ -773,6 +957,8 @@ let iterate t =
     pass [| false; true |]
   end
   else pass [| true; true |];
+  let pos, _, _ = Cfr.discounts t.algorithm n in
+  t.scale <- t.scale *. pos;
   t.iterations <- n
 
 let run t n =
@@ -781,6 +967,9 @@ let run t n =
   done
 
 let average t =
+  Array.iter
+    (fun dn -> Array.iteri (fun a -> Option.iter (flush t dn a 0)) dn.windows)
+    t.decisions;
   Array.map
     (fun dn ->
       let k = Array.length dn.actions and n = t.sides.(dn.player).n in
