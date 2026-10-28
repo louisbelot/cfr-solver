@@ -41,6 +41,13 @@ type window = {
   own : float array;
 }
 
+type ceiling = {
+  fold : float;
+  win : float;
+  lose : float;
+  showdown : board option;
+}
+
 type decision = {
   id : int;
   player : int;
@@ -56,7 +63,7 @@ type decision = {
   sum : store;
   orbits : int array array;
   bucket : int array;
-  top : float array;
+  ceiling : ceiling array;
   windows : window option array;
 }
 
@@ -185,11 +192,43 @@ let hand_orbits maps group =
   done;
   Array.of_list (List.rev !out)
 
-let rec top p = function
-  | Fold { folder; win } -> if folder = p then -.win else win
-  | Showdown { win; _ } -> win
-  | Chance { children; _ } | Decision { children; _ } ->
-      Array.fold_left (fun m c -> Float.max m (top p c)) neg_infinity children
+let rec ceiling p = function
+  | Fold { folder; win } ->
+      {
+        fold = (if folder = p then -.win else win);
+        win = neg_infinity;
+        lose = neg_infinity;
+        showdown = None;
+      }
+  | Showdown { win; board } ->
+      { fold = neg_infinity; win; lose = -.win; showdown = Some board }
+  | Chance { children; _ } ->
+      let top =
+        Array.fold_left
+          (fun m x ->
+            let c = ceiling p x in
+            Float.max m (Float.max c.fold c.win))
+          neg_infinity children
+      in
+      { fold = top; win = neg_infinity; lose = neg_infinity; showdown = None }
+  | Decision { children; _ } ->
+      let merge a b =
+        {
+          fold = Float.max a.fold b.fold;
+          win = Float.max a.win b.win;
+          lose = Float.max a.lose b.lose;
+          showdown = (if a.showdown = None then b.showdown else a.showdown);
+        }
+      in
+      Array.fold_left
+        (fun acc c -> merge acc (ceiling p c))
+        {
+          fold = neg_infinity;
+          win = neg_infinity;
+          lose = neg_infinity;
+          showdown = None;
+        }
+        children
 
 let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
     ?(prune = true) ?(rbp = false) ?(buckets = []) (cfg : Bet_tree.config)
@@ -357,7 +396,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
             sum = store single k rows;
             orbits = (if bucket = [||] then orbits player g else [||]);
             bucket;
-            top = Array.map (top player) children;
+            ceiling = Array.map (ceiling player) children;
             windows = Array.make k None;
           }
         in
@@ -687,6 +726,52 @@ let rec accumulate t node d p w own =
           dn.children;
         add_sums dn n own sc w
 
+let ceiling_values t c i opp mass lower out =
+  let base = Float.max c.fold c.lose in
+  match c.showdown with
+  | None -> fold_values t ~win:base i opp out
+  | Some board ->
+      let s = t.sides.(i) and o = t.sides.(1 - i) and cards = t.cards in
+      let mine = board.order.(i) and theirs = board.order.(1 - i) in
+      let sm = board.strength.(i) and st = board.strength.(1 - i) in
+      let up = Float.max c.fold c.win and even = Float.max c.fold 0. in
+      fold_values t ~win:1. i opp mass;
+      Array.fill lower 0 s.n 0.;
+      Array.fill out 0 s.n 0.;
+      Array.fill cards 0 52 0.;
+      let total = ref 0. and j = ref 0 and m = Array.length theirs in
+      for x = 0 to Array.length mine - 1 do
+        let h = mine.%(x) in
+        while !j < m && st.%(theirs.%(!j)) < sm.%(h) do
+          let k = theirs.%(!j) in
+          let r = opp.!(k) in
+          cards.!(o.c1.%(k)) <- cards.!(o.c1.%(k)) +. r;
+          cards.!(o.c2.%(k)) <- cards.!(o.c2.%(k)) +. r;
+          total := !total +. r;
+          incr j
+        done;
+        lower.!(h) <- !total -. cards.!(s.c1.%(h)) -. cards.!(s.c2.%(h))
+      done;
+      Array.fill cards 0 52 0.;
+      let total = ref 0. and j = ref (m - 1) in
+      for x = Array.length mine - 1 downto 0 do
+        let h = mine.%(x) in
+        while !j >= 0 && st.%(theirs.%(!j)) > sm.%(h) do
+          let k = theirs.%(!j) in
+          let r = opp.!(k) in
+          cards.!(o.c1.%(k)) <- cards.!(o.c1.%(k)) +. r;
+          cards.!(o.c2.%(k)) <- cards.!(o.c2.%(k)) +. r;
+          total := !total +. r;
+          decr j
+        done;
+        let higher = !total -. cards.!(s.c1.%(h)) -. cards.!(s.c2.%(h)) in
+        let tie = mass.!(h) -. lower.!(h) -. higher in
+        out.!(h) <-
+          (base *. mass.!(h))
+          +. ((up -. base) *. lower.!(h))
+          +. ((even -. base) *. tie)
+      done
+
 let unused t dn sc a =
   match dn.children.(a) with
   | Fold _ | Showdown _ -> false
@@ -874,7 +959,8 @@ let rec walk t node d active reach out =
             add (window t dn a).own t.weight reach.(o)
           else if skip.(a) then begin
             let slack = sc.vals.(a) in
-            fold_values t ~win:dn.top.(a) p reach.(o) slack;
+            ceiling_values t dn.ceiling.(a) p reach.(o) sc.mask.(0) sc.mask.(1)
+              slack;
             for h = 0 to n - 1 do
               slack.!(h) <- slack.!(h) -. mine.!(h)
             done;
