@@ -192,7 +192,21 @@ let rbp_matches_plain algorithm () =
     close 1e-9 "best response"
       (Subgame.best_response b i pb)
       (Subgame.best_response a i pa)
-  done
+  done;
+  let ra = Subgame.regrets a in
+  Array.iteri
+    (fun i node ->
+      Array.iteri
+        (fun x row ->
+          Array.iteri
+            (fun h r ->
+              close 1e-6
+                (Printf.sprintf "regret %d %d %d" i x h)
+                r
+                ra.(i).(x).(h))
+            row)
+        node)
+    (Subgame.regrets b)
 
 let rbp_converges algorithm () =
   let make rbp =

@@ -28,6 +28,7 @@ val pot : t -> float
 val range : t -> int -> Range.t
 val average : t -> profile
 val current : t -> profile
+val regrets : t -> profile
 val value : t -> profile -> float
 val best_response : t -> int -> profile -> float
 val exploitability : t -> profile -> float

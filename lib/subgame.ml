@@ -1075,6 +1075,20 @@ let average t =
       p)
     t.decisions
 
+let regrets t =
+  Array.iter
+    (fun dn ->
+      Array.iteri (fun a -> Option.iter (catch_up t dn a 0)) dn.windows)
+    t.decisions;
+  Array.map
+    (fun dn ->
+      let n = t.sides.(dn.player).n in
+      Array.init (Array.length dn.actions) (fun a ->
+          Array.init n (fun h ->
+              let x = if Array.length dn.bucket > 0 then dn.bucket.(h) else h in
+              if x < 0 then 0. else get dn.regret a x)))
+    t.decisions
+
 let current t =
   Array.map
     (fun dn ->
