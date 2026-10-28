@@ -12,7 +12,8 @@ solves river and turn subgames over full ranges with a vectorized CFR on the
 public tree, under fixed-limit or no-limit betting, and maps bet sizes that
 are missing from the tree onto the ones that are there (action translation).
 Turn trees fold suit-isomorphic river cards, can store regrets in 32-bit
-floats, skip subtrees no opponent hand reaches, and can merge hands into
+floats, skip subtrees no opponent hand reaches or (with regret-based pruning)
+no hand of the player acting would take, and can merge hands into
 hand-strength buckets whose cost is measured in the exact tree.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
@@ -451,6 +452,64 @@ real ranges on Qs Jh 8d 5c it skips about 530 subtrees per iteration and goes
 from 19.9 to 17.9 ms an iteration, and with random ranges almost every line has
 some hand that reaches it.
 
+**Regret-based pruning.** `-a cfr-rbp` and `-a lcfr-rbp` add interval
+regret-based pruning (Brown and Sandholm, NeurIPS 2015) to vanilla and linear
+CFR. Skipping dead subtrees only drops lines the opponent never reaches. RBP
+also drops lines the updating player never takes: when every hand has a
+negative regret on an action and some other action positive, regret matching
+plays it with probability zero, nothing below it can affect anyone, and the
+walk can leave it alone until its regret could have turned positive. Each
+iteration the solver checks that with a bound. For every hand, the action's
+regret plus, over the skipped iterations, the most the hand could have won
+below the action minus what it got at the node, has to stay at or below zero.
+The most a hand can win is a sum over the opponent hands that reach the node:
+the largest payoff in the subtree when a card is still to come, and when none
+is, the most it can take from that particular hand (the biggest showdown pot
+from a hand it beats, the biggest fold from a hand it loses to).
+
+While an action is pruned the solver keeps three running sums: the opponent's
+reach, the node's value and the bound. When the bound fails, one walk with the
+summed reach catches up every skipped iteration at once, playing a best
+response below the action, which is what keeps CFR's regret bound in the
+paper. One walk is enough because everything below a pruned action is frozen
+for the whole window: the player never goes there, so the opponent's regrets
+below can't change either, and the values below are linear in the opponent's
+reach at the top. The opponent's strategy sums below are deferred the same
+way and added before anything reads the averages. Linear CFR multiplies every
+regret by the same factor, which folds into the sums as a running scale. CFR+
+and DCFR treat negative regrets differently from positive ones, so the solver
+refuses RBP with them.
+
+It works, and on these spots it saves between nothing and 11% of the time:
+
+```
+$ cfr-solver subgame --board "Qs Jh 8d 5c" --pot 10 --stack 50 --cap 2 \
+    --oop "TT+, AQ+, KQs, QJs, JTs, T9s, 98s" --ip "88+, AJ+, KQ, QJs, JTs, A5s" \
+    --bets 0.33,0.75,1.5 --all-in -a cfr,cfr-rbp,lcfr,lcfr-rbp -n 1000
+```
+
+| spot (vanilla CFR unless noted)                        | pruned/it | plain  | RBP    | exploitability, plain / RBP |
+|--------------------------------------------------------|----------:|-------:|-------:|----------------------------:|
+| limit turn Qs Jh 8d 5c, real ranges, 2,000 it          | 320       | 26.4 s | 23.4 s | 0.194% / 0.199%             |
+| no-limit turn above, 1,000 it                          | 383       | 22.3 s | 20.8 s | 2.64% / 2.60%               |
+| no-limit turn above, linear CFR, 1,000 it              | 293       | 31.1 s | 31.4 s | 0.111% / 0.120%             |
+| no-limit river Qs Jh 8d 5c 2s, random ranges, 3,000 it | 2.1       | 4.10 s | 4.54 s | 0.501% / 0.493%             |
+
+The limit turn alternated the two solvers in blocks of 100 iterations, which
+is the only way I found to get stable numbers on this machine: from about
+iteration 400 on, every block with pruning was faster, 13.0 against 11.2 ms an
+iteration by the end. The no-limit turn ran back to back, twice; the other run
+gave 23.8 against 21.5 s for CFR and 35.7 against 34.2 s for linear CFR, so
+the linear CFR difference is noise.
+
+In vector form an action can only be pruned when the whole range has given it
+up, so a window lasts as long as the hand closest to taking the action again: about 4 iterations over the first 512 on the no-limit turn, and
+on a small no-limit river 7 at 1,000 iterations and 21 at 16,000. Most of what
+gets pruned is small river subtrees, where the bound costs about as much as
+the walk it saves. The paper's order-of-magnitude speedups are for scalar CFR,
+where every infoset is one hand and gets its own window. The exploitability
+curves track the plain runs within 20% either way the whole time.
+
 **Hand-strength buckets.** `cfr-solver buckets` merges hands into buckets
 inside the solver itself: on the turn by E[HS^2] (the mean over river cards of
 squared hand strength against a random hand), on each river by hand strength,
@@ -777,6 +836,16 @@ The tests check against numbers that come from outside this code:
 - Bucketed subgames against `Cfr.Make` on the same abstracted game (above),
   float32 runs against double runs, and pruned runs bit for bit equal to
   unpruned ones.
+- Regret-based pruning: on a one-bet river where every pruned action leads
+  only to opponent decisions, the best response in the catch-up has nothing to
+  choose, so RBP has to reproduce plain CFR. After 400 iterations of CFR and of
+  linear CFR, with 294 subtrees pruned and 60 windows caught up, the average
+  strategies and best responses match to 1e-9 and every cumulative regret to
+  1e-6. On a no-limit river with raises (where the best response does choose)
+  exploitability after 2,000 iterations is within a third of the plain run's,
+  folded and unfolded monotone turns agree to 1e-9 with pruning on, and
+  reading the averages in the middle of a run (which flushes the deferred
+  strategy sums) leaves the regrets bit for bit unchanged.
 - The clairvoyance game from The Mathematics of Poker, on real cards: player 0
   holds the nuts or air with equal weight, player 1 a bluff catcher, and the
   only bet is the pot. Theory says bluff with air half the time, call half the
@@ -819,7 +888,13 @@ instead of its inverse, skipping the images in the best response, composing
 nested suit permutations in the wrong order (only the flop test catches that
 one), not tying symmetric regrets, unweighted bucket regrets, a float32 path
 without the regret floor, and a pruned walk that forgets the strategy sums
-each fail at least one test.
+each fail at least one test. For regret-based pruning, a catch-up that skips
+the pruned action's own regret, no bound at all, a bound that is too tight,
+linear CFR without the scale, deferred strategy sums that are dropped or never
+flushed, and a mean instead of a best response in the catch-up each fail at
+least two tests. Two mutants survive: a bound that leaves out tied hands (too
+tight, but it never changed a decision in the tests) and leaving out one
+symmetrization after a catch-up, which only matters at rounding level.
 
 ## License
 
