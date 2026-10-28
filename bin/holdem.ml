@@ -91,10 +91,11 @@ let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
   let last = ref None in
   let runs =
     List.map
-      (fun (name, algorithm) ->
+      (fun (name, (algorithm, rbp)) ->
         last := None;
         let t =
-          Subgame.create ~algorithm ~iso:(not no_iso) ~single cfg ~board r0 r1
+          Subgame.create ~algorithm ~iso:(not no_iso) ~single ~rbp cfg ~board r0
+            r1
         in
         let wall = ref 0. in
         let rows =
@@ -107,27 +108,34 @@ let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
             (log_checkpoints 4 iterations)
         in
         last := Some (name, t);
-        (name, rows, !wall))
+        (name, rows, !wall, Subgame.pruned t))
       algorithms
   in
   match (!last, runs) with
   | None, _ | _, [] -> Error (`Msg "no algorithm to run")
-  | Some (name, t), (_, first, _) :: _ ->
+  | Some (name, t), (_, first, _, _) :: _ ->
       header board tree t;
       Format.printf "exploitability, %% of the pot@.%10s" "iterations";
-      List.iter (fun (name, _, _) -> Format.printf "%10s" name) runs;
+      List.iter (fun (name, _, _, _) -> Format.printf "%10s" name) runs;
       Format.printf "@.";
       List.iteri
         (fun i (k, _) ->
           Format.printf "%10d" k;
           List.iter
-            (fun (_, rows, _) ->
+            (fun (_, rows, _, _) ->
               Format.printf "%10s" (sci (snd (List.nth rows i))))
             runs;
           Format.printf "@.")
         first;
       Format.printf "%10s" "time (s)";
-      List.iter (fun (_, _, wall) -> Format.printf "%10.2f" wall) runs;
+      List.iter (fun (_, _, wall, _) -> Format.printf "%10.2f" wall) runs;
+      if List.exists (fun (_, _, _, p) -> p > 0) runs then begin
+        Format.printf "@.%10s" "pruned/it";
+        List.iter
+          (fun (_, _, _, p) ->
+            Format.printf "%10.1f" (float_of_int p /. float_of_int iterations))
+          runs
+      end;
       let prof = Subgame.average t in
       Format.printf "@.@.%s strategy, oop value %.4f (pot %g)@." name
         (Subgame.value t prof) (Subgame.pot t);
@@ -135,7 +143,7 @@ let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
       Option.iter
         (fun path ->
           runs
-          |> List.concat_map (fun (name, rows, _) ->
+          |> List.concat_map (fun (name, rows, _, _) ->
               List.map
                 (fun (k, e) ->
                   Printf.sprintf "%s,%d,%s\n" name k (short_float e))
@@ -154,7 +162,7 @@ let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
                     (Array.to_list (Array.map Hand.to_string board))))
             ~xlabel:"iterations" ~ylabel:"% of the pot"
             (List.map
-               (fun (label, points, _) ->
+               (fun (label, points, _, _) ->
                  { Plot.label; dashed = false; points })
                runs)
           |> write_file path)
@@ -464,19 +472,23 @@ let subgame_cmd =
   let algorithms =
     let all =
       [
-        ("cfr", Cfr.Vanilla);
-        ("cfr+", Plus);
-        ("lcfr", Linear);
-        ("dcfr", Cfr.dcfr);
+        ("cfr", (Cfr.Vanilla, false));
+        ("cfr+", (Plus, false));
+        ("lcfr", (Linear, false));
+        ("dcfr", (Cfr.dcfr, false));
+        ("cfr-rbp", (Vanilla, true));
+        ("lcfr-rbp", (Linear, true));
       ]
     in
     Arg.(
       value
       & opt
           (list (enum (List.map (fun (n, a) -> (n, (n, a))) all)))
-          [ ("dcfr", Cfr.dcfr) ]
+          [ ("dcfr", (Cfr.dcfr, false)) ]
       & info [ "a"; "algorithms" ] ~docv:"LIST"
-          ~doc:"Algorithms to run: cfr, cfr+, lcfr, dcfr.")
+          ~doc:
+            "Algorithms to run: cfr, cfr+, lcfr, dcfr, cfr-rbp, lcfr-rbp (the \
+             last two with regret-based pruning).")
   in
   Cmd.v
     (Cmd.info "subgame"
