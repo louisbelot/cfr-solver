@@ -583,7 +583,7 @@ let dead t i v =
   let rec go h = h = n || (v.!(h) = 0. && go (h + 1)) in
   go 0
 
-let pruned t active reach =
+let unreached t active reach =
   t.prune
   && active.(0) <> active.(1)
   &&
@@ -627,7 +627,7 @@ let add_sums dn n own sc w =
           done
     done
 
-let rec accumulate t node d p own =
+let rec accumulate t node d p w own =
   if not (dead t p own) then
     match node with
     | Fold _ | Showdown _ -> ()
@@ -636,10 +636,10 @@ let rec accumulate t node d p own =
         Array.iteri
           (fun j c ->
             mask t p c own sc.mask.(p);
-            accumulate t children.(j) (d + 1) p sc.mask.(p))
+            accumulate t children.(j) (d + 1) p w sc.mask.(p))
           cards
     | Decision dn when dn.player <> p ->
-        Array.iter (fun child -> accumulate t child (d + 1) p own) dn.children
+        Array.iter (fun child -> accumulate t child (d + 1) p w own) dn.children
     | Decision dn ->
         let n = t.sides.(p).n and sc = t.scratch.(d) in
         regret_matching dn n sc;
@@ -649,9 +649,9 @@ let rec accumulate t node d p own =
             for h = 0 to n - 1 do
               next.!(h) <- own.!(h) *. s.!(h)
             done;
-            accumulate t child (d + 1) p next)
+            accumulate t child (d + 1) p w next)
           dn.children;
-        add_sums dn n own sc t.weight
+        add_sums dn n own sc w
 
 let rec walk t node d active reach out =
   match node with
@@ -659,11 +659,11 @@ let rec walk t node d active reach out =
       for i = 0 to 1 do
         if active.(i) then terminal t node i reach.(1 - i) out.(i)
       done
-  | (Chance _ | Decision _) when pruned t active reach ->
+  | (Chance _ | Decision _) when unreached t active reach ->
       let p = if active.(0) then 0 else 1 in
       t.skipped <- t.skipped + 1;
       Array.fill out.(p) 0 t.sides.(p).n 0.;
-      accumulate t node d p reach.(p)
+      accumulate t node d p t.weight reach.(p)
   | Chance { cards; weight; children; images } ->
       let sc = t.scratch.(d) in
       for i = 0 to 1 do
