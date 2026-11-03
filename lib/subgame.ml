@@ -95,6 +95,7 @@ type profile = float array array array
 
 type t = {
   pot : float;
+  board : Hand.card array;
   sides : side array;
   root : node;
   decisions : decision array;
@@ -416,6 +417,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
   let t =
     {
       pot = cfg.pot;
+      board;
       sides;
       root;
       decisions;
@@ -1266,6 +1268,122 @@ let combine t (p0 : profile) (p1 : profile) =
   Array.map
     (fun (dn : decision) -> if dn.player = 0 then p0.(dn.id) else p1.(dn.id))
     t.decisions
+
+type root = {
+  path : string;
+  board : Hand.card array;
+  pot : float;
+  reach : Range.t array;
+}
+
+let roots (t : t) (prof : profile) =
+  let out = ref [] in
+  let root (dn : decision) reach =
+    let board = Array.append t.board (Array.of_list dn.dealt) in
+    let range p r =
+      let w = Array.make 1326 0. in
+      Array.iteri
+        (fun h x -> w.(Range.index t.sides.(p).range.hands.(h)) <- x)
+        r;
+      Range.of_weights ~board w
+    in
+    { path = dn.path; board; pot = dn.pot; reach = Array.mapi range reach }
+  in
+  let rec go node reach =
+    match node with
+    | Fold _ | Showdown _ -> ()
+    | Chance { cards; children; images; _ } ->
+        if Array.exists (fun im -> im <> [||]) images then
+          invalid_arg "Subgame.roots: folded suits";
+        Array.iteri
+          (fun j c ->
+            let reach =
+              Array.mapi
+                (fun p r ->
+                  let m = Array.make t.sides.(p).n 0. in
+                  mask t p c r m;
+                  m)
+                reach
+            in
+            match children.(j) with
+            | Decision dn when Array.length t.board + List.length dn.dealt = 5
+              ->
+                out := root dn reach :: !out
+            | child -> go child reach)
+          cards
+    | Decision dn ->
+        let p = dn.player and sigma = prof.(dn.id) in
+        Array.iteri
+          (fun a child ->
+            let reach = Array.copy reach in
+            reach.(p) <- Array.mapi (fun h r -> r *. sigma.(a).(h)) reach.(p);
+            go child reach)
+          dn.children
+  in
+  go t.root (Array.map (fun s -> Array.copy s.w) t.sides);
+  List.rev !out
+
+let below t path =
+  let table = Hashtbl.create 64 and n = String.length path in
+  Array.iter
+    (fun (dn : decision) ->
+      if String.length dn.path >= n && String.sub dn.path 0 n = path then
+        Hashtbl.replace table
+          (String.sub dn.path n (String.length dn.path - n))
+          dn)
+    t.decisions;
+  table
+
+let hand_ids (s : side) =
+  let ids = Array.make 1326 (-1) in
+  Array.iteri (fun h c -> ids.(Range.index c) <- h) s.range.hands;
+  ids
+
+let restrict t (prof : profile) path river =
+  let table = below t path in
+  Array.map
+    (fun (rd : decision) ->
+      match Hashtbl.find_opt table rd.path with
+      | None -> invalid_arg "Subgame.restrict: trees differ"
+      | Some dn ->
+          let ids = hand_ids t.sides.(dn.player) in
+          Array.map
+            (fun row ->
+              Array.map
+                (fun c -> row.(ids.(Range.index c)))
+                river.sides.(rd.player).range.hands)
+            prof.(dn.id))
+    river.decisions
+
+let write t (out : profile) path river (sub : profile) player =
+  let table = below t path and ids = hand_ids t.sides.(player) in
+  let hands = river.sides.(player).range.hands in
+  Array.iter
+    (fun (rd : decision) ->
+      if rd.player = player then
+        match Hashtbl.find_opt table rd.path with
+        | None -> invalid_arg "Subgame.graft: trees differ"
+        | Some dn ->
+            Array.iteri
+              (fun a row ->
+                let dst = out.(dn.id).(a) in
+                Array.iteri
+                  (fun j c -> dst.(ids.(Range.index c)) <- row.(j))
+                  hands)
+              sub.(rd.id))
+    river.decisions
+
+let graft t (prof : profile) path river sub player =
+  let out = Array.map (Array.map Array.copy) prof in
+  write t out path river sub player;
+  out
+
+let river_config (cfg : Bet_tree.config) (r : root) =
+  {
+    Bet_tree.pot = r.pot;
+    stack = cfg.stack -. ((r.pot -. cfg.pot) /. 2.);
+    streets = [ List.nth cfg.streets (List.length cfg.streets - 1) ];
+  }
 
 let kinds (dn : decision) =
   Array.map

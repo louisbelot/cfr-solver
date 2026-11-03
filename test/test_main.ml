@@ -13,6 +13,7 @@ let () =
       ("holdem buckets", Test_holdem_buckets.tests);
       ("bet tree", Test_bet_tree.tests);
       ("subgame", Test_subgame.tests);
+      ("resolve", Test_resolve.tests);
       ("translation", Test_translation.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);

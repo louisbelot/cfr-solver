@@ -47,6 +47,18 @@ type line = {
 val lines : ?chance:bool -> t -> profile -> line list
 val combine : t -> profile -> profile -> profile
 
+type root = {
+  path : string;
+  board : Hand.card array;
+  pot : float;
+  reach : Range.t array;
+}
+
+val roots : t -> profile -> root list
+val river_config : Bet_tree.config -> root -> Bet_tree.config
+val restrict : t -> profile -> string -> t -> profile
+val graft : t -> profile -> string -> t -> profile -> int -> profile
+
 val translate :
   low:(a:float -> b:float -> float -> float) ->
   abstract:t ->
