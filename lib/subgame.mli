@@ -8,6 +8,7 @@ val create :
   ?prune:bool ->
   ?rbp:bool ->
   ?buckets:int list ->
+  ?feature:Holdem_buckets.feature ->
   Bet_tree.config ->
   board:Hand.card array ->
   Range.t ->

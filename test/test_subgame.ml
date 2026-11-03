@@ -252,10 +252,10 @@ let rbp_reads () =
     (Subgame.strategy b (Subgame.average b))
     (Subgame.strategy a (Subgame.average a))
 
-let bucketed_matches_scalar buckets algorithm iterations () =
+let bucketed_matches_scalar ?feature buckets algorithm iterations () =
   let t =
-    Subgame.create ~algorithm ~iso:false ~buckets turn ~board:turn_board small0
-      small1
+    Subgame.create ~algorithm ~iso:false ~buckets ?feature turn
+      ~board:turn_board small0 small1
   in
   let label p dealt hand = Subgame.bucket t p dealt hand in
   let (module G) =
@@ -415,6 +415,10 @@ let tests =
       (bucketed_matches_scalar [ 0; 4 ] Cfr.Vanilla 3);
     Alcotest.test_case "bucketed both" `Slow
       (bucketed_matches_scalar [ 2; 3 ] Cfr.dcfr 3);
+    Alcotest.test_case "emd turn buckets" `Slow
+      (bucketed_matches_scalar ~feature:Emd [ 3; 2 ] Cfr.Plus 3);
+    Alcotest.test_case "potential-aware turn buckets" `Slow
+      (bucketed_matches_scalar ~feature:(Potential 4) [ 4; 0 ] Cfr.Vanilla 3);
     Alcotest.test_case "one combo in buckets" `Quick one_combo_buckets;
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;

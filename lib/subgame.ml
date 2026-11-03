@@ -231,8 +231,8 @@ let rec ceiling p = function
         children
 
 let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
-    ?(prune = true) ?(rbp = false) ?(buckets = []) (cfg : Bet_tree.config)
-    ~board r0 r1 =
+    ?(prune = true) ?(rbp = false) ?(buckets = [])
+    ?(feature = Holdem_buckets.Ehs2) (cfg : Bet_tree.config) ~board r0 r1 =
   let b = Array.length board in
   if b < 3 || b > 5 then invalid_arg "Subgame.create: board";
   if List.length (List.sort_uniq compare (Array.to_list board)) <> b then
@@ -277,18 +277,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
         Hashtbl.add orbit_cache (i, g) o;
         o
   in
-  let metrics = Hashtbl.create 64 and labels = Hashtbl.create 64 in
-  let metric dealt =
-    match Hashtbl.find_opt metrics dealt with
-    | Some m -> m
-    | None ->
-        let cards = Array.append board (Array.of_list dealt) in
-        let m =
-          if Array.length cards = 5 then Equity.hs cards else Equity.ehs2 cards
-        in
-        Hashtbl.add metrics dealt m;
-        m
-  in
+  let labels = Hashtbl.create 64 in
   let bucket p dealt =
     match
       ( List.nth_opt buckets (List.length dealt),
@@ -296,7 +285,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
     with
     | _, Some out -> out
     | Some k, None when k > 0 ->
-        let s = sides.(p) and m = metric dealt in
+        let s = sides.(p) in
         let live =
           Array.of_list
             (List.filter
@@ -304,9 +293,9 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
                (List.init s.n Fun.id))
         in
         let found =
-          Cluster.optimal_1d
-            (Array.map (fun h -> m.(Range.index s.range.hands.(h))) live)
-            k
+          Holdem_buckets.labels feature k
+            (Array.append board (Array.of_list dealt))
+            (Array.map (fun h -> s.range.hands.(h)) live)
         in
         let out = Array.make s.n (-1) in
         Array.iteri (fun j h -> out.(h) <- found.(j)) live;
