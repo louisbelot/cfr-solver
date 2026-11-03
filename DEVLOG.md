@@ -879,3 +879,148 @@ turn solve's ranges, then EMD turn buckets from histograms of river hand
 strength against the E[HS^2] curve in docs/buckets.svg. Pruning per hand
 instead of per subtree would need a different walk and isn't worth it at
 these sizes.
+
+## 2026-11-03: distribution-aware turn buckets, river re-solving
+
+What was built:
+
+- `Equity.rivers`: for every combo on a turn, its hand strength on each of the
+  46 rivers it can see, sorted. With `~quantize:k` each river's values are
+  first replaced by the mean of their optimal 1D k-means cluster on that
+  river. `Equity.histogram ~bins` bins the same values. `Equity.ehs2` is now
+  the mean of squares of the sorted distribution.
+- `Cluster.quantile_kmedians` and `Cluster.wasserstein`: k-medians on sorted
+  samples under L1, which is exact EMD between equal-size distributions.
+  `kmedians` and the new function share one fitting routine, and the seeding
+  keeps a running nearest-center distance instead of recomputing it for every
+  new center (same draws, same labels on the Leduc decks, checked before and
+  after).
+- `Holdem_buckets`: turn features `ehs2`, `histN`, `emd` and `potN`, with
+  identical distributions merged and weighted before clustering and labels
+  made contiguous after. `Subgame.create ?feature` picks the turn feature;
+  rivers stay on hand strength.
+- `cfr-solver buckets --features ehs2,hist50,emd,pot8 --turn-only` and the two
+  charts `docs/turn-buckets.svg` (rainbow) and `docs/turn-buckets-twotone.svg`.
+- River re-solving in `Subgame`: `roots` lists every river root of an
+  unfolded turn tree with the pot and both players' reach under a profile;
+  `restrict` copies a turn profile onto a river tree and `graft` writes a
+  river profile back for one player; `cbv` gives per-hand counterfactual
+  best-response values; `gadget t opp alt` turns a river solve into the
+  re-solving game where `opp` may take `alt` instead of playing; `resolve
+  ~safe` re-solves every river and returns the stitched profile.
+- `cfr-solver resolve`: blueprint at several iteration counts, then unsafe and
+  safe re-solving of every river, all measured in the exact turn tree.
+
+Design notes:
+
+- Why sorted vectors. Each hand on a turn sees exactly 46 equally likely
+  rivers, so its distribution of river strength is 46 numbers. In one
+  dimension W1(F, G) is the integral of |F^-1(u) - G^-1(u)|, which for two
+  sorted vectors of the same length is the mean absolute difference: EMD
+  turns into L1. The weighted median of each coordinate minimizes the summed
+  L1 to the members, and medians of sorted vectors stay sorted, so Lloyd's
+  algorithm in this space is exact EMD k-medians. The histogram version
+  rounds every value into a bin first; the test that ties the two together
+  checks `wasserstein` against `emd` on grid samples, and another checks it
+  against brute force over all assignments.
+- Potential-aware with one-dimensional river clusters. Ganzfried and Sandholm
+  describe the turn feature as a histogram over river clusters with the
+  distance between clusters as the ground distance. When the river clusters
+  are intervals of hand strength, that distance is the distance between their
+  means, and EMD with that ground metric is again a 1D Wasserstein distance:
+  replace each river value by its cluster mean and use the sorted vectors.
+  With multi-dimensional river features (opponent cluster hand strength) it
+  would need a real transport solver.
+- Dedup. A full range on Qs Jh 8d 5c is 1,128 combos and 86 distinct
+  distributions, on Qs Jh 8s 5c 274. Clustering the distinct points with
+  multiplicities is the same objective and makes every label call take 20 to
+  110 ms. It also exposed the E[HS^2] rounding: summed over rivers in deck
+  order, two hands with the same multiset of values could differ in the last
+  bit (87 distinct values for 86 distributions), and optimal 1D k-means would
+  happily cut between them. Summing the sorted values fixes the order. None of
+  the existing bucket results changed.
+- The gadget (Burch, Johanson and Bowling, "Solving Imperfect Information
+  Games Using Decomposition", AAAI 2014). For each river root, re-solve the
+  river with both players' blueprint ranges, but give the opponent a choice
+  before it starts: play, or take alt(h), its counterfactual best-response
+  value against the blueprint on that river. In the vector solver that is one
+  extra two-action regret matcher per opponent hand. Each iteration the
+  opponent's root reach is its range weight times the probability of
+  playing, and after the opponent's pass its root values v(h) update the two
+  regrets against u = p v + (1 - p) alt (floored at zero, as in CFR+). The
+  resolver's regrets inside the river only ever see the opponent through that
+  reach, which is exactly the gadget game. At an equilibrium of it the
+  opponent's best-response value against the new river strategy is at most
+  alt(h) for every hand it holds, so no opponent hand does better than
+  against the blueprint, and the stitched strategy is no more exploitable.
+- With no positive regret the gadget plays. Any choice is fine for regret
+  matching there, and this one makes a gadget with very low alternatives
+  reproduce the plain solve bit for bit, which is a test.
+- Units. alt and v are both computed inside the same river solve, against the
+  same resolver reach, so the river's own payoff convention (half the pot at
+  the root) never has to match the turn tree's. The pot and the remaining
+  stack come from the turn tree's river root.
+- Each player is re-solved separately (the gadget is for the other one), and
+  only the resolver's strategy is grafted back. Unsafe re-solving is one
+  solve per river and grafts both.
+- `roots` refuses folded trees. A folded river child stands for several real
+  cards whose reaches are permuted copies, so the blueprint would have to be
+  unfolded to graft per card anyway.
+
+Results (Ryzen 7 7800X3D, one core). Turn buckets only, rivers exact, the
+README ranges (230 against 477 hands), 300 DCFR iterations, exploitability in
+the exact tree as a share of the pot:
+
+| buckets | Qs Jh 8d 5c ehs2 | emd    | Qs Jh 8s 5c ehs2 | emd    |
+|--------:|-----------------:|-------:|-----------------:|-------:|
+| 2       | 4.05             | 5.02   | 4.49             | 4.77   |
+| 8       | 1.25             | 0.790  | 1.13             | 0.916  |
+| 16      | 0.434            | 0.233  | 0.525            | 0.259  |
+| 32      | 0.123            | 0.0424 | 0.269            | 0.129  |
+| 64      | 0.0233           | 0.0233 | 0.105            | 0.0533 |
+
+50-bin histograms land close to exact EMD (EMD ahead at 7 of 12 sizes), and
+potential-aware over 8 river clusters loses ground at 4 and 16 buckets. The
+full tables are in the README.
+
+River re-solving on Qs Jh 8d 5c, 432 river roots, 500 DCFR iterations per
+river solve:
+
+| blueprint | exact blueprint | unsafe | safe   | 16 river buckets | unsafe | safe  |
+|----------:|----------------:|-------:|-------:|-----------------:|-------:|------:|
+| 10 it     | 10.3            | 3.03   | 6.64   | 11.9             | 4.38   | 8.67  |
+| 30 it     | 0.848           | 0.392  | 0.677  | 1.12             | 0.681  | 0.898 |
+| 100 it    | 0.0898          | 0.0844 | 0.0702 | 0.241            | 0.270  | 0.185 |
+| 300 it    | 0.0140          | 0.0312 | 0.0119 | 0.224            | 0.495  | 0.167 |
+
+Safe re-solving never made a blueprint worse here; unsafe re-solving made both
+300-iteration blueprints 2.2x more exploitable. On the small test turn with
+only 200 iterations per river, safe re-solving of a 300-iteration blueprint
+came out at 0.0070% against the blueprint's 0.0056%: the guarantee is for a
+solved gadget game, and 200 iterations is not that. The safe pass takes 88 to
+119 s per blueprint.
+
+Checks:
+
+- 191 tests, about 42 s.
+- Leduc k-medians labels identical before and after the Cluster refactor
+  (Hist 5 and Hist 10 at 2, 3, 5 and 8 buckets on a 13x2 deck), and the
+  README bucket sweep reproduces docs/buckets.csv exactly with the new
+  E[HS^2].
+- EMD on sorted samples against brute force over all assignments; against
+  binned EMD on grid samples; quantile k-medians fixed point and ordering.
+- River distributions against brute-force hand strength per river.
+- Re-solving: roots against `lines` masses and hand-computed pots, restrict
+  then graft is the identity, CBVs against the best response, the gadget
+  with low alternatives bit for bit equal to a plain solve, the per-hand
+  gadget bound after 2,000 iterations (worst gap exactly 0 across 8 solves),
+  and safe re-solving lowering exploitability of 1-, 10- and 100-iteration
+  blueprints.
+- Mutations caught: a gadget that always plays (2 tests), alternatives from
+  the blueprint's mean values instead of best-response values (2 tests; the
+  end-to-end safety test alone passes with it).
+
+Next: max-margin and reach gadgets next to this one on the same turn, then
+nested re-solving (turn from a flop blueprint, river from the re-solved
+turn), and potential-aware buckets with multi-dimensional river features,
+which needs a real transport solver for EMD.
