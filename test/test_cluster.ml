@@ -136,6 +136,116 @@ let fixed_point () =
   if not (Cluster.emd_cost hists labels < one) then
     Alcotest.fail "no better than one cluster"
 
+let rec permutations = function
+  | [] -> [ [] ]
+  | l ->
+      List.concat_map
+        (fun x ->
+          List.map (fun p -> x :: p) (permutations (List.filter (( <> ) x) l)))
+        l
+
+let assignment (a, b) =
+  let a = Array.map float_of_int a and b = Array.map float_of_int b in
+  let n = Array.length a in
+  let best =
+    List.fold_left
+      (fun best p ->
+        let c = ref 0. in
+        List.iteri (fun i j -> c := !c +. Float.abs (a.(i) -. b.(j))) p;
+        Float.min best (!c /. float_of_int n))
+      infinity
+      (permutations (List.init n Fun.id))
+  in
+  Float.abs (Cluster.wasserstein a b -. best) < 1e-12
+
+let on_grid (a, b) =
+  let scale = Array.map (fun i -> float_of_int i /. 16.) in
+  Float.abs
+    (Cluster.wasserstein (scale a) (scale b)
+    -. Cluster.emd (grid 16 a) (grid 16 b))
+  < 1e-12
+
+let wasserstein_property () =
+  let small =
+    QCheck2.Gen.(
+      let* n = int_range 1 6 in
+      pair
+        (array_size (return n) (int_bound 9))
+        (array_size (return n) (int_bound 9)))
+  in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~count:200 ~name:"assignment" small assignment);
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~count:300 ~name:"grid" samples on_grid)
+
+let quantiles rng n =
+  Array.init n (fun _ ->
+      let shift = float_of_int (Rng.int rng 3) in
+      let q =
+        Array.init 15 (fun _ ->
+            shift +. (float_of_int (Rng.int rng 100) /. 50.))
+      in
+      Array.sort compare q;
+      q)
+
+let quantile_centers w qs labels =
+  let k = Array.fold_left max (-1) labels + 1 in
+  Array.init k (fun l ->
+      let members =
+        List.filter
+          (fun i -> labels.(i) = l)
+          (List.init (Array.length qs) Fun.id)
+      in
+      Array.init 15 (fun b ->
+          Cluster.median
+            (Array.of_list (List.map (fun i -> (qs.(i).(b), w.(i))) members))))
+
+let quantile_fixed_point () =
+  let rng = Rng.make 3 in
+  let qs = quantiles rng 50 in
+  let w = Array.init 50 (fun i -> float_of_int (1 + (i mod 4))) in
+  let labels = Cluster.quantile_kmedians ~weights:w rng qs 4 in
+  let centers = quantile_centers w qs labels in
+  let cost labels centers =
+    let c = ref 0. in
+    Array.iteri
+      (fun i q ->
+        c := !c +. (w.(i) *. Cluster.wasserstein q centers.(labels.(i))))
+      qs;
+    !c
+  in
+  Array.iteri
+    (fun i q ->
+      let own = Cluster.wasserstein q centers.(labels.(i)) in
+      Array.iter
+        (fun c ->
+          if Cluster.wasserstein q c < own -. 1e-12 then
+            Alcotest.failf "point %d has a nearer center" i)
+        centers)
+    qs;
+  let means = Array.map (fun c -> Array.fold_left ( +. ) 0. c) centers in
+  Array.iteri
+    (fun l m -> if l > 0 && m < means.(l - 1) then Alcotest.fail "order")
+    means;
+  let one = Array.make 50 0 in
+  if not (cost labels centers < cost one (quantile_centers w qs one)) then
+    Alcotest.fail "no better than one cluster"
+
+let quantile_shifts () =
+  let rng = Rng.make 11 in
+  let qs =
+    Array.init 30 (fun i ->
+        Array.init 8 (fun b ->
+            float_of_int (i mod 3 * 10)
+            +. (float_of_int b /. 8.)
+            +. (float_of_int (Rng.int rng 10) /. 100.)))
+  in
+  Array.iter (Array.sort compare) qs;
+  let labels = Cluster.quantile_kmedians rng qs 3 in
+  Array.iteri
+    (fun i l -> Alcotest.(check int) (string_of_int i) (i mod 3) l)
+    labels
+
 let rejects () =
   Alcotest.check_raises "weights"
     (Invalid_argument "Cluster: weights must be positive") (fun () ->
@@ -152,5 +262,9 @@ let tests =
     Alcotest.test_case "weighted median" `Quick median_property;
     Alcotest.test_case "k-medians finds blobs" `Quick recovers;
     Alcotest.test_case "k-medians fixed point" `Quick fixed_point;
+    Alcotest.test_case "wasserstein" `Quick wasserstein_property;
+    Alcotest.test_case "quantile k-medians fixed point" `Quick
+      quantile_fixed_point;
+    Alcotest.test_case "quantile k-medians finds shifts" `Quick quantile_shifts;
     Alcotest.test_case "arguments" `Quick rejects;
   ]

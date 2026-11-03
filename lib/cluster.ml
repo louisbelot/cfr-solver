@@ -115,21 +115,20 @@ let median pairs =
   in
   go 0 0.
 
-let medians w cdfs labels k old =
+let medians w points labels k old =
+  let members = Array.make k [] in
+  for i = Array.length points - 1 downto 0 do
+    members.(labels.(i)) <- i :: members.(labels.(i))
+  done;
   Array.init k (fun l ->
-      let members =
-        List.filter
-          (fun i -> labels.(i) = l)
-          (List.init (Array.length cdfs) Fun.id)
-      in
-      if members = [] then old.(l)
-      else
-        Array.init
-          (Array.length cdfs.(0))
-          (fun b ->
-            median
-              (Array.of_list
-                 (List.map (fun i -> (cdfs.(i).(b), w.(i))) members))))
+      match members.(l) with
+      | [] -> old.(l)
+      | ms ->
+          Array.init
+            (Array.length points.(0))
+            (fun b ->
+              median
+                (Array.of_list (List.map (fun i -> (points.(i).(b), w.(i))) ms))))
 
 let nearest centers x =
   let best = ref 0 and dist = ref (l1 centers.(0) x) in
@@ -153,17 +152,20 @@ let draw rng w =
   done;
   !i
 
-let seed_centers rng w cdfs k =
-  let first = cdfs.(draw rng w) in
-  let rec grow centers =
-    if List.length centers = k then centers
-    else
-      let cs = Array.of_list centers in
-      let d = Array.mapi (fun i x -> w.(i) *. snd (nearest cs x)) cdfs in
-      if Array.for_all (fun x -> x = 0.) d then centers
-      else grow (centers @ [ cdfs.(draw rng d) ])
+let seed_centers rng w points k =
+  let first = points.(draw rng w) in
+  let d = Array.map (fun x -> l1 first x) points in
+  let rec grow centers count =
+    let weighted = Array.mapi (fun i x -> w.(i) *. x) d in
+    if count = k || Array.for_all (fun x -> x = 0.) weighted then
+      Array.of_list (List.rev centers)
+    else begin
+      let c = points.(draw rng weighted) in
+      Array.iteri (fun i x -> d.(i) <- Float.min d.(i) (l1 c x)) points;
+      grow (c :: centers) (count + 1)
+    end
   in
-  Array.of_list (grow [ first ])
+  grow [ first ] 1
 
 let lloyd w cdfs centers =
   let rec go centers labels steps =
@@ -178,25 +180,22 @@ let cost w cdfs centers labels =
   Array.iteri (fun i x -> s := !s +. (w.(i) *. l1 centers.(labels.(i)) x)) cdfs;
   !s
 
-let by_mean centers labels =
+let rank key centers labels =
   let k = Array.length centers in
-  let means = Array.map (fun c -> -.Array.fold_left ( +. ) 0. c) centers in
+  let keys = Array.map key centers in
   let order = Array.init k Fun.id in
-  Array.stable_sort (fun a b -> compare means.(a) means.(b)) order;
+  Array.stable_sort (fun a b -> compare keys.(a) keys.(b)) order;
   let rank = Array.make k 0 in
   Array.iteri (fun r l -> rank.(l) <- r) order;
   Array.map (fun l -> rank.(l)) labels
 
-let kmedians ?weights ?(restarts = 10) rng hists k =
+let fit ~key ~restarts w rng points k =
   if k < 1 then invalid_arg "Cluster.kmedians: k must be positive";
-  let n = Array.length hists in
-  let w = check_weights n weights in
-  if n = 0 then [||]
+  if Array.length points = 0 then [||]
   else
-    let cdfs = Array.map cdf hists in
     let attempt () =
-      let centers, labels = lloyd w cdfs (seed_centers rng w cdfs k) in
-      (cost w cdfs centers labels, centers, labels)
+      let centers, labels = lloyd w points (seed_centers rng w points k) in
+      (cost w points centers labels, centers, labels)
     in
     let best = ref (attempt ()) in
     for _ = 2 to restarts do
@@ -204,7 +203,27 @@ let kmedians ?weights ?(restarts = 10) rng hists k =
       if c < b then best := r
     done;
     let _, centers, labels = !best in
-    by_mean centers labels
+    rank key centers labels
+
+let sum = Array.fold_left ( +. ) 0.
+
+let kmedians ?weights ?(restarts = 10) rng hists k =
+  let w = check_weights (Array.length hists) weights in
+  fit ~key:(fun c -> -.sum c) ~restarts w rng (Array.map cdf hists) k
+
+let quantile_kmedians ?weights ?(restarts = 10) rng qs k =
+  let w = check_weights (Array.length qs) weights in
+  if Array.exists (fun q -> Array.length q <> Array.length qs.(0)) qs then
+    invalid_arg "Cluster.quantile_kmedians: sizes differ";
+  fit ~key:sum ~restarts w rng qs k
+
+let wasserstein a b =
+  if Array.length a <> Array.length b then
+    invalid_arg "Cluster.wasserstein: sizes differ";
+  let a = Array.copy a and b = Array.copy b in
+  Array.sort compare a;
+  Array.sort compare b;
+  l1 a b
 
 let centers ?weights hists labels =
   let w = check_weights (Array.length hists) weights in

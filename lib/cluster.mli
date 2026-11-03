@@ -11,6 +11,16 @@ val kmedians :
   int ->
   int array
 
+val quantile_kmedians :
+  ?weights:float array ->
+  ?restarts:int ->
+  Rng.t ->
+  float array array ->
+  int ->
+  int array
+
+val wasserstein : float array -> float array -> float
+
 val centers :
   ?weights:float array -> float array array -> int array -> float array array
 
