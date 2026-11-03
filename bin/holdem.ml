@@ -321,13 +321,15 @@ let betsizes board oop ip tree iterations sets csv =
 
 let mb t = float_of_int (Subgame.memory t) /. 1e6
 
-let buckets board oop ip tree iterations sizes csv svg =
+let buckets board oop ip tree iterations sizes features turn_only csv svg =
   run_cmd @@ fun () ->
   let board, r0, r1 = setup board oop ip in
   if Array.length board <> 4 then invalid_arg "buckets needs a turn board";
-  let solve buckets =
+  let features = List.map Holdem_buckets.feature_of_string features in
+  let solve ?feature buckets =
     let t =
-      Subgame.create ~algorithm:Cfr.dcfr ~buckets (config tree 2) ~board r0 r1
+      Subgame.create ~algorithm:Cfr.dcfr ~buckets ?feature (config tree 2)
+        ~board r0 r1
     in
     Subgame.run t iterations;
     (t, exploitability t (Subgame.average t))
@@ -337,25 +339,36 @@ let buckets board oop ip tree iterations sizes csv svg =
   Format.printf
     "dcfr, %d iterations; exploitability in the exact tree, %% of the pot@.@."
     iterations;
-  Format.printf "%-8s %8s %8s %12s@." "streets" "buckets" "MB" "exploit";
-  Format.printf "%-8s %8s %8.2f %12s@." "exact" "-" (mb exact) (sci e0);
+  Format.printf "%-12s %8s %8s %12s@." "streets" "buckets" "MB" "exploit";
+  Format.printf "%-12s %8s %8.2f %12s@." "exact" "-" (mb exact) (sci e0);
+  let feature = List.hd features in
+  let turn f =
+    let name =
+      if List.length features = 1 then "turn"
+      else "turn " ^ Holdem_buckets.feature_name f
+    in
+    (name, f, fun k -> [ k; 0 ])
+  in
   let series =
     List.map
-      (fun (name, f) ->
+      (fun (name, feature, f) ->
         let points =
           List.map
             (fun k ->
-              let t, e = solve (f k) in
-              Format.printf "%-8s %8d %8.2f %12s@." name k (mb t) (sci e);
+              let t, e = solve ~feature (f k) in
+              Format.printf "%-12s %8d %8.2f %12s@." name k (mb t) (sci e);
               (k, mb t, e))
             sizes
         in
         (name, points))
-      [
-        ("turn", fun k -> [ k; 0 ]);
-        ("river", fun k -> [ 0; k ]);
-        ("both", fun k -> [ k; k ]);
-      ]
+      (List.map turn features
+      @
+      if turn_only then []
+      else
+        [
+          ("river", feature, fun k -> [ 0; k ]);
+          ("both", feature, fun k -> [ k; k ]);
+        ])
   in
   Option.iter
     (fun path ->
@@ -378,11 +391,13 @@ let buckets board oop ip tree iterations sizes csv svg =
     (fun path ->
       Plot.loglog
         ~title:
-          (Printf.sprintf "Turn %s: hand-strength buckets, %d iterations"
+          (Printf.sprintf "Turn %s: %s, %d iterations"
              (String.concat " "
                 (Array.to_list (Array.map Hand.to_string board)))
+             (if turn_only then "turn buckets" else "hand-strength buckets")
              iterations)
-        ~xlabel:"buckets per street" ~ylabel:"% of the pot"
+        ~xlabel:(if turn_only then "turn buckets" else "buckets per street")
+        ~ylabel:"% of the pot"
         ({
            Plot.label = "exact";
            dashed = true;
@@ -560,17 +575,30 @@ let buckets_cmd =
       & opt (list positive) [ 2; 4; 8; 16; 32; 64 ]
       & info [ "sizes" ] ~docv:"LIST" ~doc:"Bucket counts to try.")
   in
+  let features =
+    Arg.(
+      value
+      & opt (list string) [ "ehs2" ]
+      & info [ "features" ] ~docv:"LIST"
+          ~doc:
+            "Turn hand features to cluster on: ehs2, histN (EMD over N bins of \
+             river hand strength), emd (exact EMD over the 46 rivers) or potN \
+             (EMD over N river clusters).")
+  in
+  let turn_only =
+    Arg.(value & flag & info [ "turn-only" ] ~doc:"Bucket only the turn.")
+  in
   Cmd.v
     (Cmd.info "buckets"
        ~doc:
-         "Solve a turn subgame with hands merged into E[HS^2] buckets on the \
-          turn, HS buckets on the river, or both, and measure each solution's \
+         "Solve a turn subgame with hands merged into buckets on the turn, HS \
+          buckets on the river, or both, and measure each solution's \
           exploitability in the exact tree.")
     Term.(
       term_result
         (const buckets $ board $ oop $ ip
         $ tree ~bets:[ 0.5; 1. ]
-        $ iterations 300 $ sizes
+        $ iterations 300 $ sizes $ features $ turn_only
         $ file [ "csv" ] "Write the sweep to $(docv)."
         $ file [ "svg" ] "Plot the sweep to $(docv)."))
 
