@@ -1438,6 +1438,33 @@ let river_config (cfg : Bet_tree.config) (r : root) =
     streets = [ List.nth cfg.streets (List.length cfg.streets - 1) ];
   }
 
+let resolve ?(algorithm = Cfr.dcfr) ~safe ~iterations cfg t prof =
+  let out = Array.map (Array.map Array.copy) prof in
+  let solve (r : root) =
+    create ~algorithm (river_config cfg r) ~board:r.board r.reach.(0)
+      r.reach.(1)
+  in
+  List.iter
+    (fun (r : root) ->
+      if Range.size r.reach.(0) > 0 && Range.size r.reach.(1) > 0 then
+        if safe then
+          for p = 0 to 1 do
+            let river = solve r in
+            gadget river (1 - p)
+              (cbv river (1 - p) (restrict t prof r.path river));
+            run river iterations;
+            write t out r.path river (average river) p
+          done
+        else begin
+          let river = solve r in
+          run river iterations;
+          let avg = average river in
+          write t out r.path river avg 0;
+          write t out r.path river avg 1
+        end)
+    (roots t prof);
+  out
+
 let kinds (dn : decision) =
   Array.map
     (function

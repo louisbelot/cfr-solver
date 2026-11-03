@@ -113,6 +113,31 @@ let gadget_bounds_cbv () =
       done)
     [ 0; 61; 130; 200 ]
 
+let safe_never_worse () =
+  List.iter
+    (fun iterations ->
+      let t, prof = blueprint iterations in
+      let before = Subgame.exploitability t prof in
+      let after =
+        Subgame.exploitability t
+          (Subgame.resolve ~safe:true ~iterations:200 turn t prof)
+      in
+      if not (after < before) then
+        Alcotest.failf "%d iterations: %g to %g" iterations before after)
+    [ 1; 10; 100 ]
+
+let unsafe_is_a_profile () =
+  let t, prof = blueprint 10 in
+  let out = Subgame.resolve ~safe:false ~iterations:50 turn t prof in
+  Array.iter
+    (fun rows ->
+      Array.iteri
+        (fun h _ ->
+          close 1e-9 "sums to one" 1.
+            (Array.fold_left (fun acc row -> acc +. row.(h)) 0. rows))
+        rows.(0))
+    out
+
 let rejects () =
   let t =
     Subgame.create ~algorithm:Cfr.dcfr turn ~board:(Hand.parse "Ah Kh 7h 2h") r0
@@ -130,5 +155,7 @@ let tests =
     Alcotest.test_case "low alternatives change nothing" `Quick
       low_alternatives_change_nothing;
     Alcotest.test_case "gadget bounds the opponent" `Slow gadget_bounds_cbv;
+    Alcotest.test_case "safe re-solving never hurts" `Slow safe_never_worse;
+    Alcotest.test_case "unsafe re-solving" `Quick unsafe_is_a_profile;
     Alcotest.test_case "folded trees" `Quick rejects;
   ]

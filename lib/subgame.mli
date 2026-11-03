@@ -62,6 +62,15 @@ val river_config : Bet_tree.config -> root -> Bet_tree.config
 val restrict : t -> profile -> string -> t -> profile
 val graft : t -> profile -> string -> t -> profile -> int -> profile
 
+val resolve :
+  ?algorithm:Cfr.algorithm ->
+  safe:bool ->
+  iterations:int ->
+  Bet_tree.config ->
+  t ->
+  profile ->
+  profile
+
 val translate :
   low:(a:float -> b:float -> float -> float) ->
   abstract:t ->
