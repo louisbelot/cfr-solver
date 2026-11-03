@@ -415,6 +415,82 @@ let buckets board oop ip tree iterations sizes features turn_only csv svg =
     svg;
   Ok ()
 
+let resolve board oop ip tree iterations blueprints river_buckets csv svg =
+  run_cmd @@ fun () ->
+  let board, r0, r1 = setup board oop ip in
+  if Array.length board <> 4 then invalid_arg "resolve needs a turn board";
+  let cfg = config tree 2 in
+  let buckets = if river_buckets > 0 then [ 0; river_buckets ] else [] in
+  let rows =
+    List.mapi
+      (fun i n ->
+        let t =
+          Subgame.create ~algorithm:Cfr.dcfr ~iso:false ~buckets cfg ~board r0
+            r1
+        in
+        Subgame.run t n;
+        let prof = Subgame.average t in
+        if i = 0 then begin
+          header board tree t;
+          Format.printf
+            "blueprint: dcfr%s; every river re-solved with dcfr, %d \
+             iterations@.%d river roots, exploitability in the exact tree, %% \
+             of the pot@.@."
+            (if river_buckets > 0 then
+               Printf.sprintf ", %d river buckets" river_buckets
+             else "")
+            iterations
+            (List.length (Subgame.roots t prof));
+          Format.printf "%10s %12s %12s %12s %9s@." "blueprint" "exploit"
+            "unsafe" "safe" "seconds"
+        end;
+        let resolved safe =
+          let start = Unix.gettimeofday () in
+          let out = Subgame.resolve ~safe ~iterations cfg t prof in
+          (exploitability t out, Unix.gettimeofday () -. start)
+        in
+        let e = exploitability t prof in
+        let unsafe, _ = resolved false in
+        let safe, seconds = resolved true in
+        Format.printf "%10d %12s %12s %12s %9.1f@." n (sci e) (sci unsafe)
+          (sci safe) seconds;
+        (n, e, unsafe, safe))
+      blueprints
+  in
+  Option.iter
+    (fun path ->
+      rows
+      |> List.map (fun (n, e, u, s) ->
+          Printf.sprintf "%d,%s,%s,%s\n" n (short_float e) (short_float u)
+            (short_float s))
+      |> String.concat ""
+      |> ( ^ ) "blueprint_iterations,blueprint_pct,unsafe_pct,safe_pct\n"
+      |> write_file path)
+    csv;
+  Option.iter
+    (fun path ->
+      let series label dashed f =
+        { Plot.label; dashed; points = List.map (fun r -> f r) rows }
+      in
+      Plot.loglog
+        ~title:
+          (Printf.sprintf "Turn %s: river re-solving%s, %d iterations per river"
+             (String.concat " "
+                (Array.to_list (Array.map Hand.to_string board)))
+             (if river_buckets > 0 then
+                Printf.sprintf ", %d-bucket blueprint" river_buckets
+              else "")
+             iterations)
+        ~xlabel:"blueprint iterations" ~ylabel:"% of the pot"
+        [
+          series "blueprint" true (fun (n, e, _, _) -> (n, e));
+          series "unsafe" false (fun (n, _, u, _) -> (n, u));
+          series "safe" false (fun (n, _, _, s) -> (n, s));
+        ]
+      |> write_file path)
+    svg;
+  Ok ()
+
 let board =
   Arg.(
     required
@@ -602,4 +678,32 @@ let buckets_cmd =
         $ file [ "csv" ] "Write the sweep to $(docv)."
         $ file [ "svg" ] "Plot the sweep to $(docv)."))
 
-let cmds = [ subgame_cmd; translate_cmd; betsizes_cmd; buckets_cmd ]
+let resolve_cmd =
+  let blueprints =
+    Arg.(
+      value
+      & opt (list positive) [ 10; 30; 100; 300 ]
+      & info [ "blueprint" ] ~docv:"LIST"
+          ~doc:"Blueprint iteration counts to try.")
+  and river_buckets =
+    Arg.(
+      value & opt int 0
+      & info [ "river-buckets" ] ~docv:"K"
+          ~doc:"Solve the blueprint with $(docv) HS buckets on each river.")
+  in
+  Cmd.v
+    (Cmd.info "resolve"
+       ~doc:
+         "Solve a turn subgame as a blueprint, re-solve every river from the \
+          blueprint's ranges with and without the re-solving gadget, and \
+          measure the stitched strategies in the exact tree.")
+    Term.(
+      term_result
+        (const resolve $ board $ oop $ ip
+        $ tree ~bets:[ 0.5; 1. ]
+        $ iterations 200 $ blueprints $ river_buckets
+        $ file [ "csv" ] "Write the table to $(docv)."
+        $ file [ "svg" ] "Plot it to $(docv)."))
+
+let cmds =
+  [ subgame_cmd; translate_cmd; betsizes_cmd; buckets_cmd; resolve_cmd ]
