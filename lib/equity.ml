@@ -47,20 +47,67 @@ let hs board =
   done;
   out
 
-let ehs2 board =
-  if Array.length board <> 4 then invalid_arg "Equity.ehs2: four board cards";
-  let sum = Array.make 1326 0. in
-  for r = 0 to 51 do
+let centroids v k =
+  let live =
+    List.filter (fun i -> not (Float.is_nan v.(i))) (List.init 1326 Fun.id)
+  in
+  let xs = Array.of_list (List.map (fun i -> v.(i)) live) in
+  let labels = Cluster.optimal_1d xs k in
+  let k = Array.fold_left max (-1) labels + 1 in
+  let s = Array.make k 0. and n = Array.make k 0 in
+  Array.iteri
+    (fun j l ->
+      s.(l) <- s.(l) +. xs.(j);
+      n.(l) <- n.(l) + 1)
+    labels;
+  let out = Array.copy v in
+  List.iteri
+    (fun j i -> out.(i) <- s.(labels.(j)) /. float_of_int n.(labels.(j)))
+    live;
+  out
+
+let rivers ?quantize board =
+  if Array.length board <> 4 then invalid_arg "Equity.rivers: four board cards";
+  let out = Array.make 1326 [] in
+  for r = 51 downto 0 do
     if not (Array.mem r board) then begin
       let v = hs (Array.append board [| r |]) in
+      let v = match quantize with Some k -> centroids v k | None -> v in
       Array.iteri
         (fun i (a, b) ->
           if a <> r && b <> r && not (Range.blocks board (a, b)) then
-            sum.(i) <- sum.(i) +. (v.(i) *. v.(i)))
+            out.(i) <- v.(i) :: out.(i))
         Range.combos
     end
   done;
-  Array.mapi
-    (fun i x ->
-      if Range.blocks board Range.combos.(i) then Float.nan else x /. 46.)
-    sum
+  Array.map
+    (fun l ->
+      let q = Array.of_list l in
+      Array.sort compare q;
+      q)
+    out
+
+let ehs2 board =
+  if Array.length board <> 4 then invalid_arg "Equity.ehs2: four board cards";
+  Array.map
+    (fun q ->
+      if q = [||] then Float.nan
+      else
+        Array.fold_left (fun acc x -> acc +. (x *. x)) 0. q
+        /. float_of_int (Array.length q))
+    (rivers board)
+
+let histogram ~bins board =
+  Array.map
+    (fun q ->
+      if q = [||] then [||]
+      else begin
+        let h = Array.make bins 0. in
+        Array.iter
+          (fun x ->
+            let b = min (bins - 1) (int_of_float (x *. float_of_int bins)) in
+            h.(b) <- h.(b) +. (1. /. float_of_int (Array.length q)))
+          q;
+        h
+      end)
+    (rivers board)
