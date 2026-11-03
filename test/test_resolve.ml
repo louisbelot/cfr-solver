@@ -50,6 +50,69 @@ let identity () =
       done)
     (List.filteri (fun i _ -> i mod 17 = 0) (Subgame.roots t prof))
 
+let cbv_sums_to_best_response () =
+  let t, prof = blueprint 4 in
+  let r = List.nth (Subgame.roots t prof) 30 in
+  let river = river_of r in
+  let sub = Subgame.restrict t prof r.path river in
+  let a = Subgame.range river 0 and b = Subgame.range river 1 in
+  let pairs = ref 0. in
+  Array.iteri
+    (fun h (c, d) ->
+      Array.iteri
+        (fun o (e, f) ->
+          if c <> e && c <> f && d <> e && d <> f then
+            pairs := !pairs +. (a.weights.(h) *. b.weights.(o)))
+        b.hands)
+    a.hands;
+  for i = 0 to 1 do
+    let w = (Subgame.range river i).weights in
+    let total = ref 0. in
+    Array.iteri
+      (fun h x -> total := !total +. (w.(h) *. x))
+      (Subgame.cbv river i sub);
+    close 1e-12 "best response"
+      (Subgame.best_response river i sub)
+      (!total /. !pairs)
+  done
+
+let low_alternatives_change_nothing () =
+  let t, prof = blueprint 3 in
+  let r = List.nth (Subgame.roots t prof) 100 in
+  let plain = river_of r and gadget = river_of r in
+  let n = Range.size (Subgame.range gadget 1) in
+  Subgame.gadget gadget 1 (Array.make n (-1e9));
+  Subgame.run plain 50;
+  Subgame.run gadget 50;
+  if Subgame.average plain <> Subgame.average gadget then
+    Alcotest.fail "averages differ";
+  Array.iter (fun e -> close 0. "enters" 1. e) (Subgame.entry gadget)
+
+let gadget_bounds_cbv () =
+  let t, prof = blueprint 3 in
+  List.iter
+    (fun i ->
+      let r = List.nth (Subgame.roots t prof) i in
+      for p = 0 to 1 do
+        let river = river_of r in
+        let alt =
+          Subgame.cbv river (1 - p) (Subgame.restrict t prof r.path river)
+        in
+        Subgame.gadget river (1 - p) alt;
+        Subgame.run river 2000;
+        let after = Subgame.cbv river (1 - p) (Subgame.average river) in
+        let spread =
+          Array.fold_left (fun m x -> Float.max m (Float.abs x)) 0. alt
+        in
+        Array.iteri
+          (fun h x ->
+            if x > alt.(h) +. (1e-6 *. spread) then
+              Alcotest.failf "%s player %d hand %d: %g above %g" r.path p h x
+                alt.(h))
+          after
+      done)
+    [ 0; 61; 130; 200 ]
+
 let rejects () =
   let t =
     Subgame.create ~algorithm:Cfr.dcfr turn ~board:(Hand.parse "Ah Kh 7h 2h") r0
@@ -63,5 +126,9 @@ let tests =
   [
     Alcotest.test_case "river roots" `Quick roots;
     Alcotest.test_case "restrict then graft" `Quick identity;
+    Alcotest.test_case "cbv" `Quick cbv_sums_to_best_response;
+    Alcotest.test_case "low alternatives change nothing" `Quick
+      low_alternatives_change_nothing;
+    Alcotest.test_case "gadget bounds the opponent" `Slow gadget_bounds_cbv;
     Alcotest.test_case "folded trees" `Quick rejects;
   ]

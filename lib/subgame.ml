@@ -93,6 +93,13 @@ type scratch = {
 
 type profile = float array array array
 
+type gadget = {
+  opp : int;
+  alt : float array;
+  follow : float array;
+  quit : float array;
+}
+
 type t = {
   pot : float;
   board : Hand.card array;
@@ -107,6 +114,7 @@ type t = {
   prune : bool;
   rbp : bool;
   labels : (int * int list, int array) Hashtbl.t;
+  mutable gadget : gadget option;
   mutable skipped : int;
   mutable pruned : int;
   mutable caught_up : int;
@@ -429,6 +437,7 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
       prune;
       rbp;
       labels;
+      gadget = None;
       skipped = 0;
       pruned = 0;
       caught_up = 0;
@@ -1020,13 +1029,33 @@ let discount t active n =
                 rs)
       t.decisions
 
+let enter g h =
+  let f = g.follow.(h) and q = g.quit.(h) in
+  if f +. q > 0. then f /. (f +. q) else 1.
+
+let update g v =
+  for h = 0 to Array.length v - 1 do
+    let f = enter g h in
+    let u = (f *. v.(h)) +. ((1. -. f) *. g.alt.(h)) in
+    g.follow.(h) <- Float.max 0. (g.follow.(h) +. v.(h) -. u);
+    g.quit.(h) <- Float.max 0. (g.quit.(h) +. g.alt.(h) -. u)
+  done
+
 let iterate t =
   let n = t.iterations + 1 in
   t.weight <- Cfr.weight t.algorithm n;
   let pass active =
     let reach = Array.map (fun s -> Array.copy s.w) t.sides in
     let out = Array.map (fun s -> Array.make s.n 0.) t.sides in
+    Option.iter
+      (fun g ->
+        let r = reach.(g.opp) in
+        for h = 0 to Array.length r - 1 do
+          r.(h) <- r.(h) *. enter g h
+        done)
+      t.gadget;
     walk t t.root 0 active reach out;
+    Option.iter (fun g -> if active.(g.opp) then update g out.(g.opp)) t.gadget;
     discount t active n
   in
   if Cfr.alternating t.algorithm then begin
@@ -1154,6 +1183,30 @@ let expected t prof mode i =
   let v = ref 0. in
   Array.iteri (fun h x -> v := !v +. (s.w.(h) *. x)) out;
   !v /. t.total
+
+let cbv t i prof =
+  let out = Array.make t.sides.(i).n 0. in
+  eval t prof Best t.root 0 i (Array.copy t.sides.(1 - i).w) out;
+  out
+
+let gadget t opp alt =
+  if t.rbp then invalid_arg "Subgame.gadget: regret-based pruning";
+  if t.iterations > 0 then invalid_arg "Subgame.gadget: already running";
+  let n = t.sides.(opp).n in
+  if Array.length alt <> n then invalid_arg "Subgame.gadget: one value per hand";
+  t.gadget <-
+    Some
+      {
+        opp;
+        alt = Array.copy alt;
+        follow = Array.make n 0.;
+        quit = Array.make n 0.;
+      }
+
+let entry t =
+  match t.gadget with
+  | None -> invalid_arg "Subgame.entry: no gadget"
+  | Some g -> Array.init (Array.length g.alt) (enter g)
 
 let value t prof = expected t prof Mean 0
 let best_response t i prof = expected t prof Best i
