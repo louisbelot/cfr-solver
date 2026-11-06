@@ -120,7 +120,7 @@ let safe_never_worse () =
       let before = Subgame.exploitability t prof in
       let after =
         Subgame.exploitability t
-          (Subgame.resolve ~safe:true ~iterations:200 turn t prof)
+          (Subgame.resolve (Safe Resolve) ~iterations:200 turn t prof)
       in
       if not (after < before) then
         Alcotest.failf "%d iterations: %g to %g" iterations before after)
@@ -128,7 +128,7 @@ let safe_never_worse () =
 
 let unsafe_is_a_profile () =
   let t, prof = blueprint 10 in
-  let out = Subgame.resolve ~safe:false ~iterations:50 turn t prof in
+  let out = Subgame.resolve Unsafe ~iterations:50 turn t prof in
   Array.iter
     (fun rows ->
       Array.iteri

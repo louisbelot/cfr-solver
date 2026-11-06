@@ -415,12 +415,14 @@ let buckets board oop ip tree iterations sizes features turn_only csv svg =
     svg;
   Ok ()
 
-let resolve board oop ip tree iterations blueprints river_buckets csv svg =
+let resolve board oop ip tree iterations blueprints river_buckets methods csv
+    svg =
   run_cmd @@ fun () ->
   let board, r0, r1 = setup board oop ip in
   if Array.length board <> 4 then invalid_arg "resolve needs a turn board";
   let cfg = config tree 2 in
   let buckets = if river_buckets > 0 then [ 0; river_buckets ] else [] in
+  let names = List.map Subgame.solving_name methods in
   let rows =
     List.mapi
       (fun i n ->
@@ -435,43 +437,50 @@ let resolve board oop ip tree iterations blueprints river_buckets csv svg =
           Format.printf
             "blueprint: dcfr%s; every river re-solved with dcfr, %d \
              iterations@.%d river roots, exploitability in the exact tree, %% \
-             of the pot@.@."
+             of the pot, seconds per method in brackets@.@."
             (if river_buckets > 0 then
                Printf.sprintf ", %d river buckets" river_buckets
              else "")
             iterations
             (List.length (Subgame.roots t prof));
-          Format.printf "%10s %12s %12s %12s %9s@." "blueprint" "exploit"
-            "unsafe" "safe" "seconds"
+          Format.printf "%10s %10s" "blueprint" "exploit";
+          List.iter (fun m -> Format.printf " %22s" m) names;
+          Format.printf "@."
         end;
-        let resolved safe =
-          let start = Unix.gettimeofday () in
-          let out = Subgame.resolve ~safe ~iterations cfg t prof in
-          (exploitability t out, Unix.gettimeofday () -. start)
-        in
         let e = exploitability t prof in
-        let unsafe, _ = resolved false in
-        let safe, seconds = resolved true in
-        Format.printf "%10d %12s %12s %12s %9.1f@." n (sci e) (sci unsafe)
-          (sci safe) seconds;
-        (n, e, unsafe, safe))
+        Format.printf "%10d %10s" n (sci e);
+        let es =
+          List.map
+            (fun m ->
+              let start = Unix.gettimeofday () in
+              let x =
+                exploitability t (Subgame.resolve m ~iterations cfg t prof)
+              in
+              Format.printf " %14s [%5.0f]" (sci x)
+                (Unix.gettimeofday () -. start);
+              x)
+            methods
+        in
+        Format.printf "@.";
+        (n, e, es))
       blueprints
   in
   Option.iter
     (fun path ->
       rows
-      |> List.map (fun (n, e, u, s) ->
-          Printf.sprintf "%d,%s,%s,%s\n" n (short_float e) (short_float u)
-            (short_float s))
+      |> List.map (fun (n, e, es) ->
+          String.concat "," (string_of_int n :: List.map short_float (e :: es))
+          ^ "\n")
       |> String.concat ""
-      |> ( ^ ) "blueprint_iterations,blueprint_pct,unsafe_pct,safe_pct\n"
+      |> ( ^ )
+           (String.concat ","
+              ("blueprint_iterations" :: "blueprint_pct"
+              :: List.map (fun m -> m ^ "_pct") names)
+           ^ "\n")
       |> write_file path)
     csv;
   Option.iter
     (fun path ->
-      let series label dashed f =
-        { Plot.label; dashed; points = List.map (fun r -> f r) rows }
-      in
       Plot.loglog
         ~title:
           (Printf.sprintf "Turn %s: river re-solving%s, %d iterations per river"
@@ -482,11 +491,19 @@ let resolve board oop ip tree iterations blueprints river_buckets csv svg =
               else "")
              iterations)
         ~xlabel:"blueprint iterations" ~ylabel:"% of the pot"
-        [
-          series "blueprint" true (fun (n, e, _, _) -> (n, e));
-          series "unsafe" false (fun (n, _, u, _) -> (n, u));
-          series "safe" false (fun (n, _, _, s) -> (n, s));
-        ]
+        ({
+           Plot.label = "blueprint";
+           dashed = true;
+           points = List.map (fun (n, e, _) -> (n, e)) rows;
+         }
+        :: List.mapi
+             (fun i label ->
+               {
+                 Plot.label;
+                 dashed = false;
+                 points = List.map (fun (n, _, es) -> (n, List.nth es i)) rows;
+               })
+             names)
       |> write_file path)
     svg;
   Ok ()
@@ -690,18 +707,32 @@ let resolve_cmd =
       value & opt int 0
       & info [ "river-buckets" ] ~docv:"K"
           ~doc:"Solve the blueprint with $(docv) HS buckets on each river.")
+  and methods =
+    let all =
+      Subgame.
+        [ Unsafe; Safe Resolve; Safe Maxmargin; Reach Resolve; Reach Maxmargin ]
+    in
+    Arg.(
+      value
+      & opt
+          (list (enum (List.map (fun m -> (Subgame.solving_name m, m)) all)))
+          all
+      & info [ "methods" ] ~docv:"LIST"
+          ~doc:
+            "Re-solving methods: unsafe, resolve, maxmargin, reach-resolve, \
+             reach-maxmargin.")
   in
   Cmd.v
     (Cmd.info "resolve"
        ~doc:
          "Solve a turn subgame as a blueprint, re-solve every river from the \
-          blueprint's ranges with and without the re-solving gadget, and \
+          blueprint's ranges, unsafely or with one of four gadgets, and \
           measure the stitched strategies in the exact tree.")
     Term.(
       term_result
         (const resolve $ board $ oop $ ip
         $ tree ~bets:[ 0.5; 1. ]
-        $ iterations 200 $ blueprints $ river_buckets
+        $ iterations 200 $ blueprints $ river_buckets $ methods
         $ file [ "csv" ] "Write the table to $(docv)."
         $ file [ "svg" ] "Plot it to $(docv)."))
 

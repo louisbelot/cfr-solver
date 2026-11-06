@@ -66,10 +66,25 @@ val roots : t -> profile -> root list
 val river_config : Bet_tree.config -> root -> Bet_tree.config
 val restrict : t -> profile -> string -> t -> profile
 val graft : t -> profile -> string -> t -> profile -> int -> profile
+val gifts : t -> profile -> int -> (string * float array) list
+
+type solving = Unsafe | Safe of gadget | Reach of gadget
+
+val solving_name : solving -> string
+
+val prepare :
+  ?algorithm:Cfr.algorithm ->
+  solving ->
+  Bet_tree.config ->
+  t ->
+  profile ->
+  root ->
+  int ->
+  t
 
 val resolve :
   ?algorithm:Cfr.algorithm ->
-  safe:bool ->
+  solving ->
   iterations:int ->
   Bet_tree.config ->
   t ->

@@ -1516,36 +1516,122 @@ let river_config (cfg : Bet_tree.config) (r : root) =
     streets = [ List.nth cfg.streets (List.length cfg.streets - 1) ];
   }
 
+let gifts t (prof : profile) i =
+  let n = t.sides.(i).n and out = ref [] in
+  let terminal = function Fold _ | Showdown _ -> true | _ -> false in
+  let rec go node d opp gamma =
+    match node with
+    | Fold _ | Showdown _ -> ()
+    | Chance { children; _ } ->
+        Array.iter
+          (function
+            | Decision dn -> out := (dn.path, gamma) :: !out
+            | Fold _ | Showdown _ | Chance _ -> ())
+          children
+    | Decision dn when dn.player = i ->
+        let vals =
+          Array.map
+            (fun child ->
+              let v = Array.make n 0. in
+              eval t prof Best child (d + 1) i opp v;
+              v)
+            dn.children
+        in
+        let mass = compatible t i opp in
+        Array.iteri
+          (fun a child ->
+            let gamma =
+              Array.mapi
+                (fun h g ->
+                  let best = ref neg_infinity in
+                  Array.iteri
+                    (fun b c ->
+                      if b <> a && terminal c then
+                        best := Float.max !best vals.(b).(h))
+                    dn.children;
+                  if mass.(h) > 0. && !best > vals.(a).(h) then
+                    g +. ((!best -. vals.(a).(h)) /. mass.(h))
+                  else g)
+                gamma
+            in
+            go child (d + 1) opp gamma)
+          dn.children
+    | Decision dn ->
+        let sigma = prof.(dn.id) in
+        Array.iteri
+          (fun a child ->
+            go child (d + 1)
+              (Array.mapi (fun j r -> r *. sigma.(a).(j)) opp)
+              gamma)
+          dn.children
+  in
+  go t.root 0 (Array.copy t.sides.(1 - i).w) (Array.make n 0.);
+  List.rev !out
+
+type solving = Unsafe | Safe of gadget | Reach of gadget
+
+let solving_name = function
+  | Unsafe -> "unsafe"
+  | Safe Resolve -> "resolve"
+  | Safe Maxmargin -> "maxmargin"
+  | Reach Resolve -> "reach-resolve"
+  | Reach Maxmargin -> "reach-maxmargin"
+
 let everyone (s : side) board =
   let w = Array.make 1326 0. in
   Array.iter (fun c -> w.(Range.index c) <- 1.) s.range.hands;
   Range.of_weights ~board w
 
-let resolve ?(algorithm = Cfr.dcfr) ~safe ~iterations cfg t prof =
-  let out = Array.map (Array.map Array.copy) prof in
-  let solve (r : root) (ranges : Range.t array) =
-    create ~algorithm (river_config cfg r) ~board:r.board ranges.(0) ranges.(1)
+let prepare ?(algorithm = Cfr.dcfr) solving cfg t prof =
+  let gifts =
+    match solving with
+    | Reach _ ->
+        Array.init 2 (fun i -> Hashtbl.of_seq (List.to_seq (gifts t prof i)))
+    | Unsafe | Safe _ -> [||]
   in
+  fun (r : root) p ->
+    let o = 1 - p in
+    let ranges = Array.copy r.reach in
+    if solving <> Unsafe then ranges.(o) <- everyone t.sides.(o) r.board;
+    let river =
+      create ~algorithm (river_config cfg r) ~board:r.board ranges.(0)
+        ranges.(1)
+    in
+    (match solving with
+    | Unsafe -> ()
+    | Safe kind | Reach kind ->
+        let alt = cbv river o (restrict t prof r.path river) in
+        if gifts <> [||] then begin
+          let gamma = Hashtbl.find gifts.(o) r.path
+          and ids = hand_ids t.sides.(o)
+          and mass = compatible river o river.sides.(p).w in
+          Array.iteri
+            (fun h c ->
+              alt.(h) <- alt.(h) +. (gamma.(ids.(Range.index c)) *. mass.(h)))
+            river.sides.(o).range.hands
+        end;
+        gadget river kind o alt);
+    river
+
+let resolve ?algorithm solving ~iterations cfg t prof =
+  let out = Array.map (Array.map Array.copy) prof in
+  let make = prepare ?algorithm solving cfg t prof in
   List.iter
     (fun (r : root) ->
       if Range.size r.reach.(0) > 0 && Range.size r.reach.(1) > 0 then
-        if safe then
-          for p = 0 to 1 do
-            let ranges = Array.copy r.reach in
-            ranges.(1 - p) <- everyone t.sides.(1 - p) r.board;
-            let river = solve r ranges in
-            gadget river Resolve (1 - p)
-              (cbv river (1 - p) (restrict t prof r.path river));
+        match solving with
+        | Safe _ | Reach _ ->
+            for p = 0 to 1 do
+              let river = make r p in
+              run river iterations;
+              write t out r.path river (average river) p
+            done
+        | Unsafe ->
+            let river = make r 0 in
             run river iterations;
-            write t out r.path river (average river) p
-          done
-        else begin
-          let river = solve r r.reach in
-          run river iterations;
-          let avg = average river in
-          write t out r.path river avg 0;
-          write t out r.path river avg 1
-        end)
+            let avg = average river in
+            write t out r.path river avg 0;
+            write t out r.path river avg 1)
     (roots t prof);
   out
 
