@@ -1516,25 +1516,31 @@ let river_config (cfg : Bet_tree.config) (r : root) =
     streets = [ List.nth cfg.streets (List.length cfg.streets - 1) ];
   }
 
+let everyone (s : side) board =
+  let w = Array.make 1326 0. in
+  Array.iter (fun c -> w.(Range.index c) <- 1.) s.range.hands;
+  Range.of_weights ~board w
+
 let resolve ?(algorithm = Cfr.dcfr) ~safe ~iterations cfg t prof =
   let out = Array.map (Array.map Array.copy) prof in
-  let solve (r : root) =
-    create ~algorithm (river_config cfg r) ~board:r.board r.reach.(0)
-      r.reach.(1)
+  let solve (r : root) (ranges : Range.t array) =
+    create ~algorithm (river_config cfg r) ~board:r.board ranges.(0) ranges.(1)
   in
   List.iter
     (fun (r : root) ->
       if Range.size r.reach.(0) > 0 && Range.size r.reach.(1) > 0 then
         if safe then
           for p = 0 to 1 do
-            let river = solve r in
+            let ranges = Array.copy r.reach in
+            ranges.(1 - p) <- everyone t.sides.(1 - p) r.board;
+            let river = solve r ranges in
             gadget river Resolve (1 - p)
               (cbv river (1 - p) (restrict t prof r.path river));
             run river iterations;
             write t out r.path river (average river) p
           done
         else begin
-          let river = solve r in
+          let river = solve r r.reach in
           run river iterations;
           let avg = average river in
           write t out r.path river avg 0;
