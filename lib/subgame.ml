@@ -92,13 +92,22 @@ type scratch = {
 }
 
 type profile = float array array array
+type gadget = Resolve | Maxmargin
 
-type gadget = {
-  opp : int;
-  alt : float array;
-  follow : float array;
-  quit : float array;
-}
+type augment =
+  | Opt_out of {
+      opp : int;
+      alt : float array;
+      follow : float array;
+      quit : float array;
+    }
+  | Pick of {
+      opp : int;
+      alt : float array;
+      mass : float array;
+      regret : float array;
+      prob : float array;
+    }
 
 type t = {
   pot : float;
@@ -114,7 +123,7 @@ type t = {
   prune : bool;
   rbp : bool;
   labels : (int * int list, int array) Hashtbl.t;
-  mutable gadget : gadget option;
+  mutable gadget : augment option;
   mutable skipped : int;
   mutable pruned : int;
   mutable caught_up : int;
@@ -1029,17 +1038,61 @@ let discount t active n =
                 rs)
       t.decisions
 
-let enter g h =
-  let f = g.follow.(h) and q = g.quit.(h) in
+let follows follow quit h =
+  let f = follow.(h) and q = quit.(h) in
   if f +. q > 0. then f /. (f +. q) else 1.
 
+let pick mass regret prob =
+  let z = ref 0. and live = ref 0 in
+  Array.iteri
+    (fun h r ->
+      if mass.(h) > 0. then begin
+        z := !z +. r;
+        incr live
+      end)
+    regret;
+  Array.iteri
+    (fun h r ->
+      prob.(h) <-
+        (if mass.(h) <= 0. then 0.
+         else if !z > 0. then r /. !z
+         else 1. /. float_of_int !live))
+    regret
+
+let opponent = function Opt_out { opp; _ } | Pick { opp; _ } -> opp
+
+let enter g r =
+  match g with
+  | Opt_out { follow; quit; _ } ->
+      Array.iteri (fun h x -> r.(h) <- x *. follows follow quit h) r
+  | Pick { mass; prob; _ } ->
+      Array.iteri
+        (fun h m -> r.(h) <- (if m > 0. then prob.(h) /. m else 0.))
+        mass
+
 let update g v =
-  for h = 0 to Array.length v - 1 do
-    let f = enter g h in
-    let u = (f *. v.(h)) +. ((1. -. f) *. g.alt.(h)) in
-    g.follow.(h) <- Float.max 0. (g.follow.(h) +. v.(h) -. u);
-    g.quit.(h) <- Float.max 0. (g.quit.(h) +. g.alt.(h) -. u)
-  done
+  match g with
+  | Opt_out { alt; follow; quit; _ } ->
+      for h = 0 to Array.length v - 1 do
+        let f = follows follow quit h in
+        let u = (f *. v.(h)) +. ((1. -. f) *. alt.(h)) in
+        follow.(h) <- Float.max 0. (follow.(h) +. v.(h) -. u);
+        quit.(h) <- Float.max 0. (quit.(h) +. alt.(h) -. u)
+      done
+  | Pick { alt; mass; regret; prob; _ } ->
+      let u =
+        Array.mapi
+          (fun h m -> if m > 0. then (v.(h) -. alt.(h)) /. m else 0.)
+          mass
+      in
+      let mean = ref 0. in
+      Array.iteri (fun h p -> mean := !mean +. (p *. u.(h))) prob;
+      Array.iteri
+        (fun h m ->
+          if m > 0. then
+            regret.(h) <- Float.max 0. (regret.(h) +. u.(h) -. !mean))
+        mass;
+      pick mass regret prob
 
 let iterate t =
   let n = t.iterations + 1 in
@@ -1047,15 +1100,13 @@ let iterate t =
   let pass active =
     let reach = Array.map (fun s -> Array.copy s.w) t.sides in
     let out = Array.map (fun s -> Array.make s.n 0.) t.sides in
+    Option.iter (fun g -> enter g reach.(opponent g)) t.gadget;
+    walk t t.root 0 active reach out;
     Option.iter
       (fun g ->
-        let r = reach.(g.opp) in
-        for h = 0 to Array.length r - 1 do
-          r.(h) <- r.(h) *. enter g h
-        done)
+        let o = opponent g in
+        if active.(o) then update g out.(o))
       t.gadget;
-    walk t t.root 0 active reach out;
-    Option.iter (fun g -> if active.(g.opp) then update g out.(g.opp)) t.gadget;
     discount t active n
   in
   if Cfr.alternating t.algorithm then begin
@@ -1189,24 +1240,51 @@ let cbv t i prof =
   eval t prof Best t.root 0 i (Array.copy t.sides.(1 - i).w) out;
   out
 
-let gadget t opp alt =
+let compatible t i opp =
+  let out = Array.make t.sides.(i).n 0. in
+  fold_values t ~win:1. i opp out;
+  out
+
+let gadget t kind opp alt =
   if t.rbp then invalid_arg "Subgame.gadget: regret-based pruning";
   if t.iterations > 0 then invalid_arg "Subgame.gadget: already running";
   let n = t.sides.(opp).n in
   if Array.length alt <> n then invalid_arg "Subgame.gadget: one value per hand";
+  let alt = Array.copy alt in
   t.gadget <-
     Some
-      {
-        opp;
-        alt = Array.copy alt;
-        follow = Array.make n 0.;
-        quit = Array.make n 0.;
-      }
+      (match kind with
+      | Resolve ->
+          Opt_out { opp; alt; follow = Array.make n 0.; quit = Array.make n 0. }
+      | Maxmargin ->
+          let mass = compatible t opp t.sides.(1 - opp).w
+          and regret = Array.make n 0.
+          and prob = Array.make n 0. in
+          pick mass regret prob;
+          Pick { opp; alt; mass; regret; prob })
 
 let entry t =
   match t.gadget with
   | None -> invalid_arg "Subgame.entry: no gadget"
-  | Some g -> Array.init (Array.length g.alt) (enter g)
+  | Some (Opt_out { follow; quit; _ }) ->
+      Array.init (Array.length follow) (follows follow quit)
+  | Some (Pick { prob; _ }) -> Array.copy prob
+
+let alternatives t =
+  match t.gadget with
+  | None -> invalid_arg "Subgame.alternatives: no gadget"
+  | Some (Opt_out { alt; _ } | Pick { alt; _ }) -> Array.copy alt
+
+let margins t prof =
+  match t.gadget with
+  | None -> invalid_arg "Subgame.margins: no gadget"
+  | Some g ->
+      let o = opponent g in
+      let alt = alternatives t and mass = compatible t o t.sides.(1 - o).w in
+      let v = cbv t o prof in
+      Array.mapi
+        (fun h m -> if m > 0. then (alt.(h) -. v.(h)) /. m else infinity)
+        mass
 
 let value t prof = expected t prof Mean 0
 let best_response t i prof = expected t prof Best i
@@ -1450,7 +1528,7 @@ let resolve ?(algorithm = Cfr.dcfr) ~safe ~iterations cfg t prof =
         if safe then
           for p = 0 to 1 do
             let river = solve r in
-            gadget river (1 - p)
+            gadget river Resolve (1 - p)
               (cbv river (1 - p) (restrict t prof r.path river));
             run river iterations;
             write t out r.path river (average river) p

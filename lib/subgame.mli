@@ -31,8 +31,13 @@ val average : t -> profile
 val current : t -> profile
 val regrets : t -> profile
 val cbv : t -> int -> profile -> float array
-val gadget : t -> int -> float array -> unit
+
+type gadget = Resolve | Maxmargin
+
+val gadget : t -> gadget -> int -> float array -> unit
 val entry : t -> float array
+val alternatives : t -> float array
+val margins : t -> profile -> float array
 val value : t -> profile -> float
 val best_response : t -> int -> profile -> float
 val exploitability : t -> profile -> float

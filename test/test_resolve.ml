@@ -81,7 +81,7 @@ let low_alternatives_change_nothing () =
   let r = List.nth (Subgame.roots t prof) 100 in
   let plain = river_of r and gadget = river_of r in
   let n = Range.size (Subgame.range gadget 1) in
-  Subgame.gadget gadget 1 (Array.make n (-1e9));
+  Subgame.gadget gadget Resolve 1 (Array.make n (-1e9));
   Subgame.run plain 50;
   Subgame.run gadget 50;
   if Subgame.average plain <> Subgame.average gadget then
@@ -98,7 +98,7 @@ let gadget_bounds_cbv () =
         let alt =
           Subgame.cbv river (1 - p) (Subgame.restrict t prof r.path river)
         in
-        Subgame.gadget river (1 - p) alt;
+        Subgame.gadget river Resolve (1 - p) alt;
         Subgame.run river 2000;
         let after = Subgame.cbv river (1 - p) (Subgame.average river) in
         let spread =
