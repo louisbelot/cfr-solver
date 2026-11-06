@@ -16,8 +16,9 @@ floats, skip subtrees no opponent hand reaches or (with regret-based pruning)
 no hand of the player acting would take, and can merge hands into
 buckets (by E[HS^2] or by the earth mover's distance between distributions of
 river hand strength) whose cost is measured in the exact tree. A turn solve can
-serve as a blueprint whose rivers are re-solved one at a time, with or without
-the re-solving gadget that keeps it from getting more exploitable.
+serve as a blueprint whose rivers are re-solved one at a time, either unsafely
+or with one of four gadgets (resolve, max-margin, and both again with reach
+gifts) that keep it from getting more exploitable.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
@@ -738,39 +739,74 @@ players' reach, `restrict` and `graft` move strategies between the turn tree
 and a river tree, `cbv` gives each hand's counterfactual best-response value,
 and `Subgame.gadget` adds the opt-out to a river solve. In the vector solver
 the gadget is one two-action regret matcher per opponent hand that scales the
-opponent's reach at the root. `cfr-solver resolve` solves a turn blueprint,
-re-solves all 432 rivers on the limit turn both ways, and measures the
-stitched strategies in the exact turn tree:
+opponent's reach at the root. Every hand in the opponent's turn range gets
+one, including hands the blueprint never brings to that river: the gadget's
+entry distribution is the probability that the opponent could reach the root
+if it tried, not the probability that it does.
+
+Two refinements change what the gadget asks for. Max-margin (Moravcik,
+Schmid, Ha, Hladik and Gaukrodger, AAAI 2016) maximizes the smallest margin,
+the amount by which an opponent hand's value drops below its blueprint value,
+instead of only keeping every margin non-negative. As a gadget the opponent
+picks which hand to start the river with, and its payoff is shifted by that
+hand's alternative. In the vector solver that is one regret matcher over all
+of the opponent's hands; a hand picked with probability q enters with reach
+q / m, where m is the resolver's reach that does not collide with it, so
+margins are compared per unit of reach. Reach (Brown and Sandholm, "Safe and
+Nested Subgame Solving for Imperfect-Information Games", NeurIPS 2017) raises
+each alternative by a gift: if on the way to this river the opponent passed
+up a fold that was worth more than the line it took, the difference is value
+it has already given away, and the river may give some of it back. Gifts only
+come from folds, since those values cannot move when other rivers are
+re-solved, and each gift is split over every river below the decision in
+proportion to the resolver's reach there, so their sum can never exceed it.
+`Subgame.gifts` computes them on the turn tree and `Subgame.prepare` builds
+the augmented river game for any of the five methods.
+
+`cfr-solver resolve` solves a turn blueprint, re-solves all 432 rivers on the
+limit turn with every method, and measures the stitched strategies in the
+exact turn tree:
 
 ```
-$ cfr-solver resolve --board "Qs Jh 8d 5c" --pot 4 --limit 1 -n 500 \
-    --oop "22+, A2s+, K9s+, QTs+, JTs, T9s, 98s, A9o+, KTo+, QJo" \
-    --ip "22+, A2+, K5+, Q8+, J8+, T8+, 97s+, 86s+, 75s+" \
-    --blueprint 10,30,100,300 --river-buckets 16 --svg docs/resolve-buckets.svg
+$ cfr-solver resolve --board "Qs Jh 8d 5c" --pot 4 --limit 1 -n 500     --oop "22+, A2s+, K9s+, QTs+, JTs, T9s, 98s, A9o+, KTo+, QJo"     --ip "22+, A2+, K5+, Q8+, J8+, T8+, 97s+, 86s+, 75s+"     --blueprint 10,30,100,300 --river-buckets 16 --svg docs/resolve-buckets.svg
 ```
 
 ![Exploitability of the blueprint and of the stitched strategies](docs/resolve-buckets.svg)
 
-DCFR everywhere, 500 iterations per river (twice per river for the safe
-version, once per player), exploitability as a share of the pot:
+DCFR everywhere, 500 iterations per river (twice per river for the gadgets,
+once per player), exploitability as a share of the pot. Exact blueprint:
 
-| blueprint iterations | exact blueprint | unsafe | safe   | 16-bucket blueprint | unsafe | safe  |
-|---------------------:|----------------:|-------:|-------:|--------------------:|-------:|------:|
-| 10                   | 10.3            | 3.03   | 6.64   | 11.9                | 4.38   | 8.67  |
-| 30                   | 0.848           | 0.392  | 0.677  | 1.12                | 0.681  | 0.898 |
-| 100                  | 0.0898          | 0.0844 | 0.0702 | 0.241               | 0.270  | 0.185 |
-| 300                  | 0.0140          | 0.0312 | 0.0119 | 0.224               | 0.495  | 0.167 |
+| blueprint iterations | blueprint | unsafe | resolve | maxmargin | reach-resolve | reach-maxmargin |
+|---------------------:|----------:|-------:|--------:|----------:|--------------:|----------------:|
+| 10                   | 10.3      | 3.03   | 6.67    | 4.48      | 6.67          | 4.48            |
+| 30                   | 0.848     | 0.392  | 0.654   | 0.569     | 0.649         | 0.563           |
+| 100                  | 0.0898    | 0.0844 | 0.0689  | 0.0596    | 0.0687        | 0.0587          |
+| 300                  | 0.0140    | 0.0311 | 0.0124  | 0.0105    | 0.0117        | 0.0101          |
 
-Safe re-solving improved every blueprint. Unsafe re-solving does better on
-bad blueprints, since it throws the blueprint's river away and keeps only the
-ranges, but once the blueprint is good it makes things worse: 2.2x on both the
-exact 300-iteration blueprint and the bucketed one. With 16 river buckets the
-blueprint has stalled by 100 iterations (0.24% and then 0.22% of the pot), and
-the safe re-solve takes 25% off that. The guarantee only holds when the gadget game is
-solved, though: with 200 iterations per river against a 300-iteration
-blueprint on a smaller turn, the safe version came out slightly worse
-(0.0070% against 0.0056%). Re-solving all rivers safely (864 river solves)
-takes about two minutes on one core. The exact-blueprint chart is
+Blueprint with 16 hand-strength buckets on every river:
+
+| blueprint iterations | blueprint | unsafe | resolve | maxmargin | reach-resolve | reach-maxmargin |
+|---------------------:|----------:|-------:|--------:|----------:|--------------:|----------------:|
+| 10                   | 11.9      | 4.37   | 8.67    | 6.79      | 8.66          | 6.79            |
+| 30                   | 1.12      | 0.681  | 0.889   | 0.795     | 0.887         | 0.790           |
+| 100                  | 0.241     | 0.270  | 0.183   | 0.165     | 0.182         | 0.162           |
+| 300                  | 0.224     | 0.495  | 0.167   | 0.152     | 0.167         | 0.152           |
+
+Every gadget improved every blueprint, and max-margin beat resolve every
+time, by 9 to 33%. Reach gifts matter much less: at 300 exact iterations they
+take 6% off resolve and 3% off max-margin, everywhere else under 2%, and at
+10 exact iterations reach-resolve comes out 0.04% worse than resolve. The gifts are small because
+each river is one of 44 below a chance node and gets 1/44 of the gift, which
+is what Brown and Sandholm saw too: their "not split" variant, which gives
+every subgame the whole gift and drops the guarantee, did much better than
+the safe split. Unsafe re-solving does better on bad blueprints, since it
+throws the blueprint's river away and keeps only the ranges, but once the
+blueprint is good it makes things worse: 2.2x on both 300-iteration
+blueprints. With 16 river buckets the blueprint has stalled by 100
+iterations (0.24% and then 0.22% of the pot), and reach-maxmargin takes 32%
+off that. All of this needs the gadget game to be solved; 500 iterations per
+river is enough here. Each gadget method takes 80 to 110 s for its 864 river
+solves on one core, unsafe about 55 s. The exact-blueprint chart is
 `docs/resolve.svg`.
 
 ## Building
@@ -955,8 +991,15 @@ The tests check against numbers that come from outside this code:
   very low alternatives reproduces the plain solve bit for bit, after 2,000
   iterations of the gadget no opponent hand's best-response value is above
   its alternative (checked on 8 river solves, the worst gap is exactly 0),
-  and safe re-solving lowers the exploitability of 1-, 10- and
-  100-iteration blueprints.
+  and all four gadgets lower the exploitability of 1-, 10- and
+  100-iteration blueprints. After every river is re-solved with any of the
+  four, no opponent hand's best-response value at the turn root is higher
+  than against the blueprint, including when the blueprint folds its best
+  hands so they never reach a river. Max-margin's smallest margin is never
+  below resolve's. Gifts are checked against a separate computation: the
+  call line's fold value and river-by-river best-response values summed with
+  the 1/44 chance weight, and the raised alternatives on the 48 rivers below
+  sum back to exactly the gift.
 - The hand evaluator: all five-card hands, the best-of-21 property, and hands
   that trip up evaluators (wheels, a third pair as kicker, two sets of trips,
   a flush and a straight in the same seven cards).
@@ -1050,7 +1093,14 @@ symmetrization after a catch-up, which only matters at rounding level.
 For re-solving, a gadget that always plays and alternatives taken from the
 blueprint's mean values instead of best-response values each fail at least
 one test. The second one still passes the end-to-end safety test, which is
-why the per-hand bound test exists.
+why the per-hand bound test exists. Gifts given whole to every river (times
+44) fail the test that sums each river's raised alternatives back up to the
+gift on the turn, and a gadget that only covers hands the blueprint brings to
+the river fails the test that makes the blueprint fold its sets: those hands
+then gain about 9.6 chips at the turn root. Plain regret matching instead of
+RM+ in the max-margin chooser fails three tests on convergence. Gifts from
+every action instead of only folds survive, and should: they are still safe,
+only no longer a lower bound once the other rivers are re-solved.
 
 ## License
 
