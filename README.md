@@ -1096,11 +1096,11 @@ one test. The second one still passes the end-to-end safety test, which is
 why the per-hand bound test exists. Gifts given whole to every river (times
 44) fail the test that sums each river's raised alternatives back up to the
 gift on the turn, and a gadget that only covers hands the blueprint brings to
-the river fails the test that makes the blueprint fold its sets: those hands
-then gain about 9.6 chips at the turn root. Plain regret matching instead of
-RM+ in the max-margin chooser fails three tests on convergence. Gifts from
-every action instead of only folds survive, and should: they are still safe,
-only no longer a lower bound once the other rivers are re-solved.
+the river fails the test that makes the blueprint fold its sets: their
+counterfactual value at the turn root goes up by 26%. Plain regret matching
+instead of RM+ in the max-margin chooser fails three tests on convergence.
+Gifts from every action instead of only folds survive, and should: they are
+still safe, only no longer a lower bound once the other rivers are re-solved.
 
 ## License
 
