@@ -1024,3 +1024,125 @@ Next: max-margin and reach gadgets next to this one on the same turn, then
 nested re-solving (turn from a flop blueprint, river from the re-solved
 turn), and potential-aware buckets with multi-dimensional river features,
 which needs a real transport solver for EMD.
+
+## 2026-11-06: max-margin and reach gadgets
+
+What was built:
+
+- `Subgame.gadget` takes a kind: `Resolve` (the opt-out from last time) or
+  `Maxmargin`, where the opponent chooses which hand to start the river with
+  through one RM+ regret matcher over its hands and is paid v(h) - alt(h)
+  per unit of reach. `alternatives` and `margins` read a gadget back.
+- `Subgame.gifts`: for each river root of a turn tree, per opponent hand, the
+  sum over the opponent's turn decisions on the way there of
+  max(0, fold value - value of the action taken) / m, where m is the
+  resolver's reach that does not collide with the hand at that decision.
+- `Subgame.solving = Unsafe | Safe of gadget | Reach of gadget` and
+  `Subgame.prepare`, which builds the augmented river game for one root and
+  one resolver; `resolve` is now a loop over `prepare`.
+- `cfr-solver resolve --methods` runs any subset of the five and plots them.
+- A fix to the 11-03 gadget: it only covered opponent hands with positive
+  blueprint reach at the river.
+
+Design notes:
+
+- Entry distribution. Burch, Johanson and Bowling's gadget starts with chance
+  picking the opponent's information set in proportion to pi_-1, the
+  probability that the opponent reaches it if it tries. The 11-03 version
+  used the opponent's blueprint range instead. That looks equivalent (at an
+  equilibrium every hand with positive weight is held to its alternative,
+  whatever the weight) except for hands with weight zero: they were not in
+  the river game at all, so nothing held them down. The river game now gets
+  every hand of the opponent's turn range with weight 1 (in the vector
+  solver pi_-1 is the resolver's reach times chance, which the walk already
+  carries). The test that shows it makes the blueprint fold 77 and AK to a
+  bet at "b1" on Ah Kd 7c 2h. With the old gadget the sets' counterfactual
+  value at the turn root goes from 37.1 to 46.7 after "safe" re-solving; with
+  the new one every hand loses value. On the README turn the resolve column
+  moved by at most 4.2% either way, so the 11-03 numbers were not much off,
+  but the guarantee was not there.
+- Max-margin in vector form. Brown and Sandholm describe the gadget game as
+  the opponent picking an information set, then chance picking the node in
+  proportion to pi_-1, with every payoff shifted by the alternative. For a
+  hand h with non-colliding resolver mass m(h), the opponent's root reach is
+  q(h) / m(h), so the joint over (h, resolver hand) is q(h) times the
+  conditional, and the regret matcher's utility for h is
+  (v(h) - alt(h)) / m(h), where v is the counterfactual value the walk
+  returns. The resolver's regrets only see the opponent through that reach,
+  as with the opt-out. Hands with m = 0 cannot be picked. Dividing by m is
+  what makes it a margin per unit of reach; without it max-margin would
+  defend hands in proportion to how often they meet the resolver.
+- Why gifts are safe. Write B(X, h) for the opponent's best-response
+  counterfactual value at node X against the blueprint, New for the same
+  after re-solving, M(X, h) for the non-colliding resolver mass at X and
+  G(X, h) for the gifts per unit of reach from the opponent's decisions
+  above X. Claim: New(X) <= B(X) + G(X) M(X). At a river root the gadget
+  gives exactly that (alt = B + G m). Through a chance node New is the
+  1/44-weighted sum over rivers, and the river masses sum back to M with the
+  same weight (every resolver hand that misses h sees 44 rivers that miss
+  both), so the bound survives. Through a resolver node New and M are sums
+  over its actions with its strategy inside the reach. At an opponent node
+  New is a max: a fold child is unchanged, and an action a gets
+  G + (B(fold) - B(a))^+ / M, so its bound is
+  max(B(a), B(fold)) + G M <= B(X) + G M. At the turn root G = 0, so no
+  opponent hand gains anything. The same induction works with gifts from
+  every alternative action, which is why that mutant survives. Brown and
+  Sandholm use only actions that lead straight to a terminal because those
+  values cannot shrink when other subgames are re-solved, so the gift stays
+  a lower bound and their Theorem 1 improvement guarantee holds.
+- The split gives each river a share proportional to the resolver's reach
+  into it: the same gift per unit of reach everywhere, the analogue of their
+  equal split. With 44 rivers under each chance node that is a small share,
+  and the gifts barely moved anything (below). They saw the same with 1,755
+  flops and got a lot more by not splitting.
+- Units again. Turn-tree values at a river root before the chance weight are
+  in the same units as the river game's values (the bet tree pays half the
+  current pot plus what was put in, and the river game starts from the root's
+  pot and stack), so a gift per unit of reach times river mass goes straight
+  onto alt. The gifts test checks that end to end: B(call) summed from 48
+  river games against the turn tree's own gift.
+
+Results (Ryzen 7 7800X3D, the exact and bucketed runs side by side, one core
+each). Qs Jh 8d 5c, README ranges, 500 DCFR iterations per river, % of pot:
+
+| blueprint | exact  | resolve | maxmargin | reach-mm | 16 buckets | resolve | maxmargin | reach-mm |
+|----------:|-------:|--------:|----------:|---------:|-----------:|--------:|----------:|---------:|
+| 10 it     | 10.3   | 6.67    | 4.48      | 4.48     | 11.9       | 8.67    | 6.79      | 6.79     |
+| 30 it     | 0.848  | 0.654   | 0.569     | 0.563    | 1.12       | 0.889   | 0.795     | 0.790    |
+| 100 it    | 0.0898 | 0.0689  | 0.0596    | 0.0587   | 0.241      | 0.183   | 0.165     | 0.162    |
+| 300 it    | 0.0140 | 0.0124  | 0.0105    | 0.0101   | 0.224      | 0.167   | 0.152     | 0.152    |
+
+Max-margin beat resolve at every point, by 9 to 33%. Reach gifts took 6% off
+resolve and 3% off max-margin at 300 exact iterations and under 2% anywhere
+else; at 10 exact iterations reach-resolve was 0.04% worse than resolve.
+Kubicek, Lisy and Sandholm (IJCAI 2026) find resolving beating max-margin in
+their benchmarks and trace it to which of the gadget game's many equilibria
+a solver lands on. Here DCFR on the vector tree lands on max-margin
+solutions that are better, but this is one turn and one solver. The unsafe
+and blueprint columns match 11-03 to three digits. Each gadget pass is 80 to
+110 s for 864 river solves.
+
+Checks:
+
+- 195 tests, about 130 s (the four new ones are slow: 2,000 to 3,000
+  iterations per river).
+- Max-margin: after 3,000 iterations the smallest margin is above -1e-3 and
+  never below resolve's, on 8 river solves.
+- Gifts: zero on check-check lines, non-negative everywhere, and on the
+  "b1c" line equal to max(0, -2 M - B(call)) with M and B(call) built from
+  the 48 river games, to 1e-9 of the value range; the resolver mass from the
+  rivers matches the mass from the turn strategy to 1e-12, and the raised
+  alternatives sum back to the gift.
+- Per hand at the turn root, for all four gadgets after 2,000 iterations
+  per river on a 30-iteration blueprint: no opponent hand gains more than
+  1e-4 of the value range. Same with the blueprint folding its sets.
+- Mutants caught: gifts not split (the gifts test), the old range-weighted
+  entry (the folded-sets test), plain RM in the chooser (3 tests). Gifts from all actions survive, as they
+  should.
+- The toolchain had lost `dune.exe` from the opam switch (opam still listed
+  dune 3.24.2 as installed); `opam reinstall dune` rebuilt it and its
+  dependents.
+
+Next: nested re-solving (turn from a flop blueprint, river from the
+re-solved turn), gifts scaled up past the safe split to see where it stops
+helping, and multi-dimensional potential-aware buckets.
