@@ -1,8 +1,8 @@
 # cfr-solver
 
 Nash-equilibrium strategies for imperfect-information games, computed in OCaml
-with counterfactual regret minimization (CFR). It solves Kuhn poker and Leduc
-hold'em with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
+with counterfactual regret minimization (CFR). It solves Kuhn poker, Leduc
+hold'em and Liar's dice with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
 discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
 strategy is from equilibrium with an exact best response. It also builds card
@@ -98,6 +98,110 @@ Leduc. A few of the first-round decisions from that run (`c` is check or call,
 
 Leduc's equilibrium is not unique, so another algorithm can land on different
 mixes with the same value and exploitability.
+
+## Liar's dice
+
+Each player rolls one hidden six-sided die. Players take turns bidding a
+quantity and a face ("2x3": at least two threes between both dice), each bid
+higher than the last (more dice, or the same number of a higher face), until
+someone calls `liar`. If the bid holds, the bidder wins 1, otherwise the
+caller does. Sixes are wild, so they count toward any other face. These are
+OpenSpiel's `liars_dice` rules with their default parameters, and the tree has
+the same 24,576 infosets: one per die value and per set of bids made so far,
+since bids only go up. `Liars_dice.game` builds any number of dice and faces,
+with or without wilds; dice are dealt as sorted multisets with multinomial
+weights, so two dice of six faces are 21 deals per player instead of 36.
+
+```
+$ dune exec cfr-solver -- solve -g liars -a dcfr -n 5000 --show 3: --show 4: --show 6: --show 3:1x6
+liars-1d6: 5000 iterations of dcfr(1.5,0,2) in 39.92 s
+nodes touched   2948770000
+game value      -0.027132 (player 0)
+exploitability  2.235e-06
+
+  3:  1x3 0.698  1x4 0.233  1x5 0.070
+  4:  1x4 0.930  1x5 0.070
+  6:  1x3 0.279  1x4 0.312  1x5 0.408
+  3:1x6  2x2 0.004  2x3 0.425  liar 0.571
+```
+
+The first player loses 7/258 (0.027132) a game. That number was checked
+independently: a separate Python script, written from the rules rather than
+from this code, builds the sequence-form linear program and solves it with
+HiGHS. Every value it found sits within 1e-10 of a fraction with a small
+denominator. The tests hold CFR to the variants up to 1 x 4, to 2 x 2 and to
+-7/258; 2,000 DCFR iterations on 1 x 6 without wilds and on 2 x 3 give
+-0.111111 and 0.061728.
+
+| dice x faces | infosets | sixes (top face) wild | no wilds |
+|-------------:|---------:|----------------------:|---------:|
+| 1 x 2        | 32       | 1/2                   | 0        |
+| 1 x 3        | 192      | 1/9                   | -1/9     |
+| 1 x 4        | 1,024    | 1/16                  | -1/8     |
+| 1 x 5        | 5,120    | 1/125                 | -3/25    |
+| 1 x 6        | 24,576   | -7/258                | -1/9     |
+| 2 x 2        | 768      | 7/8                   | 1/8      |
+| 2 x 3        | 24,576   | 5/81                  | 1/81     |
+
+With one die and no wilds the first player is behind whenever there are more
+than two faces. With wilds the opener starts ahead, and the edge shrinks as
+faces are added until it flips at six. The opening strategy shows the
+equilibrium bluffing: a 3 opens 1x4 or 1x5 30% of the time, and a wild six,
+which supports any face, spreads across 1x3, 1x4 and 1x5. Openings with a 1 and
+a 2 come out identical: neither die backs any bid the strategy makes, so the
+two hands are interchangeable.
+
+The same six-algorithm comparison as for Leduc, with N = 2,000 (about 1.18
+billion nodes touched; a full pass over the tree is 294,877 nodes):
+
+![Exploitability against nodes touched in Liar's dice](docs/liars.svg)
+
+| Liar's dice, nodes | cfr     | cfr+    | lcfr    | dcfr    | es      | os      |
+|-------------------:|--------:|--------:|--------:|--------:|--------:|--------:|
+| 10^6               | 5.11e-1 | 7.81e-1 | 7.81e-1 | 7.81e-1 | 2.34e-1 | 4.45e-1 |
+| 10^7               | 2.44e-1 | 7.94e-2 | 9.35e-2 | 6.49e-2 | 5.47e-2 | 1.63e-1 |
+| 10^8               | 4.90e-2 | 2.77e-3 | 5.50e-3 | 1.44e-3 | 1.13e-2 | 5.72e-2 |
+| 1.18 x 10^9        | 7.11e-3 | 3.31e-5 | 5.39e-4 | 1.27e-5 | 2.40e-3 | 9.76e-3 |
+| cpu seconds        | 19.5    | 17.2    | 16.6    | 16.8    | 32.9    | 73.1    |
+
+Here external sampling ends three times less exploitable than vanilla CFR on
+the same work, where on Leduc it ended 2.6 times worse. A likely reason: the tree is
+wide and shallow (up to 12 bids at a node, at most 13 moves deep), so a
+sampled iteration that walks every action of one player and one action of
+the other skips most of it, and the 36 deals average out quickly. DCFR is
+again the best full-tree method, 2.6 times ahead of CFR+ at the end.
+
+## Playing the solver
+
+`cfr-solver play -g GAME` solves the game with DCFR and deals hands against
+the result, alternating seats unless `--seat` picks one. The prompt is the
+infoset key, your private card or die followed by the public actions so far,
+then the legal actions; type one or its number. After each hand every move is
+listed with the infoset it was made from, so the bot's die or card shows up
+there:
+
+```
+$ dune exec cfr-solver -- play -g liars --hands 1 --seed 3
+liars-1d6: 2000 iterations of dcfr, exploitability 1.267e-05
+game value of the bot's strategy: -0.0271 per hand to player 0
+
+hand 1, you are player 0
+1:    1x1 1x2 1x3 1x4 1x5 1x6 2x1 2x2 2x3 2x4 2x5 2x6
+> 2
+1:1x2,1x5    1x6 2x1 2x2 2x3 2x4 2x5 2x6 liar
+> liar
+  you 1x2   at 1:
+  bot 1x5   at 5:1x2
+  you liar  at 1:1x2,1x5
+you lose 1, running total -1
+
+1 hand, -1 total, -1.000 per hand
+```
+
+`Play.Make` is the same loop as a library function that takes the human's
+choices as a callback, which is how the tests drive it: two copies of Kuhn's
+equilibrium playing 200,000 sampled hands average -1/18 for player 0 to within
+four standard errors.
 
 ## Convergence
 
@@ -920,6 +1024,11 @@ The tests check against numbers that come from outside this code:
   always taking the first action, hand-counted tree sizes, and payoffs worked
   out by hand (raise-fold, re-raise-fold, a pair beating a king, a split pot,
   the 13-chip maximum pot).
+- Liar's dice: OpenSpiel's 24,576 infosets, tree sizes counted in closed form
+  for four variants (1 + m^2 (2^(B+1) - 1) histories with m rolls per player
+  and B possible bids), roll
+  probabilities, bid truth with and without wilds, and game values from an
+  independent sequence-form LP, including -7/258 for the standard game.
 - Every CFR variant against a slow reference implementation in
   `test/reference_cfr.ml`, written separately: it enumerates histories with
   their reach probabilities instead of carrying them in one walk, evaluates
