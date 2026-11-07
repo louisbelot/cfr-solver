@@ -5,7 +5,10 @@ with counterfactual regret minimization (CFR). It solves Kuhn poker, Leduc
 hold'em and Liar's dice with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
 discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
-strategy is from equilibrium with an exact best response. It also builds card
+strategy is from equilibrium with an exact best response. Kuhn and Leduc also
+come in three-player (or n-player) versions, where the full-tree variants run
+on a game signature with payoff vectors and progress is measured as NashConv.
+It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
 solves river and turn subgames over full ranges with a vectorized CFR on the
@@ -202,6 +205,127 @@ you lose 1, running total -1
 choices as a callback, which is how the tests drive it: two copies of Kuhn's
 equilibrium playing 200,000 sampled hands average -1/18 for player 0 to within
 four standard errors.
+
+## Three players
+
+Two-player zero-sum is where CFR has its guarantee: the average strategy goes
+to a Nash equilibrium. With three players it doesn't, and a Nash equilibrium
+is a weaker promise anyway (each player's best reply to the other two, with no
+game value to speak of). `Multi.S` is the game signature for any number of
+players: terminals carry a payoff vector and decisions name a player index.
+`Multi_cfr`, `Multi_br` and `Multi.Eval` are the solver, best response and
+evaluator over it, and `Multi.Of_game` lifts any two-player game into it.
+`Kuhn_n.game n` and `Leduc_n.game n` follow OpenSpiel's n-player rules: n + 1
+ranks (two suits for Leduc), an ante of 1 each, and for Leduc folded players
+are skipped and a round closes once everyone left has called the last raise.
+
+Progress is NashConv, the sum over players of what each gains by switching to
+a best response while the others keep their strategies:
+
+```
+$ dune exec cfr-solver -- multi -g kuhn3 -n 100000
+kuhn3: 3 players, 48 infosets
+
+nash conv of the average strategy
+ iteration        cfr       cfr+       lcfr       dcfr
+       100  8.952e-02  2.955e-03  6.905e-03  6.135e-03
+      1000  1.657e-02  3.203e-05  1.500e-04  2.315e-05
+     10000  2.772e-03  7.850e-07  6.022e-06  3.813e-08
+    100000  1.010e-03  1.453e-07  4.214e-07  6.129e-10
+
+            ms/it  values                         gains
+cfr         0.010  -0.029475 -0.020676 +0.050150  2.275e-04 3.730e-04 4.100e-04
+cfr+        0.026  -0.026888 -0.020833 +0.047721  1.652e-08 1.276e-07 1.186e-09
+lcfr        0.026  -0.026232 -0.020833 +0.047065  4.693e-09 4.108e-07 5.923e-09
+dcfr        0.029  -0.026100 -0.020833 +0.046933  4.767e-12 4.231e-10 1.850e-10
+```
+
+(Only some checkpoints are shown.) Three-player Kuhn is a four-card
+deck, T J Q K. Szafron, Gibson and Sturtevant (AAMAS 2013) worked out a family
+of equilibria for it by hand, with a parameter beta in [0, 1] that the second
+player uses to move value between the other two: the first player gets
+-(1 + 2 beta)/48 per hand, the second always -1/48, the third (1 + beta)/24.
+The solver lands in that family without being told about it. The second
+player's value is -0.020833 (-1/48) under CFR+, LCFR and DCFR, the first and
+third match the formulas at beta = 0.126 for DCFR, and the first player never
+opens with a bet, which is a feature of the family. The second player's
+indifference also shows up in the run: beta for CFR+ moves from 0.138 at 1,000
+iterations to 0.136 at 10,000 and 0.145 at 100,000 while NashConv keeps
+falling, because every point on that segment is an equilibrium and nothing
+pins the average to one of them.
+
+![NashConv against iterations in three-player Kuhn](docs/kuhn3.svg)
+
+Leduc is where it gets less tidy. Lu, Zhu and Zhao (2023, score-based
+equilibrium learning) report CFR failing to bring NashConv down any further on
+three-player Leduc. The sizes in their table (13,878 infosets) match a
+six-card deck, J Q K in two suits, which is `leduc3-6` here. With three hole
+cards and a board out of six cards there is a lot of card removal.
+
+```
+$ dune exec cfr-solver -- multi -g leduc3-6 -n 1000
+leduc-3p-3r: 3 players, 4203 infosets
+ iteration        cfr       cfr+       lcfr       dcfr
+       100  1.303e+00  1.829e-01  5.192e-01  1.490e-01
+       200  9.905e-01  5.712e-02  2.782e-01  3.968e-02
+       500  6.154e-01  1.353e-02  1.368e-01  1.852e-02
+      1000  5.040e-01  4.676e-03  1.547e-01  1.302e-02
+
+            ms/it  values                         gains
+cfr         1.578  -0.094658 +0.000463 +0.094196  1.555e-01 1.776e-01 1.709e-01
+cfr+        4.221  -0.001474 -0.194565 +0.196039  1.297e-03 1.895e-03 1.484e-03
+lcfr        4.157  -0.066414 -0.050438 +0.116853  5.341e-02 3.997e-02 6.128e-02
+dcfr        4.061  -0.052683 -0.025511 +0.078194  5.447e-03 4.311e-03 3.262e-03
+```
+
+LCFR goes back up between 500 and 1,000 iterations and DCFR flattens out
+after 500. The values
+disagree too: CFR+ ends near an approximate equilibrium where the second
+player loses 0.195 a hand and the first breaks even, DCFR near one where the
+second player loses 0.026. Both have every player within 0.006 of a best
+response, so these are different approximate equilibria, not one equilibrium
+reached at different speeds. Here the algorithm picks the equilibrium.
+
+![NashConv against iterations in six-card three-player Leduc](docs/leduc3-6.svg)
+
+With the eight-card deck (T J Q K in two suits, OpenSpiel's default for three
+players) the picture is closer to the two-player one, with one exception:
+
+```
+$ dune exec cfr-solver -- multi -g leduc3 -n 10000
+leduc-3p: 3 players, 7428 infosets
+ iteration        cfr       cfr+       lcfr       dcfr
+      1000  1.458e-01  6.948e-03  2.033e-02  3.702e-03
+      2000  9.228e-02  3.546e-03  1.894e-02  1.734e-03
+      5000  5.757e-02  1.786e-03  1.615e-02  5.844e-04
+     10000  5.066e-02  1.652e-03  1.868e-02  2.975e-04
+
+            ms/it  values                         gains
+cfr         3.850  -0.083587 -0.009240 +0.092827  1.266e-02 1.648e-02 2.151e-02
+cfr+       10.394  -0.094972 -0.008612 +0.103584  6.078e-04 6.065e-04 4.376e-04
+lcfr       10.300  -0.084803 -0.008830 +0.093633  5.480e-03 6.246e-03 6.957e-03
+dcfr       10.475  -0.094683 -0.008702 +0.103384  1.035e-04 1.078e-04 8.618e-05
+```
+
+DCFR keeps falling (3.0e-4 at 10,000 iterations) and CFR+ slows down, but
+LCFR stops near 2e-2 from 1,000 iterations on and drifts back up. CFR+ and
+DCFR agree on the values to about 3e-4 here, so in the bigger deck they head
+for the same region of the strategy space.
+
+![NashConv against iterations in eight-card three-player Leduc](docs/leduc3.svg)
+
+The game sizes are checked against the paper's table: with suits told apart
+(OpenSpiel's convention) the six-card game has 13,878 infosets and 396,120
+histories, and two-player Leduc 936 and 9,450. `Leduc_n` merges suits, which
+gives 4,203 and 288 infosets, so the test converts back by counting two suited
+versions of every first-round infoset, two of every second-round infoset that
+pairs the board and four of the rest.
+
+The n-player solver started as a direct recursion that returned a fresh
+utility vector from every node. Moving to flat regret tables and per-depth
+buffers, the way `Cfr` already works, took two-player Leduc from 0.204 to
+0.055 ms an iteration (the two-player solver does 0.040) and eight-card
+three-player Leduc from 40.2 to 12.2 ms, with identical output.
 
 ## Convergence
 
@@ -1029,6 +1153,16 @@ The tests check against numbers that come from outside this code:
   and B possible bids), roll
   probabilities, bid truth with and without wilds, and game values from an
   independent sequence-form LP, including -7/258 for the standard game.
+- Three or more players: the n-player solver run on two-player Kuhn and
+  Leduc (built both natively and through `Multi.Of_game`) reproduces the
+  two-player solver's strategies to 1e-11 under all four variants; three-player
+  Kuhn's sizes (600 histories, 48 infosets) and three-player Leduc's (396,120
+  and 13,878 with suits told apart) match Lu, Zhu and Zhao's table; payoffs
+  are worked out by hand, including a split pot and a folded player skipped
+  in the second round; the best response equals a brute-force search over all
+  16 pure strategies per card (qcheck, 40 random profiles); and DCFR lands in
+  the Szafron et al. equilibrium family (second player at -1/48, beta in
+  [0, 1], no opening bets) in 2,000 iterations.
 - Every CFR variant against a slow reference implementation in
   `test/reference_cfr.ml`, written separately: it enumerates histories with
   their reach probabilities instead of carrying them in one walk, evaluates
