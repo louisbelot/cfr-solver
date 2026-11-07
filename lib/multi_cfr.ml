@@ -39,7 +39,9 @@ module Make (G : Multi.S) = struct
     let rec go h d =
       incr size;
       height := max !height d;
-      let children l = Array.of_list (List.map (fun (_, h') -> go h' (d + 1)) l) in
+      let children l =
+        Array.of_list (List.map (fun (_, h') -> go h' (d + 1)) l)
+      in
       match G.node h with
       | Multi.Terminal u -> Leaf u
       | Chance outcomes ->
@@ -55,7 +57,9 @@ module Make (G : Multi.S) = struct
     let root, size, height, width, infos = build () in
     let labels = Array.map (fun (_, _, a) -> a) infos in
     let offset = Array.make (Array.length infos + 1) 0 in
-    Array.iteri (fun i a -> offset.(i + 1) <- offset.(i) + Array.length a) labels;
+    Array.iteri
+      (fun i a -> offset.(i + 1) <- offset.(i) + Array.length a)
+      labels;
     let slots = offset.(Array.length infos) in
     {
       root;
