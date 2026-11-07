@@ -783,4 +783,4 @@ let () =
              ~doc:
                "Equilibrium strategies by counterfactual regret minimization.")
           ([ solve_cmd; play_cmd; compare_cmd; scale_cmd; sweep_cmd ]
-          @ Holdem.cmds)))
+          @ Holdem.cmds @ Multiplayer.cmds)))
