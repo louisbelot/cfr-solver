@@ -32,6 +32,8 @@ jobs:
           printf '1\nliar\n2\n' | opam exec -- dune exec cfr-solver -- play -g liars -n 50 --hands 3
           printf 'b\np\n' | opam exec -- dune exec cfr-solver -- play -g kuhn --seat 1
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --csv compare.csv --svg compare.svg
+          opam exec -- dune exec cfr-solver -- multi -g kuhn3 -n 200 --csv k3.csv --svg k3.svg
+          opam exec -- dune exec cfr-solver -- multi -g leduc3-6 -a cfr,dcfr -n 5
           opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 200000 --domains 4
           opam exec -- dune exec cfr-solver -- solve -g leduc -a os -n 200000 --domains 4 --private -w lcfr --batch 100
           opam exec -- dune exec cfr-solver -- scale -g leduc -n 200000 --domains 1,2,4 --csv scale.csv --svg scale.svg
