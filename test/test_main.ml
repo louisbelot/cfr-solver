@@ -5,6 +5,7 @@ let () =
       ("leduc", Test_leduc.tests);
       ("liars dice", Test_liars_dice.tests);
       ("multi", Test_multi.tests);
+      ("leduc n", Test_leduc_n.tests);
       ("play", Test_play.tests);
       ("abstraction", Test_abstraction.tests);
       ("strength", Test_strength.tests);
