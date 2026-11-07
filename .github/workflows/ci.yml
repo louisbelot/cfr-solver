@@ -28,6 +28,9 @@ jobs:
           opam exec -- dune exec cfr-solver -- solve -g leduc -a cfr+ -n 1000 --json leduc.json
           opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 20000 --seed 3 --json es.json
           opam exec -- dune exec cfr-solver -- solve -a os -n 20000 --trace os.csv
+          opam exec -- dune exec cfr-solver -- solve -g liars-2d3 -a cfr+ -n 50 --show 11: --show 33:1x3
+          printf '1\nliar\n2\n' | opam exec -- dune exec cfr-solver -- play -g liars -n 50 --hands 3
+          printf 'b\np\n' | opam exec -- dune exec cfr-solver -- play -g kuhn --seat 1
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --csv compare.csv --svg compare.svg
           opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 200000 --domains 4
           opam exec -- dune exec cfr-solver -- solve -g leduc -a os -n 200000 --domains 4 --private -w lcfr --batch 100
