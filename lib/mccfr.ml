@@ -6,10 +6,8 @@ let sampling_name = function
   | External -> "es"
   | Outcome { epsilon } -> Printf.sprintf "os(%g)" epsilon
 
-let[@inline] uniform rng = float_of_int (Rng.bits rng) *. 0x1p-30
-
 let pick rng probs base n =
-  let x = ref (uniform rng) and a = ref 0 in
+  let x = ref (Rng.float rng) and a = ref 0 in
   while !a < n - 1 && !x >= probs.(base + !a) do
     x := !x -. probs.(base + !a);
     incr a
@@ -137,7 +135,7 @@ module Make (G : Game.S) = struct
         end
         else begin
           let a =
-            if uniform t.rng < epsilon then Rng.int t.rng n
+            if Rng.float t.rng < epsilon then Rng.int t.rng n
             else pick t.rng tab.current base n
           in
           let p = tab.current.(base + a) in

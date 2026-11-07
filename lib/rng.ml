@@ -22,3 +22,13 @@ let[@inline] next64 b =
 let split b = of_state (next64 b)
 let[@inline] bits b = Int64.to_int (Int64.shift_right_logical (next64 b) 34)
 let[@inline] int b n = (bits b * n) lsr 30
+let[@inline] float b = float_of_int (bits b) *. 0x1p-30
+
+let draw rng w =
+  let total = Array.fold_left ( +. ) 0. w in
+  let x = ref (float rng *. total) and i = ref 0 in
+  while !i < Array.length w - 1 && !x >= w.(!i) do
+    x := !x -. w.(!i);
+    incr i
+  done;
+  !i

@@ -141,26 +141,15 @@ let nearest centers x =
   done;
   (!best, !dist)
 
-let uniform rng = float_of_int (Rng.bits rng) *. 0x1p-30
-
-let draw rng w =
-  let total = Array.fold_left ( +. ) 0. w in
-  let x = ref (uniform rng *. total) and i = ref 0 in
-  while !i < Array.length w - 1 && !x >= w.(!i) do
-    x := !x -. w.(!i);
-    incr i
-  done;
-  !i
-
 let seed_centers rng w points k =
-  let first = points.(draw rng w) in
+  let first = points.(Rng.draw rng w) in
   let d = Array.map (fun x -> l1 first x) points in
   let rec grow centers count =
     let weighted = Array.mapi (fun i x -> w.(i) *. x) d in
     if count = k || Array.for_all (fun x -> x = 0.) weighted then
       Array.of_list (List.rev centers)
     else begin
-      let c = points.(draw rng weighted) in
+      let c = points.(Rng.draw rng weighted) in
       Array.iteri (fun i x -> d.(i) <- Float.min d.(i) (l1 c x)) points;
       grow (c :: centers) (count + 1)
     end

@@ -39,10 +39,24 @@ let int_is_uniform () =
       if abs (c - 100_000) > 1_000 then Alcotest.failf "bucket %d: %d" k c)
     counts
 
+let draw_follows_weights () =
+  let g = Rng.make 5 and counts = Array.make 4 0 in
+  for _ = 1 to 400_000 do
+    let k = Rng.draw g [| 1.; 0.; 3.; 4. |] in
+    counts.(k) <- counts.(k) + 1
+  done;
+  Alcotest.(check int) "zero weight" 0 counts.(1);
+  List.iter
+    (fun (k, expected) ->
+      if abs (counts.(k) - expected) > 1_500 then
+        Alcotest.failf "bucket %d: %d" k counts.(k))
+    [ (0, 50_000); (2, 150_000); (3, 200_000) ]
+
 let tests =
   [
     Alcotest.test_case "published splitmix64 outputs" `Quick reference;
     Alcotest.test_case "bits are the top 30" `Quick top_bits;
     Alcotest.test_case "copy and split" `Quick copy_and_split;
     Alcotest.test_case "int is uniform" `Quick int_is_uniform;
+    Alcotest.test_case "draw follows weights" `Quick draw_follows_weights;
   ]
