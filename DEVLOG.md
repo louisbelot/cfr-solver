@@ -1225,3 +1225,82 @@ Checks:
 Next: three-player Kuhn poker (needs the game interface to go past two
 players), then the gift-scaling experiment on the river re-solver and
 nested re-solving from a flop blueprint.
+
+## 2026-11-07: three players
+
+What was built:
+
+- `Multi`: a game signature for any number of players. Terminals carry a
+  payoff vector, decisions name a player index. `Multi.Of_game` lifts a
+  two-player `Game.S` into it and `Multi.Eval` gives every player's expected
+  value under a profile.
+- `Multi_br`: best response and NashConv for n players (each player's gain
+  from deviating, summed). `Best_response` is now a thin wrapper over it, so
+  the two-player brute-force and OpenSpiel tests exercise the same code.
+- `Multi_cfr`: CFR, CFR+, LCFR and DCFR over `Multi.S`, with the same
+  schedules and alternation as `Cfr`. Alternating variants make one pass per
+  player.
+- `Kuhn_n.game n` (n + 1 cards, OpenSpiel's n-player rules) and
+  `Leduc_n.game ?ranks n` (n + 1 ranks by default, two suits, raises of 2 and
+  4, two raises a round, folded players skipped).
+- `cfr-solver multi -g kuhn3|kuhn4|leduc3|leduc3-6`: runs the four variants,
+  prints NashConv at checkpoints, each player's value and gain, and writes a
+  CSV and a log-log chart.
+
+Design notes:
+
+- Counterfactual reach for player p is the product of every other player's
+  reach and chance's. The reach array has n + 1 slots and the walk multiplies
+  one slot in place and restores it, so a decision costs no allocation.
+- First version returned a fresh utility vector (and an array of action
+  values) from every node: 0.204 ms per iteration on two-player Leduc against
+  0.040 for `Cfr`, and 40.2 ms on eight-card three-player Leduc. With flat
+  regret tables and per-depth buffers (`vals` holds one utility vector per
+  depth, the child writes at depth d + 1 and the parent folds it into d) it
+  is 0.055 and 12.2 ms, identical output.
+- Leduc's round closes when no one has raised and everyone left has called,
+  or after a raise when everyone left but the raiser has called. A call
+  counter that resets on each raise does both, and folds only shrink the
+  number of players left. That is how OpenSpiel does it.
+- The infoset keys keep the two-player format (`K:cr`, `KQ:cr/c`), so
+  `Leduc_n.game 2` and `Kuhn_n.game 2` give exactly the old games and the
+  tests can compare the two solvers strategy by strategy.
+
+Results (Ryzen 7 7800X3D, one core):
+
+- Three-player Kuhn (48 infosets): NashConv after 100,000 iterations is
+  1.0e-3 for CFR, 1.5e-7 CFR+, 4.2e-7 LCFR, 6.1e-10 DCFR. The second player
+  gets -0.020833 (-1/48) and the others match Szafron, Gibson and
+  Sturtevant's family at beta = 0.126; the first player never opens with a
+  bet. CFR+'s beta wanders (0.138, 0.136, 0.145 at 1k, 10k, 100k) while
+  NashConv keeps falling.
+- Six-card three-player Leduc (4,203 infosets, 1,000 iterations): CFR+ 4.7e-3,
+  DCFR 1.3e-2 and flat since 500, LCFR back up from 0.137 to 0.155, CFR 0.50.
+  CFR+ and DCFR end at different approximate equilibria: the second player
+  loses 0.195 a hand under one and 0.026 under the other.
+- Eight-card three-player Leduc (7,428 infosets, 10,000 iterations): DCFR
+  3.0e-4, CFR+ 1.7e-3 and slowing, LCFR stuck near 2e-2 from 1,000 on, CFR
+  5.1e-2. Here CFR+ and DCFR agree on the values to 3e-4. 10.5 ms an
+  iteration for the alternating variants.
+
+Checks:
+
+- 225 tests, about 133 s. New: the n-player solver on Kuhn and Leduc (native
+  `Kuhn_n 2`/`Leduc_n 2` and through `Of_game`) against `Cfr`, all four
+  variants, strategies within 1e-11; three-player Kuhn sizes (600 histories,
+  312 terminals, 16 infosets a player, OpenSpiel's 48); hand-worked payoffs
+  for both games including a split pot and a fold skipped in the second
+  round; legal actions at the raise cap; Leduc sizes with suits told apart
+  against Lu, Zhu and Zhao's table (9,450/936 and 396,120/13,878); best
+  response against a per-card brute force over pure strategies (qcheck); and
+  the Szafron family checks after 2,000 DCFR iterations.
+- I couldn't open the AAMAS paper itself (the university link redirects to a
+  dead page). The payoffs -(1 + 2 beta)/48, -1/48 and (1 + beta)/24 come from
+  the summary on Wikipedia; they sum to zero, and the solver reproduces the
+  constant -1/48 to six digits.
+- Charts rendered and looked at: docs/kuhn3.svg, docs/leduc3.svg,
+  docs/leduc3-6.svg.
+
+Next: external-sampling MCCFR for n players, then a closer look at which
+equilibrium each algorithm picks in three-player Leduc, then the gift-scaling
+experiment on the river re-solver.
