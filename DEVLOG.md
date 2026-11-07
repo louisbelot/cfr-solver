@@ -1181,15 +1181,13 @@ Design notes:
   sequence-form LP from the rules, with ordered rolls instead of multisets
   so it shares nothing with the OCaml deal code, and solves it with HiGHS in
   about 10 s for all 14 variants. The standard game is -7/258 = -0.0271318
-  for the first player, which is the value usually quoted for OpenSpiel's
-  game. One 2026 arXiv paper on self-play collapse (Kujur) lists about -0.076
+  for the first player. One 2026 arXiv paper on self-play collapse (Kujur) lists about -0.076
   for a one-die, no-wild version; both the LP and CFR give -1/9 there, so
   either their rules differ somewhere they don't state or the number was not
   converged.
 - The 1-die, 2-face game without wilds converges only like 1/T under every
   variant (DCFR is at 5e-4 after 1,000 iterations, while 1 die of 3 faces is
-  at 4e-8). Its value is 0 and most bids there are ties between pure
-  strategies, which is the kind of game where the average keeps swinging.
+  at 4e-8). I have not tracked down why.
   The test bound for that one variant is 1e-3; the others are held to 1e-6
   (1e-4 for 1 die of 4 faces with wilds, 2.6e-5 at 1,000 iterations).
 - Play reports the whole move list after the hand, with each move's
@@ -1198,7 +1196,7 @@ Design notes:
 
 Results (Ryzen 7 7800X3D, one core):
 
-- 1d6 with DCFR: 7.2 ms per iteration, 5,000 iterations in 39.9 s, value
+- 1d6 with DCFR: 8.0 ms per iteration, 5,000 iterations in 39.9 s, value
   -0.027132, exploitability 2.2e-6. 1d6 without wilds: -0.111111 and 6e-9
   after 2,000. 2d3: 0.061728 (5/81) and 5.8e-6.
 - Same-work comparison at 1.18e9 nodes (table and chart in the README):
