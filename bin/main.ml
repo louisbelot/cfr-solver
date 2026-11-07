@@ -2,7 +2,13 @@ open Cfr_solver
 open Report
 
 let games : (string * (module Game.S)) list =
-  [ ("kuhn", (module Kuhn)); ("leduc", (module Leduc)) ]
+  [
+    ("kuhn", (module Kuhn));
+    ("leduc", (module Leduc));
+    ("liars", Liars_dice.game Liars_dice.standard);
+    ("liars-nowild", Liars_dice.game { Liars_dice.standard with wild = false });
+    ("liars-2d3", Liars_dice.game { dice = 2; faces = 3; wild = true });
+  ]
 
 type algorithm = Full of Cfr.algorithm | Sampled of Mccfr.sampling
 
@@ -90,7 +96,7 @@ let describe par = function
 
 let max_table = 24
 
-let solve game algorithm seed par iterations json trace =
+let solve game algorithm seed par iterations json trace show =
   let (module G : Game.S) = List.assoc game games in
   let module B = Best_response.Make (G) in
   let module E = Eval.Make (G) in
@@ -130,9 +136,22 @@ let solve game algorithm seed par iterations json trace =
           (Strategy.pp ~keys:(keys p))
           sigma)
       players
-  else
-    Format.printf "@.%d infosets; --json writes the strategy@."
+  else if show = [] then
+    Format.printf "@.%d infosets; --json or --show print the strategy@."
       (Strategy.cardinal sigma);
+  if show <> [] then Format.printf "@.";
+  List.iter
+    (fun key ->
+      match Strategy.find sigma key with
+      | None -> Format.printf "  %s  (not an infoset)@." key
+      | Some { actions; probs } ->
+          Format.printf "  %s" key;
+          Array.iteri
+            (fun a p ->
+              if p >= 5e-4 then Format.printf "  %s %.3f" actions.(a) p)
+            probs;
+          Format.printf "@.")
+    show;
   try
     Option.iter
       (fun path ->
@@ -163,6 +182,68 @@ let solve game algorithm seed par iterations json trace =
       trace;
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
+
+let rec read_action labels =
+  Format.printf "> @?";
+  match In_channel.input_line stdin with
+  | None -> raise End_of_file
+  | Some line -> (
+      let s = String.trim line in
+      match int_of_string_opt s with
+      | Some i when i >= 1 && i <= List.length labels -> List.nth labels (i - 1)
+      | _ when List.mem s labels -> s
+      | _ ->
+          Format.printf "pick one of %s, or its number@."
+            (String.concat " " labels);
+          read_action labels)
+
+let play game iterations hands seat seed =
+  let (module G : Game.S) = List.assoc game games in
+  let module B = Best_response.Make (G) in
+  let module E = Eval.Make (G) in
+  let module P = Play.Make (G) in
+  let t = solver (module G) seed (Full Cfr.dcfr) in
+  t.run iterations;
+  let bot = t.average () in
+  let value = E.expected_value bot in
+  Format.printf "%s: %d iterations of dcfr, exploitability %s@." G.name
+    iterations
+    (sci (B.exploitability bot));
+  Format.printf "game value of the bot's strategy: %+.4f per hand to player 0@."
+    value;
+  let rng = Rng.make seed in
+  let total = ref 0. and played = ref 0 in
+  let ask infoset labels =
+    Format.printf "%s    %s@." infoset (String.concat " " labels);
+    read_action labels
+  in
+  (try
+     for i = 1 to hands do
+       let seat =
+         match seat with
+         | Some p -> p
+         | None -> if i mod 2 = 1 then Game.P0 else P1
+       in
+       Format.printf "@.hand %d, you are %s@." i (Game.player_to_string seat);
+       let r = P.hand ~rng ~seat ~bot ~ask in
+       List.iter
+         (fun (m : Play.move) ->
+           Format.printf "  %-3s %-5s at %s@."
+             (if m.player = seat then "you" else "bot")
+             m.action m.infoset)
+         r.moves;
+       total := !total +. r.payoff;
+       incr played;
+       Format.printf "%s %g, running total %+g@."
+         (if r.payoff >= 0. then "you win" else "you lose")
+         (Float.abs r.payoff) !total
+     done
+   with End_of_file -> ());
+  if !played > 0 then
+    Format.printf "@.%d hand%s, %+g total, %+.3f per hand@." !played
+      (if !played = 1 then "" else "s")
+      !total
+      (!total /. float !played)
 
 let compare_algorithms game seed iterations csv svg =
   let (module G : Game.S) = List.assoc game games in
@@ -556,12 +637,47 @@ let trace =
           "Write exploitability at 1, 2, 5, 10, 20, ... iterations to $(docv) \
            as CSV.")
 
+let show =
+  Arg.(
+    value & opt_all string []
+    & info [ "show" ] ~docv:"KEY"
+        ~doc:
+          "Print the strategy at infoset $(docv), leaving out actions below \
+           0.0005. Repeatable.")
+
 let solve_cmd =
   Cmd.v
     (Cmd.info "solve" ~doc:"Run CFR and print the average strategy.")
     Term.(
       term_result
-        (const solve $ game $ algorithm $ seed $ par $ iterations $ json $ trace))
+        (const solve $ game $ algorithm $ seed $ par $ iterations $ json $ trace
+       $ show))
+
+let play_cmd =
+  let hands =
+    Arg.(
+      value & opt positive 10
+      & info [ "hands" ] ~docv:"H" ~doc:"Stop after $(docv) hands.")
+  and seat =
+    Arg.(
+      value
+      & opt
+          (enum [ ("0", Some Game.P0); ("1", Some Game.P1); ("both", None) ])
+          None
+      & info [ "seat" ] ~docv:"SEAT"
+          ~doc:"Play as player 0, player 1, or both (alternating).")
+  and iterations =
+    Arg.(
+      value & opt positive 2_000
+      & info [ "n"; "iterations" ] ~docv:"N"
+          ~doc:"DCFR iterations for the bot's strategy.")
+  in
+  Cmd.v
+    (Cmd.info "play"
+       ~doc:
+         "Play hands against a DCFR strategy in the terminal. Type an action \
+          or its number; end of input stops.")
+    Term.(const play $ game $ iterations $ hands $ seat $ seed)
 
 let csv =
   Arg.(
@@ -666,4 +782,5 @@ let () =
           (Cmd.info "cfr-solver" ~version:"0.1.0"
              ~doc:
                "Equilibrium strategies by counterfactual regret minimization.")
-          ([ solve_cmd; compare_cmd; scale_cmd; sweep_cmd ] @ Holdem.cmds)))
+          ([ solve_cmd; play_cmd; compare_cmd; scale_cmd; sweep_cmd ]
+          @ Holdem.cmds)))
