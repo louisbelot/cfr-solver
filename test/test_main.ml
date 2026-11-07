@@ -4,6 +4,7 @@ let () =
       ("kuhn", Test_kuhn.tests);
       ("leduc", Test_leduc.tests);
       ("liars dice", Test_liars_dice.tests);
+      ("play", Test_play.tests);
       ("abstraction", Test_abstraction.tests);
       ("strength", Test_strength.tests);
       ("cluster", Test_cluster.tests);
