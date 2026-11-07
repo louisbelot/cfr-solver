@@ -1146,3 +1146,84 @@ Checks:
 Next: nested re-solving (turn from a flop blueprint, river from the
 re-solved turn), gifts scaled up past the safe split to see where it stops
 helping, and multi-dimensional potential-aware buckets.
+
+## 2026-11-07: Liar's dice, playing the solver
+
+What was built:
+
+- `Liars_dice`: one round of Liar's dice for any number of dice per player
+  and 2 to 9 faces, with the top face wild or not. Bids are numbered
+  (quantity - 1) * faces + (face - 1), so "higher bid" is just a larger
+  index (OpenSpiel's reset-face rule). Rolls are dealt as sorted multisets
+  with multinomial probabilities, and an infoset is the player's own roll
+  plus every bid so far (`3:1x2,1x4`). `Liars_dice.game config` returns a
+  first-class `Game.S`, so every solver, the best response and the CLI work
+  on it unchanged. The CLI has `liars` (1 die, 6 faces, sixes wild, the
+  OpenSpiel default), `liars-nowild` and `liars-2d3`.
+- `Play.Make (G)`: deals one hand against a strategy, sampling chance and the
+  bot from an `Rng`, and asks a callback for the seat's moves. `cfr-solver
+  play` wraps it in a terminal loop (alternating seats, running score).
+- `solve --show KEY` prints chosen infosets of strategies too big for the
+  full table.
+- `Rng.float` and `Rng.draw` (weighted index), taken out of `Mccfr` and
+  `Cluster`, which each had their own copy.
+
+Design notes:
+
+- Size. Bids only go up, so the bids made so far are a subset of the 12
+  possible bids and every subset happens: 2^12 public states, each split by
+  the 6 private dice, 24,576 infosets, OpenSpiel's count. The full tree is
+  1 + 36 (2^13 - 1) = 294,877 nodes, and the tests check that closed form on
+  four other variants. Two dice of six faces would be 21 x 2^24 infosets per
+  player, which is out of reach for a full tree; 2 dice of 3 faces is the
+  same size as the standard game.
+- Independent check. A Python script (kept outside the repo) builds the
+  sequence-form LP from the rules, with ordered rolls instead of multisets
+  so it shares nothing with the OCaml deal code, and solves it with HiGHS in
+  about 10 s for all 14 variants. The standard game is -7/258 = -0.0271318
+  for the first player, which is the value usually quoted for OpenSpiel's
+  game. One 2026 arXiv paper on self-play collapse (Kujur) lists about -0.076
+  for a one-die, no-wild version; both the LP and CFR give -1/9 there, so
+  either their rules differ somewhere they don't state or the number was not
+  converged.
+- The 1-die, 2-face game without wilds converges only like 1/T under every
+  variant (DCFR is at 5e-4 after 1,000 iterations, while 1 die of 3 faces is
+  at 4e-8). Its value is 0 and most bids there are ties between pure
+  strategies, which is the kind of game where the average keeps swinging.
+  The test bound for that one variant is 1e-3; the others are held to 1e-6
+  (1e-4 for 1 die of 4 faces with wilds, 2.6e-5 at 1,000 iterations).
+- Play reports the whole move list after the hand, with each move's
+  infoset, which is how the bot's die becomes visible without the game
+  interface having to expose private information.
+
+Results (Ryzen 7 7800X3D, one core):
+
+- 1d6 with DCFR: 7.2 ms per iteration, 5,000 iterations in 39.9 s, value
+  -0.027132, exploitability 2.2e-6. 1d6 without wilds: -0.111111 and 6e-9
+  after 2,000. 2d3: 0.061728 (5/81) and 5.8e-6.
+- Same-work comparison at 1.18e9 nodes (table and chart in the README):
+  DCFR 1.27e-5, CFR+ 3.31e-5, LCFR 5.39e-4, ES 2.40e-3, CFR 7.11e-3,
+  OS 9.76e-3. External sampling beats vanilla CFR here, the reverse of
+  Leduc.
+- Opening strategy (one equilibrium): a 5 always opens 1x5, a 4 opens 1x4
+  93% of the time, a 3 opens 1x3 70% and bluffs 1x4 or 1x5 the rest, a wild
+  six spreads over 1x3 to 1x5, and a 1 and a 2 play identically.
+
+Checks:
+
+- 209 tests, about 121 s. New: tree shape for four variants, OpenSpiel's
+  infoset count, roll probabilities (21 multisets of 2d6, 6/64 for three
+  distinct d4), bid truth with and without wilds, hand-checked payoffs,
+  infoset keys, legal bids, LP values for 8 variants and -7/258 (slow).
+- Play: two copies of Kuhn's equilibrium over 200,000 sampled hands average
+  -1/18 and +1/18 by seat within four standard errors; the callback is only
+  asked at the seat's own infosets with the legal labels; seeded runs
+  replay; an unknown label raises.
+- `Rng.draw` frequencies on weights 1, 0, 3, 4 over 400,000 draws. MCCFR
+  and clustering tests unchanged after the move, so the sampling is
+  bit-identical.
+- CI smoke-tests `solve -g liars-2d3 --show` and `play` on piped input.
+
+Next: three-player Kuhn poker (needs the game interface to go past two
+players), then the gift-scaling experiment on the river re-solver and
+nested re-solving from a flop blueprint.
