@@ -103,16 +103,16 @@ let solve game chosen iterations csv svg =
 
 type sampler =
   | Tree of Cfr.algorithm
-  | Sampled of Cfr.algorithm * Multi_mccfr.averaging
+  | Sampled of Cfr.algorithm * int * Multi_mccfr.averaging
 
 let samplers =
   [
     ("cfr", Tree Cfr.Vanilla);
     ("dcfr", Tree Cfr.dcfr);
-    ("es", Sampled (Cfr.Vanilla, Multi_mccfr.Simple));
-    ("es-weighted", Sampled (Cfr.Vanilla, Weighted));
-    ("es-full", Sampled (Cfr.Vanilla, Full));
-    ("es-linear", Sampled (Cfr.Linear, Simple));
+    ("es", Sampled (Cfr.Vanilla, 1, Multi_mccfr.Simple));
+    ("es-weighted", Sampled (Cfr.Vanilla, 1, Weighted));
+    ("es-full", Sampled (Cfr.Vanilla, 1, Full));
+    ("es-linear", Sampled (Cfr.Linear, 1000, Simple));
   ]
 
 let sample game chosen budget start seeds csv svg =
@@ -144,8 +144,8 @@ let sample game chosen budget start seeds csv svg =
           (fun () -> C.touched t)
           (C.tree t)
           (fun () -> C.average_strategy t)
-    | Sampled (weighting, averaging) ->
-        let t = M.create ~seed ~weighting ~averaging () in
+    | Sampled (weighting, interval, averaging) ->
+        let t = M.create ~seed ~weighting ~interval ~averaging () in
         trace
           (fun () -> M.iterate t)
           (fun () -> M.touched t)
