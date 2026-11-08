@@ -1405,3 +1405,114 @@ Checks:
 Next: team play in three-player Kuhn (two players sharing a payoff against
 the third), then a lazily expanded tree for n players so four-player Leduc
 does not need 5 GB, then the gift-scaling experiment on the river re-solver.
+
+## 2026-11-08: predictive CFR+, the discounting grid, dilated FTRL
+
+Three newer ways to pick the next strategy, all measured against CFR+ and DCFR
+on the same budget: predictive CFR+ and PDCFR+, a grid over DCFR's
+(alpha, beta, gamma), and optimistic FTRL on the sequence form as a baseline
+that is not CFR.
+
+What was built:
+
+- `Cfr.Predictive { alpha; gamma }`, with `pcfr_plus` (alpha infinite, gamma
+  2) and `pdcfr_plus` (2.3, 5), plus `dcfr_plus` as a named DCFR setting
+  (1.5, -inf, 4). `Cfr.Make` keeps the last pass's instantaneous regrets in an
+  extra array and matches on stored + last (`Table.refresh_predicted`).
+  `current_strategy` returns the predicted strategy, which is the one played.
+- The same in `Subgame`: the regret store holds R d(t) + r and the solver
+  keeps R and r per decision on the side, so buckets, suit folding, float32
+  and pruning work unchanged. `regrets` subtracts r again.
+- `Mccfr`, `Parallel`, `Multi_mccfr` and `Multi_cfr` reject a predictive
+  algorithm instead of silently running without the prediction.
+- `Dilated`: optimistic (or plain) FTRL with the dilated entropy regularizer.
+  `Dilated.response` is the closed-form argmax, bottom-up over infosets. The
+  first strategy is that argmax at zero, which is not uniform: an action with
+  more infosets below it has more entropy behind it and gets more weight.
+- CLI: `compare --algorithms LIST` and `--last` (current instead of average
+  strategy), names `dcfr+`, `pcfr+`, `pdcfr+`, `oftrl:ETA`, `ftrl:ETA`;
+  `subgame -a` takes the new names; `landscape` runs the grid on a domain
+  pool and draws a heatmap per panel (`Plot.heatmap`).
+
+Design notes:
+
+- Why no second copy of R is needed: the existing discount multiplies stored
+  regrets by d(t) at the end of each pass, so the store already holds
+  d(t) R_t and [store + r_t]^+ is the paper's [R_t d(t) + r_t]^+. The
+  reference implementation in the tests does not take this shortcut. It
+  keeps R undiscounted and computes [R_{t-1} d(t-1) + r]^+ and
+  [R_t d(t) + r]^+ literally, and the two agree to 1e-10 on random
+  (alpha, gamma), with alpha infinite in the mix.
+- Writing the reference turned up a bug in the reference itself: it computed
+  t^-inf as 1 at t = 1 (that is what pow does), so beta = -inf did not mean
+  clipping there. The library's `factor` already special-cased infinities.
+- In the subgame solver the instantaneous regret is read back as
+  store - R - r. With a float32 store that is a rounding error per entry per
+  pass, the same order as what the float32 store already does to every
+  regret update.
+- Dilated entropy's argmax at an infoset is a softmax of eta times (action
+  utility + values of the child infosets), and the value of an infoset with
+  parent sequence p is log-sum-exp / eta, added to p. With per-infoset
+  weights all equal to one this is the unweighted regularizer; Farina et al.
+  need weights for their bounds.
+
+Results:
+
+- Kuhn, 10,000 iterations: CFR+ 9.6e-6, DCFR 2.4e-5, DCFR+ 1.0e-5, PCFR+
+  2.4e-11, PDCFR+ 2.4e-16.
+- Leduc, 100,000 iterations: CFR+ 4.7e-7, DCFR 1.1e-6, DCFR+ 5.6e-7, PCFR+
+  2.4e-8, PDCFR+ 3.3e-12. At 3,000 iterations PDCFR+ is still eight times
+  worse than DCFR; it crosses over before 26,000.
+- Liar's dice at 3,000 iterations and the limit river at 20,000: DCFR and
+  DCFR+ ahead, the predictive variants last (river: DCFR+ 6.7e-6% of the pot,
+  PDCFR+ 6.1e-5%).
+- Limit turn (4,330 decision nodes, 203 MB), 600 iterations, % of the pot:
+  DCFR+ 4.6e-3, DCFR 4.9e-3, CFR+ 1.6e-2, PDCFR+ 1.6e-2, PCFR+ 1.8e-2, about
+  four minutes per run.
+- Last iterate on Leduc after 100,000 iterations: PCFR+ 1.7e-15, PDCFR+
+  5.0e-16, CFR+ 6.9e-4, DCFR+ 1.2e-3, DCFR 3.0e-3.
+- Dilated FTRL on Leduc, eta = 3: 4.9e-5 average after the work of 100,000
+  CFR+ iterations; eta = 10, 30, 100 worse. On Kuhn the optimistic last
+  iterate gets to 2.9e-14, plain FTRL stays at 0.25.
+- Grid (229 settings each): on Leduc at 20,000 iterations the DCFR panels
+  are flat for alpha >= 1.5, gamma >= 1 (within 5x of 1.3e-6), alpha = 0.5
+  and gamma = 0 are bad everywhere, beta = 1 bottoms out at 3.2e-4, and the
+  best PDCFR+ cell is (2, 6) at 2.0e-8 against 5.1e-8 for the paper's
+  (2.3, 5). At 2,000 iterations the best PDCFR+ cell is six times behind the
+  best DCFR cell instead. Liar's dice at 1,000: best DCFR 6.3e-5 at
+  (2, 0, 2), PDCFR+ no better than 3.3e-4. Kuhn at 1,000: PDCFR+ with
+  alpha >= 2 and gamma 6 between 8.6e-16 and 4.1e-15. The Liar's dice grid
+  takes 940 s on six domains.
+
+Checks:
+
+- 260 tests. New: the predictive variants against the literal
+  reference on Kuhn (named settings and 20 random ones); the predicted current
+  strategy against the reference; PCFR+ and PDCFR+ against CFR+ on Kuhn;
+  PDCFR+ behind DCFR at 1,000 iterations on Leduc and ten times ahead at
+  30,000 (slow); the PCFR+ last iterate under 1e-12 on Kuhn while CFR+'s is
+  above 1e-3; the subgame solver against the scalar solver for PCFR+ and
+  PDCFR+ on the river, the turn, a bucketed turn, folded suits and pruning
+  (1e-9); samplers rejecting prediction. For `Dilated`: the closed form
+  against random strategies and perturbations of itself on a hand-built
+  treeplex (300 cases), its value at zero, the first iterate on Kuhn, the
+  average and the game value, optimism against plain FTRL on the last
+  iterate.
+- Mutants: dropping the prediction swap, matching without the prediction,
+  writing back R instead of R + r in the subgame store and reading r back
+  without subtracting the old r each fail four to seven tests; dropping the
+  child values from the dilated softmax fails five, turning off optimism
+  two.
+- Every commit was built and tested on its own in a scratch worktree.
+- Charts rendered and looked at: docs/leduc-modern.svg, docs/leduc-last.svg,
+  docs/landscape-kuhn.svg, docs/landscape-leduc.svg,
+  docs/landscape-liars.svg. The first heatmap shaded every panel on one
+  scale, and Kuhn's 13 decades washed out the DCFR panels, so the shading is
+  per panel and the numbers stay in the cells.
+- zarith did not install (its conf-pkg-config dependency fails to build on
+  this Windows switch), so the exact sequence-form LP in rationals is still
+  open.
+
+Next: the exact sequence-form LP once rationals are available (or a small
+exact rational type), then team play in three-player Kuhn and the lazily
+expanded n-player tree.
