@@ -105,12 +105,9 @@ let gains tree sigma =
 let nash_conv tree sigma = Array.fold_left ( +. ) 0. (gains tree sigma)
 
 module Make (G : Multi.S) = struct
-  let tree = lazy (Multi_tree.build (module G))
-
-  let value br sigma =
-    fst (respond (Lazy.force tree) (probs (Lazy.force tree) sigma) br)
-
-  let strategy br sigma = snd (best (Lazy.force tree) br sigma)
-  let gains sigma = gains (Lazy.force tree) sigma
-  let nash_conv sigma = nash_conv (Lazy.force tree) sigma
+  let tree = Multi_tree.build (module G)
+  let value br sigma = fst (respond tree (probs tree sigma) br)
+  let strategy br sigma = snd (best tree br sigma)
+  let gains sigma = gains tree sigma
+  let nash_conv sigma = nash_conv tree sigma
 end
