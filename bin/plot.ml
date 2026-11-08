@@ -269,3 +269,97 @@ let heatmap ~title ~xlabel ~ylabel ~xs ~ys panels =
     (ly +. 10.);
   add "</svg>\n";
   Buffer.contents b
+
+type curve = {
+  name : string;
+  color : int;
+  dash : bool;
+  xy : (float * float) list;
+}
+
+let nice span =
+  List.find (fun s -> span /. s <= 8.) [ 0.05; 0.1; 0.2; 0.25; 0.5; 1.; 2. ]
+
+let lines ~title ~xlabel ~ylabel ~note curves =
+  let all = List.concat_map (fun c -> c.xy) curves in
+  let xmax = List.fold_left (fun m (x, _) -> Float.max m x) 0. all
+  and ymax = List.fold_left (fun m (_, y) -> Float.max m y) 0. all in
+  let ys = nice ymax and xs = nice xmax in
+  let ymax = ys *. Float.ceil (ymax /. ys)
+  and xmax = xs *. Float.ceil (xmax /. xs) in
+  let plot_w = width -. left -. right and plot_h = height -. top -. bottom in
+  let sx x = left +. (plot_w *. x /. xmax)
+  and sy y = top +. plot_h -. (plot_h *. y /. ymax) in
+  let b = Buffer.create 16384 in
+  let add fmt = Printf.bprintf b fmt in
+  add
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %g %g\" \
+     width=\"%g\" height=\"%g\">%s"
+    width height width height style;
+  add "<rect class=\"bg\" width=\"%g\" height=\"%g\"/>" width height;
+  add "<text class=\"title\" x=\"%g\" y=\"22\">%s</text>" left title;
+  add "<text x=\"%g\" y=\"40\" font-size=\"11\">%s</text>" left note;
+  let ticks span s =
+    List.init
+      (Float.to_int (Float.round (span /. s)) + 1)
+      (fun k -> s *. float_of_int k)
+  in
+  List.iter
+    (fun x ->
+      add "<line class=\"grid\" x1=\"%.1f\" y1=\"%g\" x2=\"%.1f\" y2=\"%g\"/>"
+        (sx x) top (sx x) (top +. plot_h);
+      add "<text x=\"%.1f\" y=\"%g\" text-anchor=\"middle\">%g</text>" (sx x)
+        (top +. plot_h +. 20.)
+        x)
+    (ticks xmax xs);
+  List.iter
+    (fun y ->
+      add "<line class=\"grid\" x1=\"%g\" y1=\"%.1f\" x2=\"%g\" y2=\"%.1f\"/>"
+        left (sy y) (left +. plot_w) (sy y);
+      add "<text x=\"%g\" y=\"%.1f\" text-anchor=\"end\">%g</text>" (left -. 8.)
+        (sy y +. 4.)
+        y)
+    (ticks ymax ys);
+  add "<line class=\"axis\" x1=\"%g\" y1=\"%g\" x2=\"%g\" y2=\"%g\"/>" left
+    (top +. plot_h) (left +. plot_w) (top +. plot_h);
+  add "<line class=\"axis\" x1=\"%g\" y1=\"%g\" x2=\"%g\" y2=\"%g\"/>" left top
+    left (top +. plot_h);
+  add "<text x=\"%g\" y=\"%g\" text-anchor=\"middle\">%s</text>"
+    (left +. (plot_w /. 2.))
+    (height -. 12.) xlabel;
+  add
+    "<text transform=\"translate(18 %g) rotate(-90)\" \
+     text-anchor=\"middle\">%s</text>"
+    (top +. (plot_h /. 2.))
+    ylabel;
+  List.iter
+    (fun c ->
+      add
+        "<polyline class=\"s%d\" fill=\"none\" stroke-width=\"%s\" \
+         stroke-linejoin=\"round\"%s points=\""
+        c.color
+        (if c.dash then "1.5" else "2")
+        (if c.dash then " stroke-dasharray=\"5 4\"" else "");
+      List.iter (fun (x, y) -> add "%.1f,%.1f " (sx x) (sy y)) c.xy;
+      add "\"/>")
+    curves;
+  let key = left +. plot_w +. 20. in
+  curves
+  |> List.filter (fun c -> not c.dash)
+  |> List.filter_map (fun c ->
+      match List.rev c.xy with [] -> None | (_, y) :: _ -> Some (c, sy y))
+  |> List.sort (fun (_, a) (_, b) -> compare a b)
+  |> List.fold_left
+       (fun prev (c, y) ->
+         let ly = Float.max y (prev +. 16.) in
+         add
+           "<line class=\"s%d\" stroke-width=\"2\" x1=\"%.1f\" y1=\"%.1f\" \
+            x2=\"%.1f\" y2=\"%.1f\"/>"
+           c.color key ly (key +. 18.) ly;
+         add "<text x=\"%.1f\" y=\"%.1f\">%s</text>" (key +. 24.) (ly +. 4.)
+           c.name;
+         ly)
+       neg_infinity
+  |> ignore;
+  add "</svg>\n";
+  Buffer.contents b
