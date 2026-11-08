@@ -39,4 +39,5 @@ let () =
       ("bigint", Test_bigint.tests);
       ("rat", Test_rat.tests);
       ("lp", Test_lp.tests);
+      ("sequence form", Test_sequence_form.tests);
     ]
