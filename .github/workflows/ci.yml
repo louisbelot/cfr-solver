@@ -32,6 +32,8 @@ jobs:
           printf '1\nliar\n2\n' | opam exec -- dune exec cfr-solver -- play -g liars -n 50 --hands 3
           printf 'b\np\n' | opam exec -- dune exec cfr-solver -- play -g kuhn --seat 1
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --csv compare.csv --svg compare.svg
+          opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --algorithms cfr+,dcfr+,pcfr+,pdcfr+,oftrl:3 --last --csv last.csv --svg last.svg
+          opam exec -- dune exec cfr-solver -- landscape -g kuhn -n 200 --domains 2 --csv land.csv --svg land.svg
           opam exec -- dune exec cfr-solver -- multi -g kuhn3 -n 200 --csv k3.csv --svg k3.svg
           opam exec -- dune exec cfr-solver -- multi -g leduc3-6 -a cfr,dcfr -n 5
           opam exec -- dune exec cfr-solver -- solve -g leduc -a es -n 200000 --domains 4
@@ -39,6 +41,7 @@ jobs:
           opam exec -- dune exec cfr-solver -- scale -g leduc -n 200000 --domains 1,2,4 --csv scale.csv --svg scale.svg
           opam exec -- dune exec cfr-solver -- abstract --ranks 5 -n 200 --domains 2 --csv abs.csv --svg abs.svg
           opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c 2s" --pot 6 --limit 1 -a cfr,cfr+,lcfr,dcfr -n 200 --csv river.csv --svg river.svg --json river.json
+          opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c 2s" --pot 6 --limit 1 -a dcfr+,pcfr+,pdcfr+ -n 200 --single
           opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, KQ, QJs" --pot 4 --limit 1 -n 20
           opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --single
           opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --no-iso
