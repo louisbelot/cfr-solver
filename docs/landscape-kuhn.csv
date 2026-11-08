@@ -1,0 +1,225 @@
+slice,alpha,gamma,exploitability
+dcfr+, beta -inf,0.5,0,0.00347337
+dcfr+, beta -inf,0.5,1,0.00222725
+dcfr+, beta -inf,0.5,2,0.00196823
+dcfr+, beta -inf,0.5,3,0.0018562
+dcfr+, beta -inf,0.5,4,0.00179384
+dcfr+, beta -inf,0.5,5,0.00175389
+dcfr+, beta -inf,0.5,6,0.00172588
+dcfr+, beta -inf,1,0,0.000614178
+dcfr+, beta -inf,1,1,9.67647e-05
+dcfr+, beta -inf,1,2,6.8162e-05
+dcfr+, beta -inf,1,3,5.8684e-05
+dcfr+, beta -inf,1,4,5.36053e-05
+dcfr+, beta -inf,1,5,5.02922e-05
+dcfr+, beta -inf,1,6,5.51332e-05
+dcfr+, beta -inf,1.5,0,0.000522929
+dcfr+, beta -inf,1.5,1,0.000101742
+dcfr+, beta -inf,1.5,2,9.87164e-05
+dcfr+, beta -inf,1.5,3,0.0001071
+dcfr+, beta -inf,1.5,4,0.000118158
+dcfr+, beta -inf,1.5,5,0.000130375
+dcfr+, beta -inf,1.5,6,0.000152259
+dcfr+, beta -inf,2,0,0.000540065
+dcfr+, beta -inf,2,1,0.000123187
+dcfr+, beta -inf,2,2,0.000128358
+dcfr+, beta -inf,2,3,0.000148326
+dcfr+, beta -inf,2,4,0.000193175
+dcfr+, beta -inf,2,5,0.000237151
+dcfr+, beta -inf,2,6,0.000280503
+dcfr+, beta -inf,2.5,0,0.000521321
+dcfr+, beta -inf,2.5,1,9.26204e-05
+dcfr+, beta -inf,2.5,2,0.000162461
+dcfr+, beta -inf,2.5,3,0.000229421
+dcfr+, beta -inf,2.5,4,0.000295421
+dcfr+, beta -inf,2.5,5,0.000361138
+dcfr+, beta -inf,2.5,6,0.000426801
+dcfr+, beta -inf,3,0,0.000533075
+dcfr+, beta -inf,3,1,0.000169696
+dcfr+, beta -inf,3,2,0.000209146
+dcfr+, beta -inf,3,3,0.000256523
+dcfr+, beta -inf,3,4,0.000305649
+dcfr+, beta -inf,3,5,0.000355568
+dcfr+, beta -inf,3,6,0.000405916
+dcfr+, beta -inf,4,0,0.00048731
+dcfr+, beta -inf,4,1,0.000116706
+dcfr+, beta -inf,4,2,0.000182551
+dcfr+, beta -inf,4,3,0.000244357
+dcfr+, beta -inf,4,4,0.000304768
+dcfr+, beta -inf,4,5,0.000364395
+dcfr+, beta -inf,4,6,0.000423451
+dcfr+, beta -inf,inf,0,0.000479977
+dcfr+, beta -inf,inf,1,8.73653e-05
+dcfr+, beta -inf,inf,2,0.000174041
+dcfr+, beta -inf,inf,3,0.000256865
+dcfr+, beta -inf,inf,4,0.000337333
+dcfr+, beta -inf,inf,5,0.000416747
+dcfr+, beta -inf,inf,6,0.000495584
+dcfr, beta 0,0.5,0,0.00323199
+dcfr, beta 0,0.5,1,0.00216176
+dcfr, beta 0,0.5,2,0.00196146
+dcfr, beta 0,0.5,3,0.00187367
+dcfr, beta 0,0.5,4,0.00182612
+dcfr, beta 0,0.5,5,0.00179835
+dcfr, beta 0,0.5,6,0.00178213
+dcfr, beta 0,1,0,0.000642001
+dcfr, beta 0,1,1,0.000127522
+dcfr, beta 0,1,2,9.74447e-05
+dcfr, beta 0,1,3,8.4566e-05
+dcfr, beta 0,1,4,8.0115e-05
+dcfr, beta 0,1,5,8.0106e-05
+dcfr, beta 0,1,6,8.12112e-05
+dcfr, beta 0,1.5,0,0.000501781
+dcfr, beta 0,1.5,1,0.000120554
+dcfr, beta 0,1.5,2,0.0001465
+dcfr, beta 0,1.5,3,0.000197227
+dcfr, beta 0,1.5,4,0.000269182
+dcfr, beta 0,1.5,5,0.000339983
+dcfr, beta 0,1.5,6,0.000410293
+dcfr, beta 0,2,0,0.000494052
+dcfr, beta 0,2,1,0.000166493
+dcfr, beta 0,2,2,0.000213115
+dcfr, beta 0,2,3,0.000283861
+dcfr, beta 0,2,4,0.000375839
+dcfr, beta 0,2,5,0.000467269
+dcfr, beta 0,2,6,0.000558661
+dcfr, beta 0,2.5,0,0.000497899
+dcfr, beta 0,2.5,1,9.68423e-05
+dcfr, beta 0,2.5,2,0.000212442
+dcfr, beta 0,2.5,3,0.000358454
+dcfr, beta 0,2.5,4,0.000496879
+dcfr, beta 0,2.5,5,0.000632308
+dcfr, beta 0,2.5,6,0.000766443
+dcfr, beta 0,3,0,0.000534558
+dcfr, beta 0,3,1,0.000162055
+dcfr, beta 0,3,2,0.000181908
+dcfr, beta 0,3,3,0.00021316
+dcfr, beta 0,3,4,0.000247367
+dcfr, beta 0,3,5,0.000282915
+dcfr, beta 0,3,6,0.000319229
+dcfr, beta 0,4,0,0.000461222
+dcfr, beta 0,4,1,9.90204e-05
+dcfr, beta 0,4,2,0.000185099
+dcfr, beta 0,4,3,0.000270494
+dcfr, beta 0,4,4,0.00035357
+dcfr, beta 0,4,5,0.000435549
+dcfr, beta 0,4,6,0.00051734
+dcfr, beta 0,inf,0,0.000609282
+dcfr, beta 0,inf,1,0.000194153
+dcfr, beta 0,inf,2,0.000290145
+dcfr, beta 0,inf,3,0.000400784
+dcfr, beta 0,inf,4,0.000509523
+dcfr, beta 0,inf,5,0.000617198
+dcfr, beta 0,inf,6,0.00072411
+dcfr, beta 1,0.5,0,0.00296801
+dcfr, beta 1,0.5,1,0.00212311
+dcfr, beta 1,0.5,2,0.00198847
+dcfr, beta 1,0.5,3,0.00194397
+dcfr, beta 1,0.5,4,0.0019315
+dcfr, beta 1,0.5,5,0.00193468
+dcfr, beta 1,0.5,6,0.00194696
+dcfr, beta 1,1,0,0.000609647
+dcfr, beta 1,1,1,9.35299e-05
+dcfr, beta 1,1,2,6.41356e-05
+dcfr, beta 1,1,3,5.47723e-05
+dcfr, beta 1,1,4,4.96762e-05
+dcfr, beta 1,1,5,4.61648e-05
+dcfr, beta 1,1,6,4.34188e-05
+dcfr, beta 1,1.5,0,0.000769846
+dcfr, beta 1,1.5,1,0.000314941
+dcfr, beta 1,1.5,2,0.000382675
+dcfr, beta 1,1.5,3,0.000468171
+dcfr, beta 1,1.5,4,0.0005575
+dcfr, beta 1,1.5,5,0.00065086
+dcfr, beta 1,1.5,6,0.000768498
+dcfr, beta 1,2,0,0.000805714
+dcfr, beta 1,2,1,0.000362437
+dcfr, beta 1,2,2,0.000474678
+dcfr, beta 1,2,3,0.000612618
+dcfr, beta 1,2,4,0.000747867
+dcfr, beta 1,2,5,0.000881375
+dcfr, beta 1,2,6,0.00101314
+dcfr, beta 1,2.5,0,0.000756274
+dcfr, beta 1,2.5,1,0.000334235
+dcfr, beta 1,2.5,2,0.000404524
+dcfr, beta 1,2.5,3,0.000505626
+dcfr, beta 1,2.5,4,0.000616206
+dcfr, beta 1,2.5,5,0.000725962
+dcfr, beta 1,2.5,6,0.000834741
+dcfr, beta 1,3,0,0.000758708
+dcfr, beta 1,3,1,0.000365141
+dcfr, beta 1,3,2,0.000507483
+dcfr, beta 1,3,3,0.000665653
+dcfr, beta 1,3,4,0.000821394
+dcfr, beta 1,3,5,0.000975422
+dcfr, beta 1,3,6,0.00112781
+dcfr, beta 1,4,0,0.000511664
+dcfr, beta 1,4,1,0.000309691
+dcfr, beta 1,4,2,0.000559725
+dcfr, beta 1,4,3,0.000794812
+dcfr, beta 1,4,4,0.00102425
+dcfr, beta 1,4,5,0.00125069
+dcfr, beta 1,4,6,0.00147508
+dcfr, beta 1,inf,0,0.000547182
+dcfr, beta 1,inf,1,0.000187921
+dcfr, beta 1,inf,2,0.000312567
+dcfr, beta 1,inf,3,0.000438947
+dcfr, beta 1,inf,4,0.000566778
+dcfr, beta 1,inf,5,0.000698689
+dcfr, beta 1,inf,6,0.000830118
+pdcfr+,0.5,0,0.00556662
+pdcfr+,0.5,1,0.00403196
+pdcfr+,0.5,2,0.00369687
+pdcfr+,0.5,3,0.00354886
+pdcfr+,0.5,4,0.00346529
+pdcfr+,0.5,5,0.00341188
+pdcfr+,0.5,6,0.00337502
+pdcfr+,1,0,0.000943222
+pdcfr+,1,1,0.000221283
+pdcfr+,1,2,0.000164229
+pdcfr+,1,3,0.000145565
+pdcfr+,1,4,0.000136117
+pdcfr+,1,5,0.000130342
+pdcfr+,1,6,0.000126402
+pdcfr+,1.5,0,0.00052468
+pdcfr+,1.5,1,1.56713e-05
+pdcfr+,1.5,2,6.82618e-06
+pdcfr+,1.5,3,5.35443e-06
+pdcfr+,1.5,4,4.70871e-06
+pdcfr+,1.5,5,4.73202e-06
+pdcfr+,1.5,6,5.24954e-06
+pdcfr+,2,0,0.000492686
+pdcfr+,2,1,2.97399e-06
+pdcfr+,2,2,3.41757e-08
+pdcfr+,2,3,5.37667e-10
+pdcfr+,2,4,9.54814e-12
+pdcfr+,2,5,1.88433e-13
+pdcfr+,2,6,4.05231e-15
+pdcfr+,2.5,0,0.000482155
+pdcfr+,2.5,1,2.61866e-06
+pdcfr+,2.5,2,2.67593e-08
+pdcfr+,2.5,3,3.76127e-10
+pdcfr+,2.5,4,5.86535e-12
+pdcfr+,2.5,5,9.84213e-14
+pdcfr+,2.5,6,1.8735e-15
+pdcfr+,3,0,0.000480152
+pdcfr+,3,1,2.45018e-06
+pdcfr+,3,2,2.40112e-08
+pdcfr+,3,3,3.32586e-10
+pdcfr+,3,4,5.16363e-12
+pdcfr+,3,5,8.72913e-14
+pdcfr+,3,6,1.63758e-15
+pdcfr+,4,0,0.00048019
+pdcfr+,4,1,2.33405e-06
+pdcfr+,4,2,2.26711e-08
+pdcfr+,4,3,3.11922e-10
+pdcfr+,4,4,4.75014e-12
+pdcfr+,4,5,7.9603e-14
+pdcfr+,4,6,1.55431e-15
+pdcfr+,inf,0,0.000468025
+pdcfr+,inf,1,2.50692e-06
+pdcfr+,inf,2,2.35438e-08
+pdcfr+,inf,3,2.80246e-10
+pdcfr+,inf,4,4.01879e-12
+pdcfr+,inf,5,6.03406e-14
+pdcfr+,inf,6,8.60423e-16
