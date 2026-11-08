@@ -16,7 +16,8 @@ external sampling run on a game signature with payoff vectors and progress is
 measured as NashConv. The same machinery covers sealed-bid auctions (first
 price, second price and all-pay, with reserves, checked against the Bayes-Nash
 bid functions and the discrete theorems in exact arithmetic) and an
-interview-style market-making card game solved exactly.
+interview-style market-making card game solved exactly, and Figgie gets a full
+rules engine with exact Bayesian hand values and a field of bots.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -926,6 +927,88 @@ six-card numbers above are exact, but on eight cards with a hidden card the LP
 handled widths 0 to 2 in seconds and then ran for more than nine minutes on
 width 3 without finishing, so the larger sweeps use DCFR, whose NashConv after
 2,000 iterations is below 1e-5.
+
+## Figgie
+
+Figgie is Jane Street's trading card game. `Figgie` implements its rules: a
+40-card deck with one 12-card suit, two 10-card suits and one 8-card suit
+(12 equally likely decks), the goal suit being the other suit of the 12-card
+suit's colour, a $200 pot from equal antes, $10 per goal card at the end and the
+rest of the pot to whoever holds the most goal cards (split on ties). The
+market is one best bid and one best offer per suit. A new bid has to beat the
+current one, a bid at or above the offer trades at the offer's price, one card
+per trade, and every trade cancels all quotes in all suits, as in the real game.
+Time runs in ticks, and in each tick every player acts once in a random order.
+
+What a hand is worth comes out exactly. The likelihood of a dealt hand under
+deck d is the product of C(n_s, h_s) over suits, so the posterior over the 12
+decks is a few multiplications, and given the deck the other players' goal cards
+are multivariate hypergeometric over their hand sizes. Summing over those splits
+gives the expected payout, the bonus share included. Holding ten spades makes
+clubs the goal with probability 198/204: 66 ways to hold ten of twelve spades,
+times three decks with spades long, against one way for each of the six decks
+where spades has ten cards.
+
+```
+$ cfr-solver figgie-hand S5C2H2D1
+expected payout 43.66 (ante 50)
+
+suit     held   goal      buy     sell
+S           5  0.185     1.90     3.96
+C           2  0.494    24.85     5.64
+H           2  0.135     7.62     1.63
+D           1  0.185     2.27     1.87
+```
+
+A third club is worth $24.85 to this hand while clubs are the goal only half the
+time: most of that is the bonus, since two clubs rarely win it and three often
+do. Buying or selling conditions on the card existing (an eleventh spade proves
+spades is the long suit, which makes it worthless), so the buy and sell
+columns are not mirror images.
+
+Five bots play it. `passive` never trades. `noise` is a zero-intelligence
+trader in the sense of Gode and Sunder: a random limit price from 1 to 15, and
+it only trades at prices inside it. `fundamentalist` values each suit by the
+exact change in expected payout from one more or one less card, takes any quote
+better than that, and otherwise quotes `edge` dollars away from it. `counter`
+does the same but also counts cards: every sale by a player not known to hold
+that suit proves another card exists, and the posterior is conditioned on those
+lower bounds. `bottom-feeder` follows DiSilvio, Luo and Ozerov's agent of that
+name: it values a suit at the average traded price (or the mid) and pennies the
+book.
+
+```
+$ cfr-solver figgie --games 3000
+3000 games of 200 ticks, seats shuffled, 9.93s
+bot                mean pnl   stderr
+fundamentalist       +15.15     1.08
+counter              +17.90     1.08
+bottom-feeder        +14.21     0.96
+noise                -47.26     0.98
+```
+
+The informed bots split what the noise trader loses. Two counters against two
+fundamentalists come out +1.3 and +0.8 against -0.8 and -1.4 per game (3,000
+games, standard errors 0.95), so counting cards is worth a little and not much
+at this table. A passive player at a table of three counters loses $20.69 a
+game: the others pile up the goal suit between them and take the bonus. Four
+bots that only take and never quote do not trade at all.
+
+![Counter's profit against its quote edge](docs/figgie-edge.svg)
+
+The sweep above widens the counter's quotes against a fundamentalist, a
+bottom-feeder and a noise trader. At an edge of 0 it makes $5.81 a game and the
+fundamentalist $22.94; by an edge of 20 it makes $31.28 and the fundamentalist
+$3.42. Edges of 40 and 1000 make +31.9 over 3,000 games, so the curve has
+flattened by 20.
+Quoting at its own value just hands the fundamentalist free options. The
+counter does best by never posting a quote anyone would hit and only taking
+other people's mistakes, which here means the fundamentalist's quotes, since
+the fundamentalist still quotes $2 from a value computed without counting.
+
+```
+$ cfr-solver figgie-edge --edges 20 --games 1500 --svg docs/figgie-edge.svg
+```
 
 ## Tuning discounted CFR
 
@@ -1998,6 +2081,16 @@ prediction, writing R instead of R + r back into the subgame store, and
 reading r back without subtracting the old one each fail at least four
 tests. For dilated FTRL, leaving the child infosets' values out of the
 softmax fails five of its six tests and turning optimism off fails two.
+
+Figgie: the posterior is checked against 198/204 by hand and against the
+frequency of the goal suit in 40,000 simulated deals, grouped by the number of
+spades held; the expected payout against 50,000 simulated deals of the other
+hands; and the average expected payout of a random hand against the ante it
+must equal ($50 with four players, $40 with five). Property tests play 40
+random games and check that cards and cash are conserved and profits sum to
+zero, and that card counting never claims more cards than the deck has.
+Splitting tied bonuses three ways instead of two, or counting every sale as a
+new card, each fail a test.
 
 ## License
 
