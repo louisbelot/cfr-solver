@@ -1,80 +1,29 @@
 module Make (G : Multi.S) = struct
-  type node =
-    | Leaf of float array
-    | Chance of float array * node array
-    | Decision of int * node array
-
   type t = {
-    root : node;
-    size : int;
-    keys : string array;
-    labels : string array array;
-    owner : int array;
-    offset : int array;
+    tree : Multi_tree.t;
     regret : float array;
     current : float array;
     sum : float array;
     reach : float array;
     vals : float array;
     acts : float array;
-    width : int;
     algorithm : Cfr.algorithm;
     mutable weight : float;
     mutable iterations : int;
     mutable touched : int;
   }
 
-  let build () =
-    let index = Hashtbl.create 256 and infos = ref [] in
-    let size = ref 0 and height = ref 0 and width = ref 1 in
-    let id key player actions =
-      match Hashtbl.find_opt index key with
-      | Some i -> i
-      | None ->
-          let i = Hashtbl.length index in
-          Hashtbl.add index key i;
-          infos := (key, player, Array.of_list (List.map fst actions)) :: !infos;
-          i
-    in
-    let rec go h d =
-      incr size;
-      height := max !height d;
-      let children l =
-        Array.of_list (List.map (fun (_, h') -> go h' (d + 1)) l)
-      in
-      match G.node h with
-      | Multi.Terminal u -> Leaf u
-      | Chance outcomes ->
-          Chance (Array.of_list (List.map fst outcomes), children outcomes)
-      | Decision { player; infoset; actions } ->
-          width := max !width (List.length actions);
-          Decision (id infoset player actions, children actions)
-    in
-    let root = go G.root 0 in
-    (root, !size, !height, !width, Array.of_list (List.rev !infos))
-
   let create ?(algorithm = Cfr.Vanilla) () =
-    let root, size, height, width, infos = build () in
-    let labels = Array.map (fun (_, _, a) -> a) infos in
-    let offset = Array.make (Array.length infos + 1) 0 in
-    Array.iteri
-      (fun i a -> offset.(i + 1) <- offset.(i) + Array.length a)
-      labels;
-    let slots = offset.(Array.length infos) in
+    let tree = Multi_tree.build (module G) in
+    let slots = Multi_tree.slots tree in
     {
-      root;
-      size;
-      keys = Array.map (fun (k, _, _) -> k) infos;
-      labels;
-      owner = Array.map (fun (_, p, _) -> p) infos;
-      offset;
+      tree;
       regret = Array.make slots 0.;
       current = Array.make slots 0.;
       sum = Array.make slots 0.;
       reach = Array.make (G.players + 1) 1.;
-      vals = Array.make ((height + 2) * G.players) 0.;
-      acts = Array.make ((height + 1) * width) 0.;
-      width;
+      vals = Array.make ((tree.height + 2) * G.players) 0.;
+      acts = Array.make ((tree.height + 1) * tree.width) 0.;
       algorithm;
       weight = 1.;
       iterations = 0;
@@ -83,7 +32,7 @@ module Make (G : Multi.S) = struct
 
   let iterations t = t.iterations
   let touched t = t.touched
-  let infosets t = Array.length t.keys
+  let infosets t = Array.length t.tree.keys
 
   let counterfactual t p =
     let w = ref 1. in
@@ -96,7 +45,7 @@ module Make (G : Multi.S) = struct
     let n = G.players in
     let o = d * n in
     match node with
-    | Leaf u -> Array.blit u 0 t.vals o n
+    | Multi_tree.Leaf u -> Array.blit u 0 t.vals o n
     | Chance (probs, children) ->
         let pc = t.reach.(n) in
         Array.fill t.vals o n 0.;
@@ -110,7 +59,8 @@ module Make (G : Multi.S) = struct
         done;
         t.reach.(n) <- pc
     | Decision (i, children) ->
-        let p = t.owner.(i) and base = t.offset.(i) and row = d * t.width in
+        let p = t.tree.owner.(i) and base = t.tree.offset.(i) in
+        let row = d * t.tree.width in
         let own = t.reach.(p) in
         Array.fill t.vals o n 0.;
         for a = 0 to Array.length children - 1 do
@@ -133,8 +83,8 @@ module Make (G : Multi.S) = struct
         end
 
   let refresh t =
-    for i = 0 to Array.length t.keys - 1 do
-      let lo = t.offset.(i) and hi = t.offset.(i + 1) in
+    for i = 0 to Array.length t.tree.keys - 1 do
+      let lo = t.tree.offset.(i) and hi = t.tree.offset.(i + 1) in
       let total = ref 0. in
       for k = lo to hi - 1 do
         total := !total +. Float.max t.regret.(k) 0.
@@ -148,18 +98,18 @@ module Make (G : Multi.S) = struct
 
   let pass t updating n =
     refresh t;
-    walk t updating t.root 0;
-    t.touched <- t.touched + t.size;
+    walk t updating t.tree.root 0;
+    t.touched <- t.touched + t.tree.size;
     let pos, neg, _ = Cfr.discounts t.algorithm n in
     if pos <> 1. || neg <> 1. then
       Array.iteri
         (fun i p ->
           if updating p then
-            for k = t.offset.(i) to t.offset.(i + 1) - 1 do
+            for k = t.tree.offset.(i) to t.tree.offset.(i + 1) - 1 do
               let r = t.regret.(k) in
               t.regret.(k) <- (r *. if r > 0. then pos else neg)
             done)
-        t.owner
+        t.tree.owner
 
   let iterate t =
     let n = t.iterations + 1 in
@@ -180,10 +130,10 @@ module Make (G : Multi.S) = struct
     let s = ref Strategy.empty in
     Array.iteri
       (fun i key ->
-        let lo = t.offset.(i) in
-        let slice = Array.sub a lo (t.offset.(i + 1) - lo) in
-        s := Strategy.add key ~actions:t.labels.(i) ~probs:(f slice) !s)
-      t.keys;
+        let lo = t.tree.offset.(i) in
+        let slice = Array.sub a lo (t.tree.offset.(i + 1) - lo) in
+        s := Strategy.add key ~actions:t.tree.labels.(i) ~probs:(f slice) !s)
+      t.tree.keys;
     !s
 
   let average_strategy t = export t Regret_matching.normalize t.sum
