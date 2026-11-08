@@ -2,8 +2,10 @@
 
 Nash-equilibrium strategies for imperfect-information games, computed in OCaml
 with counterfactual regret minimization (CFR). It solves Kuhn poker, Leduc
-hold'em and Liar's dice with four full-tree CFR variants (vanilla CFR, CFR+, linear CFR and
-discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
+hold'em and Liar's dice with seven full-tree CFR variants (vanilla CFR, CFR+,
+linear CFR, discounted CFR, DCFR+, and the predictive PCFR+ and PDCFR+), two
+Monte Carlo ones (external and outcome sampling) and optimistic FTRL on the
+sequence form as a baseline that is not CFR, runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
 strategy is from equilibrium with an exact best response. Kuhn and Leduc also
 come in three-player (or n-player) versions, where the full-tree variants and
@@ -526,8 +528,9 @@ split between different ones. CFR+ is the odd one out.
 
 ## Convergence
 
-`cfr-solver compare -g GAME -n N --svg FILE` runs all six algorithms on the
-same budget of work and plots exploitability of the average strategy. Work is
+`cfr-solver compare -g GAME -n N --svg FILE` runs the six algorithms below on
+the same budget of work (`--algorithms` picks others) and plots
+exploitability of the average strategy. Work is
 counted in nodes touched, because an iteration means very different things: a
 full-tree pass over Leduc visits 1,939 nodes, an external-sampling iteration
 about 45 and an outcome-sampling one about 16. The budget is what N iterations
@@ -553,6 +556,150 @@ are in another league on a game this small: after the same work CFR+ is about
 regrets and only reweights them, stalls on Leduc; Brown and Sandholm saw the
 same kind of game dependence (it was poor on Goofspiel). The Kuhn chart is in
 [docs/kuhn.svg](docs/kuhn.svg), and the raw curves are in `docs/*.csv`.
+
+## Predictive CFR+
+
+CFR+ picks its next strategy by regret matching on the accumulated regrets.
+Predictive CFR+ (Farina, Kroer and Sandholm, "Faster Game Solving via
+Predictive Blackwell Approachability", AAAI 2021) guesses that the next
+iteration's instantaneous regret will be the same as the last one and matches
+on the sum instead:
+
+```
+R_t       = [R_{t-1} + r_t]^+              accumulated, as in CFR+
+x_{t+1}  ~  [R_t + r_t]^+                  matched on the prediction
+average     weighted by t^2
+```
+
+PDCFR+ (Xu et al., "Minimizing Weighted Counterfactual Regret with Optimistic
+Online Mirror Descent", IJCAI 2024) does the same on top of DCFR+, which is
+DCFR with negative regrets clipped to zero like CFR+:
+
+```
+R_t       = [R_{t-1} d(t-1) + r_t]^+       d(t) = t^alpha / (t^alpha + 1)
+x_{t+1}  ~  [R_t d(t) + r_t]^+
+average     weighted by t^gamma
+```
+
+with alpha = 2.3 and gamma = 5 from the paper's grid search; DCFR+ uses alpha
+= 1.5, gamma = 4. All of them update the two players in turn.
+
+In `Cfr.Make` this takes two extra arrays: the instantaneous regrets of the
+pass in progress, summed over the histories of each infoset, and those of the
+last pass, which they replace when the pass ends. The stored regrets are already multiplied by d(t) at the
+end of each pass (that is how the existing DCFR discount works), so matching
+on stored + last is exactly the paper's [R_t d(t) + r_t]^+ without a second
+copy of R. The subgame solver goes the other way: its regret store holds the
+predicted regrets themselves, R d(t) + r, and keeps R d(t) and r on the
+side. After
+a pass, the new instantaneous regret is the store minus both, and the store is
+rewritten. None of the matching code (buckets, suit folding, float32 storage,
+pruning) had to change, because it only ever reads the store.
+
+`cfr-solver compare --algorithms cfr+,dcfr,dcfr+,pcfr+,pdcfr+` runs any subset
+on the same budget of nodes touched, and `cfr-solver subgame -a ...` does the
+same for hold'em spots. Exploitability of the average strategy:
+
+| game, budget                      | cfr+     | dcfr     | dcfr+    | pcfr+    | pdcfr+   |
+|-----------------------------------|---------:|---------:|---------:|---------:|---------:|
+| Kuhn, 10,000 iterations           | 9.63e-6  | 2.39e-5  | 1.01e-5  | 2.36e-11 | 2.36e-16 |
+| Leduc, 3,000 iterations           | 3.67e-5  | 1.62e-5  | 1.49e-5  | 1.02e-4  | 1.36e-4  |
+| Leduc, 100,000 iterations         | 4.73e-7  | 1.10e-6  | 5.62e-7  | 2.42e-8  | 3.26e-12 |
+| Liar's dice, 3,000 iterations     | 1.56e-5  | 4.28e-6  | 1.78e-5  | 1.01e-4  | 1.61e-4  |
+| river (% of pot), 20,000 iter.    | 2.32e-5  | 8.70e-6  | 6.74e-6  | 3.79e-5  | 6.09e-5  |
+| turn (% of pot), 600 iterations   | 1.61e-2  | 4.89e-3  | 4.63e-3  | 1.84e-2  | 1.63e-2  |
+
+![Average strategy on Leduc, predictive and discounted variants](docs/leduc-modern.svg)
+
+The Kuhn, Liar's dice, river and turn curves are in `docs/*-modern.svg`, with
+the raw numbers in the matching CSV files.
+
+On Kuhn poker prediction wins outright: PDCFR+ reaches machine precision in
+about 9,000 iterations. On Leduc the predictive variants start behind and
+overtake later. At 3,000 iterations PDCFR+ is eight times worse than DCFR; at
+100,000 it is 340,000 times better. Xu et al. describe the same shape on Leduc
+(slower at first, ahead after about 10,000 iterations), and the crossover here
+is between 3,000 and 26,000 iterations. On Liar's dice at 3,000 iterations, the
+limit river at 20,000 and the limit turn at 600 (a 203 MB tree, 4,330 decision
+nodes), DCFR and DCFR+ stay ahead and the predictive variants are among the
+slowest, which matches Farina et al.'s own
+finding that DCFR beats PCFR+ on Leduc and on river endgames at the budgets
+they plotted. Which method is fastest depends on the game and on how long it
+runs.
+
+**The last iterate.** The table above is about the average strategy, which is
+what CFR's guarantee covers. `compare --last` tracks the current strategy
+instead, and here the predictive variants do something the others don't:
+
+![Current strategy on Leduc](docs/leduc-last.svg)
+
+After 100,000 iterations on Leduc the current strategy of PCFR+ is 1.7e-15
+from equilibrium and PDCFR+ 5.0e-16, while CFR+, DCFR and DCFR+ hover between
+6.9e-4 and 3.0e-3 and improve only slowly. On Kuhn the current strategy of PCFR+
+is exactly an equilibrium (exploitability 0 in floating point) after 5,000
+iterations. Regret matching without prediction tends to circle around the
+equilibrium (Farina et al. 2023 study when RM+ is unstable); the prediction
+damps the circling. For the predictive variants the
+current strategy ends up better than the average, which is still dragged
+down by early iterations.
+
+**Optimistic FTRL with dilated entropy.** As a baseline that is not CFR at
+all, `Dilated` runs follow-the-regularized-leader directly on the sequence
+form (Farina, Kroer and Sandholm, "Optimistic Regret Minimization for
+Extensive-Form Games via Dilated Distance-Generating Functions", NeurIPS
+2019). The regularizer is the dilated entropy, sum over infosets j of
+x_parent(j) times the negative entropy of the local strategy at j. Its argmax
+against a utility vector has a closed form computed bottom-up: at each infoset
+the local strategy is a softmax of eta times (utility of the action plus the
+values of the infosets just below it), and the infoset's value, a log-sum-exp
+divided by eta, is passed up to its parent sequence. Optimism adds the last
+gradient once more before solving. A property test checks the closed form
+against random strategies and small perturbations of it on a hand-built
+four-infoset treeplex, so the softmax recursion is checked as a maximizer, not
+against itself.
+
+With the same weight on every infoset it is far behind CFR+ on averages: on
+Leduc with eta = 3 it ends at 4.9e-5 against CFR+'s 4.7e-7 after the same
+work, and eta = 10, 30 and 100 did worse. Optimism matters for the last
+iterate: on Kuhn, optimistic FTRL with eta = 1 has a current strategy 2.9e-14
+from equilibrium after the work of 5,000 CFR+ iterations (10,000 of its own,
+since it updates both players in one pass), while plain FTRL with the same
+step is still 0.25 away. Farina et al. use per-infoset weights on the regularizer
+to get their convergence bounds, which this version leaves out.
+
+## Tuning discounted CFR
+
+DCFR has three knobs: alpha discounts positive regrets, beta negative ones,
+and gamma weights the average. `cfr-solver landscape -g GAME -n N` runs every
+combination of alpha in {0.5, 1, 1.5, 2, 2.5, 3, 4, inf} and gamma in
+{0, ..., 6} for beta = -inf (DCFR+), beta = 0 and beta = 1, plus PDCFR+ over
+the same (alpha, gamma) grid, 229 runs in all, spread over OCaml domains.
+
+![Discounting grid on Leduc](docs/landscape-leduc.svg)
+
+On Leduc after 20,000 iterations (above), both DCFR panels have a flat
+valley: every alpha from 1.5 up and every gamma from 1 up lands within a
+factor of five of the panel's best cell, 1.3e-6 for DCFR+ at alpha 1.5 and
+gamma 3, and 1.5e-6 for beta = 0 at alpha 2 and gamma 3. The defaults sit in
+it (DCFR 6.0e-6, DCFR+ 1.3e-6). Two choices are bad in every panel: alpha =
+0.5, which discounts positive regrets so hard that the solver keeps
+forgetting what it learned, and gamma = 0, a plain average that keeps the
+full weight of the first iterations. Keeping negative regrets with beta = 1
+costs more than two orders of magnitude (its best cell is 3.2e-4). PDCFR+ is
+the one panel with a slope instead of a valley: exploitability keeps falling
+as gamma grows, and its best cell, alpha 2 and gamma 6 at 2.0e-8, beats the
+paper's (2.3, 5) at 5.1e-8 on this game.
+
+The ranking depends on the budget. After 2,000 iterations the same grid puts
+PDCFR+'s best cell (1.4e-4) six times behind the best DCFR cell (2.4e-5);
+after 20,000 it is 66 times ahead. On Liar's dice after 1,000 iterations the
+DCFR panels win (best 6.3e-5 at alpha 2, beta 0, gamma 2, against 9.2e-5 for
+the default) and PDCFR+ gets no better than 3.3e-4. On Kuhn after 1,000
+iterations PDCFR+ with alpha at least 2 and gamma 6 is between 8.6e-16 and
+4.1e-15, ten orders of magnitude below any DCFR setting. The other two grids
+are [docs/landscape-kuhn.svg](docs/landscape-kuhn.svg) and
+[docs/landscape-liars.svg](docs/landscape-liars.svg), with the numbers in
+the CSV files next to them.
 
 ## Parallel Monte Carlo CFR
 
@@ -1299,6 +1446,17 @@ each iteration playing against player 0's freshly updated strategy. That
 switch matters. CFR+ with simultaneous updates fails OpenSpiel's CFR+
 convergence test.
 
+DCFR+ is (1.5, -inf, 4) in the same rule. The predictive variants add one
+switch more: match on the stored regrets plus the last pass's instantaneous
+regrets instead of the stored regrets alone.
+
+**Dilated FTRL** (`lib/dilated.ml`). Works on the sequence form instead of
+regrets. Each iteration walks the tree once with both players' current
+strategies, adds every leaf's payoff times chance and opponent reach to the
+last sequence of each player, and then recomputes both strategies from the
+cumulative payoffs in one bottom-up pass over the infosets
+(`Dilated.response`).
+
 **Monte Carlo CFR** (`lib/mccfr.ml`). Instead of walking the whole tree,
 each iteration samples part of it and updates regrets with estimates whose
 expectation is exactly the full-tree update. External sampling (Lanctot et al.,
@@ -1557,6 +1715,17 @@ counterfactual value at the turn root goes up by 26%. Plain regret matching
 instead of RM+ in the max-margin chooser fails three tests on convergence.
 Gifts from every action instead of only folds survive, and should: they are
 still safe, only no longer a lower bound once the other rivers are re-solved.
+
+The predictive variants are checked against a second implementation in the
+tests that follows the papers' formulas literally (undiscounted R, the
+prediction computed from it each time) on Kuhn, for the named settings and 20
+random (alpha, gamma), to 1e-10, and the subgame solver against `Cfr.Make` on
+river, turn, bucketed and suit-folded trees to 1e-9. Skipping the swap that
+makes the last pass's regrets the prediction, matching without the
+prediction, writing R instead of R + r back into the subgame store, and
+reading r back without subtracting the old one each fail at least four
+tests. For dilated FTRL, leaving the child infosets' values out of the
+softmax fails five of its six tests and turning optimism off fails two.
 
 ## License
 
