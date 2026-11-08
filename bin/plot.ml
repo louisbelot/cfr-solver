@@ -156,3 +156,116 @@ let chart ~xlog ~title ~xlabel ~ylabel series =
 
 let loglog = chart ~xlog:true
 let semilogy = chart ~xlog:false
+
+let ramp =
+  [|
+    "#cde2fb";
+    "#b7d3f6";
+    "#9ec5f4";
+    "#86b6ef";
+    "#6da7ec";
+    "#5598e7";
+    "#3987e5";
+    "#2a78d6";
+    "#256abf";
+    "#1c5cab";
+    "#184f95";
+    "#104281";
+    "#0d366b";
+  |]
+
+let heatmap ~title ~xlabel ~ylabel ~xs ~ys panels =
+  let cw = 30. and ch = 24. and gap = 28. and l = 64. and t = 68. in
+  let nx = List.length xs and ny = List.length ys in
+  let pw = cw *. float_of_int nx in
+  let w = l +. (float_of_int (List.length panels) *. (pw +. gap)) in
+  let h = t +. (ch *. float_of_int ny) +. 96. in
+  let step v x =
+    let logs = Array.concat (Array.to_list v) |> Array.map Float.log10 in
+    let lo = Array.fold_left Float.min infinity logs
+    and hi = Array.fold_left Float.max neg_infinity logs in
+    let u = if hi > lo then (hi -. Float.log10 x) /. (hi -. lo) else 1. in
+    Float.to_int (Float.round (u *. float_of_int (Array.length ramp - 1)))
+  in
+  let b = Buffer.create 32768 in
+  let add fmt = Printf.bprintf b fmt in
+  add
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %g %g\" \
+     width=\"%g\" height=\"%g\">%s"
+    w h w h style;
+  add "<rect class=\"bg\" width=\"%g\" height=\"%g\"/>" w h;
+  add "<text class=\"title\" x=\"%g\" y=\"26\">%s</text>" l title;
+  add
+    "<text transform=\"translate(18 %g) rotate(-90)\" \
+     text-anchor=\"middle\">%s</text>"
+    (t +. (ch *. float_of_int ny /. 2.))
+    ylabel;
+  List.iteri
+    (fun j y ->
+      add "<text x=\"%g\" y=\"%g\" text-anchor=\"end\">%s</text>" (l -. 8.)
+        (t +. (ch *. float_of_int j) +. (ch /. 2.) +. 4.)
+        y)
+    ys;
+  List.iteri
+    (fun p (name, v) ->
+      let x0 = l +. (float_of_int p *. (pw +. gap)) in
+      add "<text x=\"%g\" y=\"%g\">%s</text>" x0 (t -. 10.) name;
+      let best = ref (0, 0) in
+      Array.iteri
+        (fun j row ->
+          Array.iteri
+            (fun i e ->
+              let bj, bi = !best in
+              if e < v.(bj).(bi) then best := (j, i);
+              let k = step v e in
+              let x = x0 +. (cw *. float_of_int i)
+              and y = t +. (ch *. float_of_int j) in
+              add
+                "<rect x=\"%.1f\" y=\"%.1f\" width=\"%g\" height=\"%g\" \
+                 rx=\"2\" fill=\"%s\"><title>%s, %s %s, %s %s: \
+                 %.3g</title></rect>"
+                (x +. 1.) (y +. 1.) (cw -. 2.) (ch -. 2.) ramp.(k) name ylabel
+                (List.nth ys j) xlabel (List.nth xs i) e;
+              add
+                "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" \
+                 font-size=\"10\" style=\"fill:%s\">%.1f</text>"
+                (x +. (cw /. 2.))
+                (y +. (ch /. 2.) +. 3.5)
+                (if k >= 6 then "#ffffff" else "#0b0b0b")
+                (Float.log10 e))
+            row)
+        v;
+      let bj, bi = !best in
+      add
+        "<rect x=\"%.1f\" y=\"%.1f\" width=\"%g\" height=\"%g\" rx=\"3\" \
+         fill=\"none\" stroke=\"#eb6834\" stroke-width=\"2.5\"/>"
+        (x0 +. (cw *. float_of_int bi))
+        (t +. (ch *. float_of_int bj))
+        cw ch;
+      List.iteri
+        (fun i x ->
+          add "<text x=\"%.1f\" y=\"%g\" text-anchor=\"middle\">%s</text>"
+            (x0 +. (cw *. float_of_int i) +. (cw /. 2.))
+            (t +. (ch *. float_of_int ny) +. 16.)
+            x)
+        xs;
+      add "<text x=\"%g\" y=\"%g\" text-anchor=\"middle\">%s</text>"
+        (x0 +. (pw /. 2.))
+        (t +. (ch *. float_of_int ny) +. 34.)
+        xlabel)
+    panels;
+  let ly = t +. (ch *. float_of_int ny) +. 58. in
+  let n = Array.length ramp in
+  Array.iteri
+    (fun k c ->
+      add "<rect x=\"%g\" y=\"%g\" width=\"16\" height=\"12\" fill=\"%s\"/>"
+        (l +. (16. *. float_of_int k))
+        ly c)
+    ramp;
+  add
+    "<text x=\"%g\" y=\"%g\">cells show log10 exploitability, shaded from the \
+     worst (light) to the best (dark) cell of each panel, best ringed</text>"
+    (l +. (16. *. float_of_int n) +. 10.)
+    (ly +. 10.);
+  add "</svg>\n";
+  Buffer.contents b

@@ -568,6 +568,110 @@ let sweep ranks iterations domains seed csv svg =
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
 
+let alphas = [ 0.5; 1.; 1.5; 2.; 2.5; 3.; 4.; infinity ]
+let gammas = [ 0.; 1.; 2.; 3.; 4.; 5.; 6. ]
+
+let slices =
+  [
+    ( "dcfr+, beta -inf",
+      fun alpha gamma -> Cfr.Discounted { alpha; beta = neg_infinity; gamma } );
+    ( "dcfr, beta 0",
+      fun alpha gamma -> Cfr.Discounted { alpha; beta = 0.; gamma } );
+    ( "dcfr, beta 1",
+      fun alpha gamma -> Cfr.Discounted { alpha; beta = 1.; gamma } );
+    ("pdcfr+", fun alpha gamma -> Cfr.Predictive { alpha; gamma });
+  ]
+
+let landscape game iterations domains csv svg =
+  let (module G : Game.S) = List.assoc game games in
+  let module B = Best_response.Make (G) in
+  let module C = Cfr.Make (G) in
+  let named = Cfr.[ Plus; dcfr; dcfr_plus; pcfr_plus; pdcfr_plus ] in
+  let grid =
+    List.concat_map
+      (fun (_, make) ->
+        List.concat_map
+          (fun alpha -> List.map (fun gamma -> make alpha gamma) gammas)
+          alphas)
+      slices
+  in
+  let jobs = Array.of_list (named @ grid) in
+  let results = Array.make (Array.length jobs) nan and next = Atomic.make 0 in
+  let start = Unix.gettimeofday () in
+  Pool.run (Pool.default ()) domains (fun _ ->
+      let rec loop () =
+        let i = Atomic.fetch_and_add next 1 in
+        if i < Array.length jobs then begin
+          let t = C.create ~algorithm:jobs.(i) () in
+          C.run t iterations;
+          results.(i) <- B.exploitability (C.average_strategy t);
+          loop ()
+        end
+      in
+      loop ());
+  let k = List.length named
+  and na = List.length alphas
+  and ng = List.length gammas in
+  let panel s =
+    Array.init na (fun a ->
+        Array.init ng (fun g -> results.(k + (s * na * ng) + (a * ng) + g)))
+  in
+  let label x = if x = infinity then "inf" else Printf.sprintf "%g" x in
+  Format.printf "%s, %d iterations each, %d settings in %.1f s@.@." G.name
+    iterations (Array.length jobs)
+    (Unix.gettimeofday () -. start);
+  List.iteri
+    (fun i a ->
+      Format.printf "%-16s %s@." (Cfr.algorithm_name a) (sci results.(i)))
+    named;
+  List.iteri
+    (fun s (name, _) ->
+      Format.printf "@.%s: exploitability, alpha down, gamma across@.%6s" name
+        "";
+      List.iter (fun g -> Format.printf "%10s" (label g)) gammas;
+      Format.printf "@.";
+      Array.iteri
+        (fun a row ->
+          Format.printf "%6s" (label (List.nth alphas a));
+          Array.iter (fun e -> Format.printf "%10s" (sci e)) row;
+          Format.printf "@.")
+        (panel s))
+    slices;
+  try
+    Option.iter
+      (fun path ->
+        List.mapi
+          (fun s (name, _) ->
+            List.concat
+              (List.mapi
+                 (fun a alpha ->
+                   List.mapi
+                     (fun g gamma ->
+                       Printf.sprintf "%s,%s,%s,%s\n" name (label alpha)
+                         (label gamma)
+                         (short_float (panel s).(a).(g)))
+                     gammas)
+                 alphas))
+          slices
+        |> List.concat |> String.concat ""
+        |> ( ^ ) "slice,alpha,gamma,exploitability\n"
+        |> write_file path)
+      csv;
+    Option.iter
+      (fun path ->
+        Plot.heatmap
+          ~title:
+            (Printf.sprintf "%s: exploitability after %d iterations"
+               (String.capitalize_ascii G.name)
+               iterations)
+          ~xlabel:"gamma" ~ylabel:"alpha" ~xs:(List.map label gammas)
+          ~ys:(List.map label alphas)
+          (List.mapi (fun s (name, _) -> (name, panel s)) slices)
+        |> write_file path)
+      svg;
+    Ok ()
+  with Sys_error msg -> Error (`Msg msg)
+
 open Cmdliner
 
 let game =
@@ -758,6 +862,21 @@ let compare_cmd =
         (const compare_algorithms $ game $ algos $ last $ seed $ iterations
        $ csv $ svg))
 
+let landscape_cmd =
+  let domains =
+    Arg.(
+      value & opt positive 1
+      & info [ "domains" ] ~docv:"D" ~doc:"Run settings on $(docv) domains.")
+  in
+  Cmd.v
+    (Cmd.info "landscape"
+       ~doc:
+         "Run discounted CFR over a grid of (alpha, beta, gamma), and \
+          predictive DCFR+ over (alpha, gamma), for the same number of \
+          iterations and report the exploitability of each.")
+    Term.(
+      term_result (const landscape $ game $ iterations $ domains $ csv $ svg))
+
 let scale_cmd =
   let domains =
     Arg.(
@@ -837,5 +956,12 @@ let () =
           (Cmd.info "cfr-solver" ~version:"0.1.0"
              ~doc:
                "Equilibrium strategies by counterfactual regret minimization.")
-          ([ solve_cmd; play_cmd; compare_cmd; scale_cmd; sweep_cmd ]
+          ([
+             solve_cmd;
+             play_cmd;
+             compare_cmd;
+             landscape_cmd;
+             scale_cmd;
+             sweep_cmd;
+           ]
           @ Holdem.cmds @ Multiplayer.cmds)))
