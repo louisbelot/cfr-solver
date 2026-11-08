@@ -13,9 +13,15 @@ let normalize weights =
   out
 
 let strategy_into regrets out =
-  let total = Array.fold_left (fun acc r -> acc +. Float.max r 0.) 0. regrets in
+  let total = ref 0. in
+  for a = 0 to Array.length regrets - 1 do
+    total := !total +. Float.max regrets.(a) 0.
+  done;
+  let total = !total in
   if total > 0. then
-    Array.iteri (fun a r -> out.(a) <- Float.max r 0. /. total) regrets
+    for a = 0 to Array.length regrets - 1 do
+      out.(a) <- Float.max regrets.(a) 0. /. total
+    done
   else uniform_into out
 
 let strategy regrets =
