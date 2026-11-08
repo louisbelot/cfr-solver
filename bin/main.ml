@@ -10,7 +10,10 @@ let games : (string * (module Game.S)) list =
     ("liars-2d3", Liars_dice.game { dice = 2; faces = 3; wild = true });
   ]
 
-type algorithm = Full of Cfr.algorithm | Sampled of Mccfr.sampling
+type algorithm =
+  | Full of Cfr.algorithm
+  | Sampled of Mccfr.sampling
+  | Entropic of { eta : float; optimistic : bool }
 
 let algorithms =
   [
@@ -22,17 +25,24 @@ let algorithms =
     Sampled Mccfr.outcome;
   ]
 
+let modern = [ Full Cfr.dcfr_plus; Full Cfr.pcfr_plus; Full Cfr.pdcfr_plus ]
+
 let short_name = function
-  | Full (Discounted _) -> "dcfr"
+  | Full a when a = Cfr.dcfr -> "dcfr"
+  | Full a when a = Cfr.dcfr_plus -> "dcfr+"
+  | Full a when a = Cfr.pdcfr_plus -> "pdcfr+"
   | Full a -> Cfr.algorithm_name a
   | Sampled External -> "es"
   | Sampled (Outcome _) -> "os"
+  | Entropic { eta; optimistic } ->
+      Printf.sprintf "%s:%g" (if optimistic then "oftrl" else "ftrl") eta
 
 type solver = {
   run : int -> unit;
   iterations : unit -> int;
   touched : unit -> int;
   average : unit -> Strategy.t;
+  current : unit -> Strategy.t;
 }
 
 type parallel = {
@@ -53,6 +63,17 @@ let solver ?(par = serial) (module G : Game.S) seed = function
         iterations = (fun () -> C.iterations t);
         touched = (fun () -> C.touched t);
         average = (fun () -> C.average_strategy t);
+        current = (fun () -> C.current_strategy t);
+      }
+  | Entropic { eta; optimistic } ->
+      let module D = Dilated.Make (G) in
+      let t = D.create ~optimistic ~eta () in
+      {
+        run = D.run t;
+        iterations = (fun () -> D.iterations t);
+        touched = (fun () -> D.touched t);
+        average = (fun () -> D.average_strategy t);
+        current = (fun () -> D.current_strategy t);
       }
   | Sampled sampling when par.domains = 1 ->
       let module M = Mccfr.Make (G) in
@@ -64,6 +85,7 @@ let solver ?(par = serial) (module G : Game.S) seed = function
         iterations = (fun () -> M.iterations t);
         touched = (fun () -> M.touched t);
         average = (fun () -> M.average_strategy t);
+        current = (fun () -> M.current_strategy t);
       }
   | Sampled sampling ->
       let module P = Parallel.Make (G) in
@@ -76,10 +98,12 @@ let solver ?(par = serial) (module G : Game.S) seed = function
         iterations = (fun () -> P.iterations t);
         touched = (fun () -> P.touched t);
         average = (fun () -> P.average_strategy t);
+        current = (fun () -> P.current_strategy t);
       }
 
 let describe par = function
   | Full a -> Cfr.algorithm_name a
+  | Entropic _ as a -> short_name a
   | Sampled s ->
       String.concat ""
         [
@@ -245,7 +269,7 @@ let play game iterations hands seat seed =
       !total
       (!total /. float !played)
 
-let compare_algorithms game seed iterations csv svg =
+let compare_algorithms game algos current seed iterations csv svg =
   let (module G : Game.S) = List.assoc game games in
   let module B = Best_response.Make (G) in
   let budget = iterations * 2 * Tree.size (Tree.build (module G)).root in
@@ -266,12 +290,13 @@ let compare_algorithms game seed iterations csv svg =
               if n = !last then None
               else begin
                 last := n;
-                Some (n, B.exploitability (t.average ()))
+                let s = if current then t.current () else t.average () in
+                Some (n, B.exploitability s)
               end)
             (log_checkpoints 10 budget)
         in
         (algorithm, rows, !cpu, t.iterations ()))
-      algorithms
+      algos
   in
   let at k rows =
     match List.rev (List.filter (fun (n, _) -> n <= k) rows) with
@@ -279,8 +304,9 @@ let compare_algorithms game seed iterations csv svg =
     | (_, e) :: _ -> sci e
   in
   let rec decades k = if k >= budget then [] else k :: decades (k * 10) in
-  Format.printf
-    "%s: exploitability of the average strategy by nodes touched@.@." G.name;
+  let which = if current then "current" else "average" in
+  Format.printf "%s: exploitability of the %s strategy by nodes touched@.@."
+    G.name which;
   Format.printf "%12s" "nodes";
   List.iter (fun (a, _, _, _) -> Format.printf "%10s" (short_name a)) runs;
   Format.printf "@.";
@@ -312,14 +338,15 @@ let compare_algorithms game seed iterations csv svg =
       (fun path ->
         Plot.loglog
           ~title:
-            (Printf.sprintf "%s: exploitability of the average strategy"
-               (String.capitalize_ascii G.name))
+            (Printf.sprintf "%s: exploitability of the %s strategy"
+               (String.capitalize_ascii G.name)
+               which)
           ~xlabel:"nodes touched" ~ylabel:"exploitability"
           (List.map
              (fun (a, rows, _, _) ->
                {
                  Plot.label = short_name a;
-                 dashed = (match a with Sampled _ -> true | Full _ -> false);
+                 dashed = (match a with Sampled _ -> true | _ -> false);
                  points = rows;
                })
              runs)
@@ -551,17 +578,32 @@ let game =
     & info [ "g"; "game" ] ~docv:"GAME"
         ~doc:(Printf.sprintf "Game to solve: %s." (String.concat ", " names)))
 
+let named =
+  let known = List.map (fun a -> (short_name a, a)) (algorithms @ modern) in
+  let parse s =
+    match (List.assoc_opt s known, String.split_on_char ':' s) with
+    | Some a, _ -> Ok a
+    | None, [ (("oftrl" | "ftrl") as k); e ] -> (
+        match float_of_string_opt e with
+        | Some eta when eta > 0. ->
+            Ok (Entropic { eta; optimistic = k = "oftrl" })
+        | _ -> Error (`Msg ("bad step size in " ^ s)))
+    | None, _ -> Error (`Msg ("unknown algorithm " ^ s))
+  in
+  Arg.conv (parse, fun ppf a -> Format.pp_print_string ppf (short_name a))
+
 let algorithm =
   Arg.(
-    value
-    & opt
-        (enum (List.map (fun a -> (short_name a, a)) algorithms))
-        (Full Vanilla)
+    value & opt named (Full Vanilla)
     & info [ "a"; "algorithm" ] ~docv:"ALG"
         ~doc:
           "Algorithm: cfr, cfr+, lcfr (linear), dcfr (discounted, alpha 1.5, \
-           beta 0, gamma 2), es (external-sampling MCCFR) or os \
-           (outcome-sampling MCCFR, exploration 0.6).")
+           beta 0, gamma 2), dcfr+ (alpha 1.5, gamma 4, negative regrets \
+           clipped), pcfr+ (predictive CFR+, quadratic averaging), pdcfr+ \
+           (predictive DCFR+, alpha 2.3, gamma 5), es (external-sampling \
+           MCCFR), os (outcome-sampling MCCFR, exploration 0.6), or oftrl:ETA \
+           and ftrl:ETA (optimistic and plain FTRL with the dilated entropy \
+           regularizer and step size ETA).")
 
 let seed =
   Arg.(
@@ -693,6 +735,18 @@ let svg =
     & info [ "svg" ] ~docv:"FILE" ~doc:"Plot the curves to $(docv) (log-log).")
 
 let compare_cmd =
+  let algos =
+    Arg.(
+      value
+      & opt (list named) algorithms
+      & info [ "algorithms" ] ~docv:"LIST"
+          ~doc:"Algorithms to run, by the names $(b,--algorithm) takes.")
+  and last =
+    Arg.(
+      value & flag
+      & info [ "last" ]
+          ~doc:"Track the current strategy instead of the average.")
+  in
   Cmd.v
     (Cmd.info "compare"
        ~doc:
@@ -701,7 +755,8 @@ let compare_cmd =
           exploitability.")
     Term.(
       term_result
-        (const compare_algorithms $ game $ seed $ iterations $ csv $ svg))
+        (const compare_algorithms $ game $ algos $ last $ seed $ iterations
+       $ csv $ svg))
 
 let scale_cmd =
   let domains =
