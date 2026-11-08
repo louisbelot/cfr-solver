@@ -38,4 +38,5 @@ let () =
       ("json", Test_json.tests);
       ("bigint", Test_bigint.tests);
       ("rat", Test_rat.tests);
+      ("lp", Test_lp.tests);
     ]
