@@ -4,6 +4,7 @@ type node =
   | Decision of int * node array
 
 type t = {
+  players : int;
   root : node;
   size : int;
   height : int;

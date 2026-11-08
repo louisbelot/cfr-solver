@@ -4,6 +4,7 @@ type node =
   | Decision of int * node array
 
 type t = {
+  players : int;
   root : node;
   size : int;
   height : int;
@@ -46,6 +47,7 @@ let build (module G : Multi.S) =
   let offset = Array.make (Array.length infos + 1) 0 in
   Array.iteri (fun i a -> offset.(i + 1) <- offset.(i) + Array.length a) labels;
   {
+    players = G.players;
     root;
     size = !size;
     height = !height;

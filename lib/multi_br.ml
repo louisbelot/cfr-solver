@@ -1,83 +1,116 @@
+open Multi_tree
+
+let probs tree sigma =
+  let p = Array.make (slots tree) 0. in
+  Array.iteri
+    (fun k key ->
+      let n = Array.length tree.labels.(k) in
+      Array.blit (Strategy.probs sigma key ~n) 0 p tree.offset.(k) n)
+    tree.keys;
+  p
+
+let values tree sigma =
+  let p = probs tree sigma and total = Array.make tree.players 0. in
+  let rec go node w =
+    if w > 0. then
+      match node with
+      | Leaf u -> Array.iteri (fun i x -> total.(i) <- total.(i) +. (w *. x)) u
+      | Chance (q, children) ->
+          Array.iteri (fun j c -> go c (w *. q.(j))) children
+      | Decision (k, children) ->
+          let base = tree.offset.(k) in
+          Array.iteri (fun a c -> go c (w *. p.(base + a))) children
+  in
+  go tree.root 1.;
+  total
+
+let argmax n f =
+  let best = ref 0 and best_v = ref (f 0) in
+  for a = 1 to n - 1 do
+    let v = f a in
+    if v > !best_v then begin
+      best := a;
+      best_v := v
+    end
+  done;
+  !best
+
+let respond tree p br =
+  let n = Array.length tree.keys in
+  let hs = Array.make n [] and depth = Array.make n (-1) in
+  let rec collect node w seq =
+    if w > 0. then
+      match node with
+      | Leaf _ -> ()
+      | Chance (q, children) ->
+          Array.iteri (fun j c -> collect c (w *. q.(j)) seq) children
+      | Decision (k, children) when tree.owner.(k) = br ->
+          hs.(k) <- (children, w) :: hs.(k);
+          depth.(k) <- seq;
+          Array.iter (fun c -> collect c w (seq + 1)) children
+      | Decision (k, children) ->
+          let base = tree.offset.(k) in
+          Array.iteri (fun a c -> collect c (w *. p.(base + a)) seq) children
+  in
+  collect tree.root 1. 0;
+  let best = Array.make n 0 in
+  let rec eval = function
+    | Leaf u -> u.(br)
+    | Chance (q, children) ->
+        let v = ref 0. in
+        Array.iteri (fun j c -> v := !v +. (q.(j) *. eval c)) children;
+        !v
+    | Decision (k, children) when tree.owner.(k) = br ->
+        eval children.(best.(k))
+    | Decision (k, children) ->
+        let base = tree.offset.(k) and v = ref 0. in
+        Array.iteri
+          (fun a c ->
+            let s = p.(base + a) in
+            if s > 0. then v := !v +. (s *. eval c))
+          children;
+        !v
+  in
+  List.init n Fun.id
+  |> List.filter (fun k -> depth.(k) >= 0)
+  |> List.stable_sort (fun i j -> compare depth.(j) depth.(i))
+  |> List.iter (fun k ->
+      best.(k) <-
+        argmax
+          (Array.length tree.labels.(k))
+          (fun a ->
+            List.fold_left
+              (fun acc (children, w) -> acc +. (w *. eval children.(a)))
+              0. hs.(k)));
+  (eval tree.root, best)
+
+let best tree br sigma =
+  let v, best = respond tree (probs tree sigma) br in
+  let s = ref Strategy.empty in
+  Array.iteri
+    (fun k key ->
+      if tree.owner.(k) = br then
+        let actions = tree.labels.(k) in
+        let probs =
+          Array.mapi (fun a _ -> if a = best.(k) then 1. else 0.) actions
+        in
+        s := Strategy.add key ~actions ~probs !s)
+    tree.keys;
+  (v, !s)
+
+let gains tree sigma =
+  let p = probs tree sigma and u = values tree sigma in
+  Array.init tree.players (fun i -> fst (respond tree p i) -. u.(i))
+
+let nash_conv tree sigma = Array.fold_left ( +. ) 0. (gains tree sigma)
+
 module Make (G : Multi.S) = struct
-  module E = Multi.Eval (G)
-
-  let collect br sigma =
-    let reach = Hashtbl.create 64 in
-    let rec go h w =
-      if w > 0. then
-        match G.node h with
-        | Multi.Terminal _ -> ()
-        | Chance outcomes -> List.iter (fun (p, h') -> go h' (w *. p)) outcomes
-        | Decision { player; infoset; actions } when player = br ->
-            Hashtbl.add reach infoset (Array.of_list (List.map snd actions), w);
-            List.iter (fun (_, h') -> go h' w) actions
-        | Decision { infoset; actions; _ } ->
-            let probs = Strategy.probs sigma infoset ~n:(List.length actions) in
-            List.iteri (fun a (_, h') -> go h' (w *. probs.(a))) actions
-    in
-    go G.root 1.;
-    reach
-
-  let argmax n f =
-    let best = ref 0 and best_v = ref (f 0) in
-    for a = 1 to n - 1 do
-      let v = f a in
-      if v > !best_v then begin
-        best := a;
-        best_v := v
-      end
-    done;
-    !best
-
-  let solve br sigma =
-    let reach = collect br sigma and best = Hashtbl.create 64 in
-    let rec value h =
-      match G.node h with
-      | Multi.Terminal u -> u.(br)
-      | Chance outcomes ->
-          List.fold_left (fun acc (p, h') -> acc +. (p *. value h')) 0. outcomes
-      | Decision { player; infoset; actions } when player = br ->
-          value (snd (List.nth actions (best_action infoset)))
-      | Decision { infoset; actions; _ } ->
-          let probs = Strategy.probs sigma infoset ~n:(List.length actions) in
-          List.fold_left
-            (fun (acc, a) (_, h') -> (acc +. (probs.(a) *. value h'), a + 1))
-            (0., 0) actions
-          |> fst
-    and best_action key =
-      match Hashtbl.find_opt best key with
-      | Some a -> a
-      | None ->
-          let a =
-            match Hashtbl.find_all reach key with
-            | [] -> 0
-            | (children, _) :: _ as hs ->
-                argmax (Array.length children) (fun a ->
-                    List.fold_left
-                      (fun acc (ch, w) -> acc +. (w *. value ch.(a)))
-                      0. hs)
-          in
-          Hashtbl.add best key a;
-          a
-    in
-    (value, best_action)
+  let tree = lazy (Multi_tree.build (module G))
 
   let value br sigma =
-    let value, _ = solve br sigma in
-    value G.root
+    fst (respond (Lazy.force tree) (probs (Lazy.force tree) sigma) br)
 
-  let strategy br sigma =
-    let _, best_action = solve br sigma in
-    List.fold_left
-      (fun s (key, actions) ->
-        let a = best_action key in
-        let probs = Array.mapi (fun b _ -> if a = b then 1. else 0.) actions in
-        Strategy.add key ~actions ~probs s)
-      Strategy.empty (E.infosets br)
-
-  let gains sigma =
-    let u = E.values sigma in
-    Array.init G.players (fun i -> value i sigma -. u.(i))
-
-  let nash_conv sigma = Array.fold_left ( +. ) 0. (gains sigma)
+  let strategy br sigma = snd (best (Lazy.force tree) br sigma)
+  let gains sigma = gains (Lazy.force tree) sigma
+  let nash_conv sigma = nash_conv (Lazy.force tree) sigma
 end

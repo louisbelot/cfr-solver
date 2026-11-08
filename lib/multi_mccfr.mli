@@ -20,6 +20,7 @@ module Make (G : Multi.S) : sig
   val iterations : t -> int
   val touched : t -> int
   val infosets : t -> int
+  val tree : t -> Multi_tree.t
   val average_strategy : t -> Strategy.t
   val current_strategy : t -> Strategy.t
 end

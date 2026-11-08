@@ -1,3 +1,9 @@
+val probs : Multi_tree.t -> Strategy.t -> float array
+val values : Multi_tree.t -> Strategy.t -> float array
+val best : Multi_tree.t -> int -> Strategy.t -> float * Strategy.t
+val gains : Multi_tree.t -> Strategy.t -> float array
+val nash_conv : Multi_tree.t -> Strategy.t -> float
+
 module Make (G : Multi.S) : sig
   val value : int -> Strategy.t -> float
   val strategy : int -> Strategy.t -> Strategy.t

@@ -33,6 +33,7 @@ module Make (G : Multi.S) = struct
   let iterations t = t.iterations
   let touched t = t.touched
   let infosets t = Array.length t.tree.keys
+  let tree t = t.tree
 
   let counterfactual t p =
     let w = ref 1. in
