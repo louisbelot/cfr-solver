@@ -1628,3 +1628,95 @@ The exact solver opens two follow-ups: a sparse LU in place of the dense
 tableau (Leduc's 21 s has not been profiled yet, but its exact entries reach
 30-digit fractions), and
 exact values for the turn and river subgames once they fit.
+
+## 2026-11-08: sealed-bid auctions, a market-making card game
+
+Two games outside poker, both about trading.
+
+Auctions (`lib/auction.ml`, `auction`, `auction-bids`, `auction-reserve`):
+
+- First-price, second-price and all-pay sealed-bid auctions with n bidders,
+  values and bids on the integers 0..x, uniform independent values, split or
+  void ties, and a reserve below which a bid is a pass. Void ties follow
+  Rasooly and Gavidia-Calderon ("The importance of being discrete"), which
+  gave the exact theorems to replicate.
+- The payoff of bid b for value v has a closed form. Multiply out
+  P(rival < b) + P(rival = b) z over the rivals: coefficient k is the chance
+  that exactly k rivals tie at b and the rest are below. The share won is
+  sum c_k / (k + 1) (split) or c_0 (void), and every rule is
+  u(v, b) = v W(b) - pay(b). Second price accumulates
+  P(max rival = m) max(r, m) as b sweeps up. O(x n^2) per bidder.
+- The evaluator is a functor over a field: floats for the solver, `Rat` for
+  exact certificates (pure-strategy searches, last iterates rounded to small
+  fractions or taken exactly from their doubles).
+- The solver is regret matching per (bidder, value), with the same update
+  order, discounting and averaging as `Multi_cfr`; it matches the full-tree
+  solver iterate for iterate. `--symmetric` shares one strategy between all
+  bidders.
+- Theory: (n - 1)/n v for first price, v - (v^n - r^n)/(n v^(n-1)) with a
+  reserve, (n - 1)/n v^n for all-pay, and revenue
+  2n/(n + 1)(1 - r^(n+1)) - (1 - r^n), which peaks at r = 1/2 (Myerson).
+
+Results:
+
+- Exact: truthful second price is an equilibrium for every tie rule and
+  reserve tried; first price with two bidders and void ties has exactly the
+  symmetric pure equilibria floor(v/2) and ceil(v/2) for x = 2..7; three
+  bidders have none for x = 4, 5, 6.
+- Symmetric CFR+ on three bidders, x = 12, void ties finds the mixed symmetric
+  equilibrium: multiples of 3 bid 2v/3, value 4 bids 2 with probability
+  3 sqrt 2 - 4 (from 2 (3/13)^2 = ((4 + p)/13)^2), exact NashConv of the
+  iterate 9e-16. Without sharing, CFR+ ends on asymmetric equilibria whose
+  last iterate has exact NashConv 0.
+- Split ties with two bidders do not converge: x = 10, CFR+ and DCFR averages
+  sit near 1.6e-4 of the top value from 10k to 100k iterations, LCFR and
+  vanilla near 5e-4. Expected for general-sum no-regret dynamics.
+- x = 100, 5,000 iterations: revenue 0.3326, 0.4996, 0.6669 against 1/3, 1/2,
+  2/3 for first price with 2, 3, 5 bidders; all-pay 0.3309 and 0.6655. Bid
+  error above a quarter of the top value at most 0.028 of it. Low values with
+  five bidders barely ever win and stay near their starting mix.
+- Reserve sweep on x = 40: best reserve 0.5 for both rules with two bidders
+  and second price with three, 0.45 for first price with three (flat peak).
+- Speed: 5,000 iterations at x = 100 went from 6.9 s to 1.55 s (two
+  bidders) and 41.6 s to 5.9 s (five) by moving marginals out of the boxed
+  functor, caching current strategies and replacing a float fold in
+  `Regret_matching.strategy_into` with a loop. Output bit-identical; the full
+  suite passes with the regret-matching change.
+
+Market-making game (`lib/market.ml`, `market`, `market-width`):
+
+- Deck 1..k, one card each to maker and taker, optional hidden cards; the sum
+  settles. The maker quotes mid m at fixed width w, the taker buys, sells or
+  passes. Optional second round where the taker quotes back. Zero-sum, so
+  CFR, best response and the exact LP all apply.
+- Deck of 3, width 0: quoting fair value loses 2/3 (by hand), the LP
+  equilibrium loses 1/3. Deck of 8 with a hidden card, width 3: equilibrium
+  -0.3122, revealing -0.4821, uninformed -0.3571, and the equilibrium pools on
+  quotes 13 and 14 with crossed assignments (a 2 quotes 14, a 7 quotes 13).
+- Deck of 10 with a hidden card, widths 0..10 by DCFR (2,000 iterations,
+  NashConv under 1e-5): the equilibrium breaks even from width 7, uninformed
+  from 8, revealing from 9.
+- Two rounds, deck of 4, width 1: the first quoter is +1/4 exactly (110 s in
+  the LP), because the second round lets them trade on what the first trade
+  showed. A deck of 5 did not finish in ten minutes in the dense LP.
+- Exact LP: fine up to six cards, but eight cards with a hidden card ran for
+  more than nine minutes at width 3.
+
+Checks:
+
+- 20 new tests. Auctions: tree values and gains for 24 configurations,
+  iterate-for-iterate equality with `Multi_cfr` (four algorithms), the exact
+  theorems above, E[min of two] revenue, continuous formulas against a
+  Simpson integral, convergence bounds, exact zero NashConv of last iterates,
+  the 3 sqrt 2 - 4 mix. Market: terminal and infoset counts, payoffs along
+  paths, the 2/3 by hand, zero value for wide markets, LP inside the DCFR
+  bracket with exact gap 0, equilibrium beating both naive quotes.
+- Mutants: second price without the reserve floor (caught), split ties
+  dividing by k instead of k + 1 (caught), the sell price on the wrong side of
+  mid (caught), the maker's sign flipped (caught).
+- Charts rendered and looked at: docs/auction-bids.svg,
+  docs/auction-reserve.svg, docs/market-width.svg.
+
+Next: a sparse LU for the exact LP (the market game and Leduc are both
+limited by the dense tableau), then team play in three-player Kuhn and
+Figgie's rules engine.

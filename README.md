@@ -13,7 +13,10 @@ arithmetic (its own bignums and simplex), so the game value comes out as a
 fraction and a solver's gap can be measured with no rounding. Kuhn and Leduc also
 come in three-player (or n-player) versions, where the full-tree variants and
 external sampling run on a game signature with payoff vectors and progress is
-measured as NashConv.
+measured as NashConv. The same machinery covers sealed-bid auctions (first
+price, second price and all-pay, with reserves, checked against the Bayes-Nash
+bid functions and the discrete theorems in exact arithmetic) and an
+interview-style market-making card game solved exactly.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -736,6 +739,193 @@ From 5,000 to a million iterations PDCFR+ wanders between 5.3e-17 and 7.5e-16
 exactly, and PCFR+ flattens between 7.5e-16 and 2.9e-15 after 200,000. The floor is
 in the strategy itself, which is accumulated and normalized in doubles, and
 not in the float best response that measures it.
+
+## Sealed-bid auctions
+
+`Auction` models first-price, second-price (Vickrey) and all-pay auctions with
+private values. Values and bids are the integers 0 to x, each bidder's value is
+uniform and independent, and a tie at the top is either split evenly or voids
+the sale (the two rules in Rasooly and Gavidia-Calderon's "The importance of
+being discrete"). An optional reserve makes every bid below it a pass. These
+games are general-sum, so they run on the n-player signature, and every number
+below is NashConv.
+
+Building the tree is wasteful here: each bidder only sees their own value, so
+the game is a Bayesian game and the expected payoff of bid b for value v has a
+closed form. For bidder i, take the other bidders' bid distributions. A
+polynomial in z, multiplied out one rival at a time as P(bid < b) + P(bid = b) z,
+gives the probability that exactly k rivals tie at b and all others are below.
+The share of the item won is then the sum of those coefficients divided by
+k + 1 (split ties) or just the k = 0 term (void ties), and every rule fits
+u(v, b) = v W(b) - pay(b), with pay(b) = b W(b) for first price, b for all-pay,
+and the expected highest rival bid (floored at the reserve) for second price.
+That costs O(x n^2) per bidder instead of a tree with (x + 1)^(2n) leaves. The
+evaluator is a functor over a field, so the same code runs in floats inside the
+solver and in exact rationals for certificates. A regret-matching solver on
+top of it follows the full-tree n-player CFR iterate for iterate (tested for
+four rules and algorithms), and checks against an explicit tree of the same
+game for values and best-response gains.
+
+The discrete theorems come out exactly in rational arithmetic:
+
+- Second price: bidding your value is an exact equilibrium for every tie rule
+  and reserve tried, and a best response to random opponents. With two bidders
+  the revenue is exactly E[min of two values].
+- First price, two bidders, void ties: enumerating every symmetric pure
+  strategy with b(v) <= v leaves exactly floor(v/2) and ceil(v/2), for x = 2
+  to 7 (their Proposition 2).
+- First price, three bidders, void ties: no symmetric pure equilibrium for
+  x = 4, 5, 6 (Proposition 3).
+
+CFR+ does find equilibria where the pure search says there are none. With
+three bidders and values 0 to 12 under void ties, self-play with one shared
+strategy converges to a symmetric mixed equilibrium: values 3, 6, 9 and 12 bid
+exactly 2v/3, and the others mix between the two neighbouring bids. Value 4
+bids 2 with probability 0.242641, which is 3 sqrt(2) - 4: bidding 2 wins when
+both rivals bid 0 or 1 (3 of 13 types each), bidding 3 also beats rivals who
+bid 2 (4 + p types), so indifference needs 2 (3/13)^2 = ((4 + p)/13)^2. An
+irrational mix like this cannot come out of a rational LP, but the iterate's
+exact NashConv, computed in rationals from its doubles, is 9e-16. Run
+without the shared strategy, CFR+ instead lands on asymmetric equilibria in
+the void-tie games, whose last iterate has an exact NashConv of 0 (two bidders
+with values 0 to 10, and three with 0 to 6). With split ties it stalls: on two
+bidders and values 0 to 10, the average of CFR+ and DCFR sits near 1.6e-4 of
+the top value from 10,000 to 100,000 iterations, and linear and vanilla CFR
+near 5e-4. No-regret dynamics only promise a coarse
+correlated equilibrium in general-sum games, and here the product of the
+marginals is not quite Nash.
+
+```
+$ cfr-solver auction --top 12 --bidders 3 --void --symmetric -n 20000 --exact
+exact      nash conv of the last iterate 9.122910e-16
+           bidder 0, v = 1: 0 w.p. 0.500000, 1 w.p. 0.500000
+           bidder 0, v = 4: 2 w.p. 0.242641, 3 w.p. 0.757359
+           bidder 0, v = 7: 4 w.p. 0.348469, 5 w.p. 0.651531
+           bidder 0, v = 10: 6 w.p. 0.392305, 7 w.p. 0.607695
+```
+
+On a grid of 101 values, symmetric CFR+ reproduces the continuous Bayes-Nash
+bid functions: (n - 1)/n v for first price, and (n - 1)/n v^n for all-pay.
+
+![Bid functions against theory](docs/auction-bids.svg)
+
+```
+$ cfr-solver auction-bids --svg docs/auction-bids.svg
+auction           nash conv  error, v>=1/4    revenue     theory
+first price, 2     1.20e-04         0.0066     0.3326     0.3333
+first price, 3     1.20e-04         0.0067     0.4996     0.5000
+first price, 5     1.03e-04         0.0160     0.6669     0.6667
+all-pay, 2         1.37e-04         0.0125     0.3309     0.3333
+all-pay, 5         3.29e-04         0.0278     0.6655     0.6667
+```
+
+NashConv and the bid error are in units of the top value.
+
+The error column is the largest gap between the mean bid and the theory for
+values above a quarter of the top. Below that, with five bidders, a value
+almost never wins (P(win) is about (v/x)^4), so its bid hardly moves anyone's
+payoff and CFR+ leaves it near where it started. Revenue, which is what those
+bids add up to, lands on (n - 1)/(n + 1) for all five auctions, the revenue
+equivalence theorem showing up in the numbers.
+
+Moving the reserve shows Myerson's optimal auction: for uniform values the
+revenue-maximizing reserve is 1/2 whatever the number of bidders, and first
+and second price earn the same at every reserve.
+
+![Revenue against the reserve](docs/auction-reserve.svg)
+
+```
+$ cfr-solver auction-reserve --svg docs/auction-reserve.svg
+first price, 2   best reserve 0.500, revenue 0.4089 (at r = 0: 0.3303)
+second price, 2  best reserve 0.500, revenue 0.4121 (at r = 0: 0.3293)
+first price, 3   best reserve 0.450, revenue 0.5262 (at r = 0: 0.4964)
+second price, 3  best reserve 0.500, revenue 0.5293 (at r = 0: 0.4997)
+theory: best reserve 0.5, revenue 0.4167 (n = 2), 0.5312 (n = 3)
+```
+
+The continuous curve is 2n/(n + 1) (1 - r^(n+1)) - (1 - r^n), checked against
+a Simpson integral of the first-price bid function with a reserve. The
+discrete grid of 41 values sits slightly under it, and its peak is flat
+enough that three bidders under first price land on 0.45 instead of 0.5.
+
+The solver loop is plain float code over the closed form. Moving the rival
+marginals out of the functor (where every float is boxed), caching the current
+strategies and replacing a float fold in regret matching with a loop took
+5,000 iterations at 101 values from 6.9 s to 1.55 s with two bidders and from
+41.6 s to 5.9 s with five, with bit-identical output.
+
+## A market-making game
+
+Trading interviews like "make me a market on the sum of these cards". `Market`
+turns that into a two-player zero-sum game small enough to solve exactly. Deal
+cards from a deck 1..k without replacement: one to the maker, one to the taker,
+and optionally a hidden card that nobody sees but that counts in the sum S. The
+maker quotes a market of fixed width w around an integer mid m (bid m - w/2,
+ask m + w/2), and the taker, who sees their own card and the quote, buys at the
+ask, sells at the bid or passes. With `--rounds 2` the taker then quotes back
+and the maker trades, so the second quote can use what the first trade gave
+away. Because the game is zero-sum the whole toolkit applies: CFR, the exact
+best response, and the sequence-form LP in rationals.
+
+The interesting part is the quote itself. A maker who quotes their fair value
+E[S | own card] tells the taker exactly which card they hold. With a deck of
+three cards and zero width that maker loses 2/3 per hand (worked out by hand in
+the tests), while the equilibrium maker loses 1/3. On a bigger deck the
+equilibrium pools almost every card onto two quotes and swaps them on
+purpose:
+
+```
+$ cfr-solver market --cards 8 --hidden 1 --width 3 -n 2000
+market-8h1-w3, 2000 iterations of dcfr in 0.71s
+maker value     -0.312245 per hand (nash conv 7.42e-06)
+revealing quote -0.482143
+uninformed      -0.357143
+
+maker's first quote:
+  card  1  fair 11.00  quotes 13:0.74 14:0.26
+  card  2  fair 11.71  quotes 14:1.00
+  card  3  fair 12.43  quotes 13:1.00
+  card  4  fair 13.14  quotes 13:1.00
+  card  5  fair 13.86  quotes 14:1.00
+  card  6  fair 14.57  quotes 14:1.00
+  card  7  fair 15.29  quotes 13:1.00
+  card  8  fair 16.00  quotes 13:0.26 14:0.74
+```
+
+A 2 quotes high and a 7 quotes low, so seeing 14 tells the taker little about
+which side of fair the maker is on. "Uninformed" quotes the middle of the range
+whatever the card, and the equilibrium beats it too: the card is worth
+something, as long as the quote does not give it away. Without a hidden card
+the two often tie exactly: on a six-card deck they agree at widths 1, 2 and 4
+to 6, and differ only at width 0 (a loss of 1.1667 against 1.2000) and width 3
+(0.1574 against 0.1667).
+
+![Maker's loss against quoted width](docs/market-width.svg)
+
+```
+$ cfr-solver market-width --cards 10 --hidden 1 --widths 10 -n 2000
+width  equilibrium    revealing   uninformed
+    0      -1.9202      -2.1611      -1.9667
+    1      -1.4603      -1.6944      -1.5056
+    2      -1.0558      -1.2750      -1.1000
+    3      -0.7263      -0.9250      -0.7556
+    4      -0.4408      -0.6167      -0.4889
+    5      -0.2318      -0.3861      -0.2722
+    6      -0.0870      -0.2056      -0.1222
+    7       0.0000      -0.0806      -0.0500
+    8       0.0000      -0.0194      -0.0000
+    9       0.0000      -0.0000      -0.0000
+   10       0.0000      -0.0000      -0.0000
+```
+
+The equilibrium maker breaks even from a width of 7, one tick before the
+uninformed one and two before the revealing one. Since the taker can always
+pass, the maker's value is never positive here; the width is the price of the
+taker's information. With `-n 0` the sweep solves the LP exactly instead: the
+six-card numbers above are exact, but on eight cards with a hidden card the LP
+handled widths 0 to 2 in seconds and then ran for more than nine minutes on
+width 3 without finishing, so the larger sweeps use DCFR, whose NashConv after
+2,000 iterations is below 1e-5.
 
 ## Tuning discounted CFR
 
@@ -1578,6 +1768,18 @@ The tests check against numbers that come from outside this code:
   and B possible bids), roll
   probabilities, bid truth with and without wilds, and game values from an
   independent sequence-form LP, including -7/258 for the standard game.
+- Auctions: payoffs and best-response gains against an explicit game tree
+  built separately (24 rule, tie and reserve combinations, random profiles),
+  the fast solver matching the full-tree n-player CFR iterate for iterate,
+  Rasooly and Gavidia-Calderon's Propositions 2 and 3 by exhaustive search in
+  rationals, truthful bidding as an exact second-price equilibrium, E[min of
+  two values] as exact revenue, 1/3 and Myerson's 5/12 from the continuous
+  formula, which is itself checked against a Simpson integral, and the
+  3 sqrt(2) - 4 mix to 1e-9.
+- Market game: terminal and infoset counts in closed form, payoffs and infoset
+  keys along hand-picked paths, the revealing maker's 2/3 loss derived by
+  hand, a wide enough market worth exactly 0, and the exact LP value inside
+  the DCFR best-response bracket with an exact gap of 0.
 - Three or more players: the n-player solver run on two-player Kuhn and
   Leduc (built both natively and through `Multi.Of_game`) reproduces the
   two-player solver's strategies to 1e-11 under all four variants; three-player
