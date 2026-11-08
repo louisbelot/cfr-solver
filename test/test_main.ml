@@ -36,4 +36,5 @@ let () =
       ("parallel", Test_parallel.tests);
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
+      ("bigint", Test_bigint.tests);
     ]
