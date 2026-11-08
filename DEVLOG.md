@@ -1720,3 +1720,64 @@ Checks:
 Next: a sparse LU for the exact LP (the market game and Leduc are both
 limited by the dense tableau), then team play in three-player Kuhn and
 Figgie's rules engine.
+
+## 2026-11-08: Figgie rules engine and bots
+
+Built:
+
+- `lib/figgie.ml`: the 12 decks, goal suit, deal, settlement with split
+  bonuses, an exact posterior over decks from a dealt hand (optionally
+  conditioned on lower bounds for each suit), expected payout over the
+  hypergeometric split of the remaining goal cards among the other hands, and
+  marginal buy and sell values. The market keeps one best bid and offer per
+  suit, rejects quotes that do not improve, trades crossing quotes at the
+  resting price, and clears every quote after a trade. `play` runs a game in
+  ticks with a random order each tick.
+- `lib/figgie_bots.ml`: passive, zero-intelligence noise (random limit
+  price), fundamentalist, card-counting counter, bottom-feeder, and a
+  tournament that shuffles seats and reports mean profit and standard error.
+- `figgie`, `figgie-hand` and `figgie-edge` commands, docs/figgie-edge.svg.
+
+Design notes:
+
+- Buy values condition on the card existing outside the hand. The first
+  version did not, so with ten spades an eleventh came out at -1.96 (decks
+  where it cannot exist scored 0). Now the posterior is restricted to decks
+  consistent with the hand after the trade, and an impossible hand raises.
+- Card counting keeps, for each player, how many cards of each suit are known
+  to be there. A sale by a player with none known proves a new card, so the
+  seen counts are a lower bound on the deck that the posterior conditions on.
+  It ignores the softer evidence in which suits people choose to trade.
+- The bonus odds depend only on (cards held, goal cards outside, sorted other
+  hand sizes), so they are memoized in a per-domain table keyed by one int.
+  3,000 five-player games went from 60.7 s to 13.6 s with identical output.
+- The first noise trader lifted offers at any price, which made the counter's
+  profit grow without bound in its quote edge (+93 at edge 30). It now trades
+  only inside a random limit price, and the curve flattens near +31 by edge 20.
+
+Results (3,000 games unless noted):
+
+- fundamentalist, counter, bottom-feeder, noise: +15.15, +17.90, +14.21,
+  -47.26 (standard errors about 1).
+- Two counters against two fundamentalists: +1.34, +0.81 against -0.77,
+  -1.38.
+- Three counters and a passive player: the passive one loses 20.69 a game.
+- Edge sweep (1,500 games a point): counter +5.81 at edge 0, +31.28 at 20;
+  the fundamentalist falls from +22.94 to +3.42 as the counter stops giving it
+  quotes to pick off.
+
+Checks:
+
+- 14 new tests: deck structure, 198/204 for ten spades, uniform posterior for
+  an empty hand, seen bounds, posterior calibration against 40,000 deals,
+  the tie split from the official rules page, pot fully paid, a locked bonus
+  giving exact buy and sell values of 10 and 0, expected payout against
+  50,000 simulated deals, the average expected payout equal to the ante for
+  four and five players, order book rules step by step, conservation over 40
+  random games, the counter's lower bound over 40 random games, and the
+  fundamentalist beating three noise traders.
+- Mutants: three-way tie split (two tests fail), every sale counted as new
+  (tally bound fails).
+
+Next: an abstracted Figgie for n-player MCCFR (card-count beliefs, a few price
+levels), scored against these bots, then Goofspiel against published numbers.
