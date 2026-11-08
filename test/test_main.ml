@@ -27,6 +27,7 @@ let () =
       ("eval", Test_eval.tests);
       ("tree", Test_tree.tests);
       ("cfr", Test_cfr.tests);
+      ("dilated", Test_dilated.tests);
       ("mccfr", Test_mccfr.tests);
       ("weighting", Test_weighting.tests);
       ("rng", Test_rng.tests);
