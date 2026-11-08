@@ -1304,3 +1304,99 @@ Checks:
 Next: external-sampling MCCFR for n players, then a closer look at which
 equilibrium each algorithm picks in three-player Leduc, then the gift-scaling
 experiment on the river re-solver.
+
+## 2026-11-07: external sampling for n players, which equilibrium
+
+External-sampling MCCFR now runs on the n-player signature, NashConv is fast
+enough to measure four-player Leduc, and there is a first look at which
+equilibrium each method ends up in on three-player Leduc.
+
+What was built:
+
+- `Multi_tree`: the flat tree (`Leaf`, `Chance`, `Decision` with an infoset
+  index) and the infoset tables, pulled out of `Multi_cfr` so the sampler and
+  the best response can share it. `Multi_cfr` builds on it, unchanged
+  otherwise.
+- `Rng.pick`: sampling an action from a slice of a probability array, moved
+  out of `Mccfr` so both samplers use the same draw.
+- `Multi_mccfr`: one pass per player; the traverser enumerates their own
+  actions, chance and everyone else are sampled once. Current strategies are
+  refreshed lazily with a stamp per pass, regrets and averages live in flat
+  arrays, and weighting (linear/DCFR discounts every `interval` iterations)
+  works as in `Mccfr`. Three averaging rules: `Simple` (the two-player
+  opponent-node rule), `Weighted` (divided by the sampled reach of the
+  players who are neither traversing nor acting) and `Full` (an exact
+  own-reach pass after each iteration). `accumulate` runs one averaging pass
+  under a fixed profile with the regrets frozen, which is what the
+  unbiasedness test needs.
+- `Multi_br` rewritten over `Multi_tree`: one pass collects each responder
+  infoset's histories and outside reach, then infosets are resolved deepest
+  first (by the number of the responder's own decisions before them), each
+  subtree evaluated with the best actions below it already fixed. It also
+  exposes `values`, `gains` and `nash_conv` on a tree, so a solver's tree is
+  reused instead of built again.
+- `Multi_profile`: reach per infoset (total and own), a reach-weighted
+  total-variation distance per player, and the own-reach mix of several
+  profiles.
+- CLI: `multi-es` (NashConv against nodes touched for full-tree CFR/DCFR and
+  the sampled variants, mean over seeds, CSV and SVG) and `multi-select`
+  (end points of CFR+, DCFR and several sampled seeds: NashConv, values,
+  distances, mixes of the first k seeds). `leduc4` added to the game list.
+
+Design notes:
+
+- Why the two-player averaging rule is biased with three players: at a node
+  of player p visited on player i's pass, the visit probability is pi_c times
+  the reach of everyone but i. With two players that is pi_c pi_p, and pi_c
+  summed over the infoset is constant, so normalizing per infoset removes it.
+  With three, the third player's reach multiplies each iteration's
+  contribution by something that changes from one iteration to the next.
+  Dividing by it makes the estimate unbiased. It does not make it better in
+  practice (below).
+- Matching `Mccfr` bit for bit took the same tree order, the same stamp
+  scheme for refreshing strategies, the same RNG draws in the same order, and
+  the regret update written as v_a - v on the traverser's own payoff (equal to
+  sign * (v_a - v) on player 0's payoff exactly, since negation is exact).
+- `Full` averaging bumps the pass counter so the strategies it refreshes are
+  not reused after a discount changes the regrets.
+- Linear weighting in the sampler discounts every table entry, so doing it
+  every iteration costs about 17,000 operations on an iteration that visits
+  about 100 nodes. The comparison uses an interval of 1,000.
+
+Results (one core each, several runs in parallel):
+
+- Unbiasedness, three-player Kuhn with frozen regrets and two alternating
+  profiles, largest error against the exact mix: simple 0.053, 0.052, 0.046,
+  0.046 at 5k, 20k, 80k, 320k rounds; weighted 0.035, 0.010, 0.0064, 0.0025.
+- Eight-card three-player Leduc, 3e9 nodes, 3 seeds: DCFR 7.0e-4, ES simple
+  2.4e-2, weighted 2.7e-2, linear 2.8e-2, vanilla CFR 4.3e-2, full averaging
+  1.65. ES is ahead of DCFR until about 2e7 nodes.
+- Six-card three-player Leduc: every sampled variant except full averaging
+  between 0.16 and 0.24 from 1e8 nodes on, vanilla CFR 0.28 to 0.45, DCFR
+  9.2e-3.
+- Four-player Leduc (25.7M nodes, 127,980 infosets), 1e10 nodes: ES 1.25e-2,
+  weighted 1.32e-2, DCFR 5.4e-2 after 97 iterations. ES reaches DCFR's final
+  number at about 7e8 nodes. 14M nodes/s for ES against 21M for DCFR.
+- Best response: 1.17 s to 0.028 s on eight-card three-player Leduc, 204 s to
+  12.4 s on four-player Leduc, NashConv equal to 12 digits.
+- Which equilibrium (six-card, CFR+ and DCFR at 5,000 iterations, five seeds
+  at 3e9 nodes): CFR+ and DCFR are 0.12/0.16/0.07 apart; the seeds are 0.025
+  to 0.062 from each other, 0.03 to 0.08 from DCFR and 0.10 to 0.19 from
+  CFR+. Mixing the first k seeds: NashConv 0.187, 0.154, 0.135, 0.120, 0.117.
+
+Checks:
+
+- 239 tests. New: the sampler against `Mccfr` on Kuhn and Leduc (three
+  weightings, two averaging rules, exact equality); the averaging test above
+  with thresholds 0.025 (weighted), 1e-12 (full) and 0.03 (simple must stay
+  above it); only the traverser's strategy moves in a pass; seeds; every
+  averaging rule near the Szafron family after 20,000 iterations. The new best
+  response against the old one on random profiles (kuhn3, kuhn4, Leduc,
+  leduc3-6). Distance and mix properties, including the mix's values being
+  the mean.
+- Charts rendered and looked at: docs/es-kuhn3.svg, docs/es-leduc3.svg,
+  docs/es-leduc3-6.svg, docs/es-leduc4.svg.
+
+Next: team play in three-player Kuhn (two players sharing a payoff against
+the third), then a lazily expanded tree for n players so four-player Leduc
+does not need 5 GB, then the gift-scaling experiment on the river re-solver.
