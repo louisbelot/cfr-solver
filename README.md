@@ -6,8 +6,9 @@ hold'em and Liar's dice with four full-tree CFR variants (vanilla CFR, CFR+, lin
 discounted CFR) and two Monte Carlo ones (external and outcome sampling), runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
 strategy is from equilibrium with an exact best response. Kuhn and Leduc also
-come in three-player (or n-player) versions, where the full-tree variants run
-on a game signature with payoff vectors and progress is measured as NashConv.
+come in three-player (or n-player) versions, where the full-tree variants and
+external sampling run on a game signature with payoff vectors and progress is
+measured as NashConv.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -326,6 +327,202 @@ utility vector from every node. Moving to flat regret tables and per-depth
 buffers, the way `Cfr` already works, took two-player Leduc from 0.204 to
 0.055 ms an iteration (the two-player solver does 0.040) and eight-card
 three-player Leduc from 40.2 to 12.2 ms, with identical output.
+
+### External sampling with three or more players
+
+`Multi_mccfr` is external-sampling MCCFR on `Multi.S`, the way Lanctot
+describes it for n players: one pass per player, where the player traversing
+tries every action at their own decisions and everything else (chance and all
+the other players) is sampled once from the current strategy. The sampled
+counterfactual value of a terminal is just its payoff, so the regret update is
+the same as with two players. On a two-player game lifted with `Multi.Of_game`
+it reproduces `Mccfr` bit for bit: same nodes touched, same regrets, same
+average strategy, under vanilla weighting, DCFR every 10 iterations and linear
+weighting, on Kuhn and Leduc.
+
+The part that does not carry over is the average strategy. With two players,
+external sampling adds the current strategy at every opponent node it passes.
+A node of player p is reached with probability pi_c(h) pi_p(h) when the other
+player is the one traversing, and pi_c summed over an infoset is the same
+every iteration, so this is the reach-weighted average up to a constant per
+infoset. With three players the traverser's pass also samples the third
+player, and the visit probability picks up that player's reach as well. The
+average then weights each iteration by how likely a third party was to let the
+game get there, which has nothing to do with p. OpenSpiel's code says as much
+about its default ("does not compute the estimate as described by the
+(unbiased) stochastically-weighted averaging") and keeps it because it is
+faster and seems to work better. There are three options here:
+
+- `Simple`: add the current strategy at every non-traverser node (the
+  two-player rule, biased with three players).
+- `Weighted`: add it divided by the sampled reach of the players other than
+  the traverser and the owner. In expectation that is pi_p(I) sigma(I) times
+  the sum of pi_c over the infoset, the right weight.
+- `Full`: an exact walk of the whole tree after every iteration, weighting by
+  own reach, like OpenSpiel's `FULL`. Exact and no longer cheap.
+
+The test that tells them apart freezes the regrets and alternates two fixed,
+very different profiles A and B on three-player Kuhn, so the right answer is
+the own-reach-weighted mix of A and B, computed exactly. The largest error over
+all infosets, by number of rounds:
+
+| rounds  | simple | weighted |
+|--------:|-------:|---------:|
+| 5,000   | 0.053  | 0.035    |
+| 20,000  | 0.052  | 0.010    |
+| 80,000  | 0.046  | 0.0064   |
+| 320,000 | 0.046  | 0.0025   |
+
+The weighted error falls like one over the square root of the samples; the
+simple one settles at 0.046 and stays there. `Full` matches to 1e-12.
+
+Then whole runs, at equal nodes touched (every node a traversal visits or a
+full-tree pass walks), with full-tree vanilla CFR and DCFR for reference and
+three seeds averaged for each sampled run. `es-linear` is simple averaging
+with linear weighting applied every 1,000 iterations (discounting every table
+entry every iteration would cost far more than the traversal).
+
+```
+$ dune exec cfr-solver -- multi-es -g leduc3 -b 3000000000 --seeds 3
+leduc-3p: 3 players, mean of 3 seeds for the sampled runs
+
+nash conv of the average strategy
+ nodes touched          cfr         dcfr           es  es-weighted      es-full    es-linear
+     1.000e+05    1.261e+01    1.261e+01    6.458e+00    6.537e+00    1.276e+01    6.423e+00
+     1.000e+06    6.170e+00    9.884e+00    1.860e+00    1.914e+00    1.284e+01    1.573e+00
+     1.000e+07    1.298e+00    1.073e+00    3.579e-01    3.782e-01    1.211e+01    2.696e-01
+     1.000e+08    2.264e-01    2.173e-02    8.048e-02    8.595e-02    8.539e+00    7.058e-02
+     1.000e+09    6.701e-02    2.771e-03    3.035e-02    3.454e-02    2.949e+00    3.212e-02
+     3.000e+09    4.262e-02    7.009e-04    2.360e-02    2.693e-02    1.652e+00    2.766e-02
+
+                  cpu s  values (first seed)
+cfr               79.58  -0.083174 -0.009766 +0.092940
+dcfr              72.48  -0.094634 -0.008780 +0.103415
+es                94.47  -0.082719 -0.008722 +0.091442
+es-weighted      101.31  -0.082693 -0.008815 +0.091509
+es-full           32.13  -0.102767 -0.052449 +0.155216
+es-linear         95.05  -0.082806 -0.009035 +0.091841
+```
+
+(Only some checkpoints are shown.) External sampling is ahead until about 2e7
+nodes, and then DCFR passes it and keeps going: 7.0e-4 at 3e9 against 2.4e-2.
+Against vanilla CFR, which is what external sampling estimates, it stays about
+twice as good the whole way. The unbiased average loses to the biased one at
+every checkpoint, by up to 22 percent near the end (on the six-card deck it
+is 0 to 11 percent behind and finishes 2 percent ahead, inside the noise). Dividing by a reach that can be small
+makes some updates very large, and that variance costs more than the bias,
+which shrinks on its own as consecutive strategies get closer together. `Full`
+is hopeless when measured this way: every iteration pays for the whole tree to
+average a strategy that only moved along a few sampled paths. Linear weighting
+helps early and ends slightly behind plain averaging.
+
+![NashConv against nodes touched in eight-card three-player Leduc](docs/es-leduc3.svg)
+
+The six-card deck is the game where vanilla CFR stalls (Lu, Zhu and Zhao), and
+external sampling stalls with it:
+
+```
+$ dune exec cfr-solver -- multi-es -g leduc3-6 -b 3000000000 --seeds 3
+ nodes touched          cfr         dcfr           es  es-weighted      es-full    es-linear
+     1.000e+07    1.099e+00    3.332e-01    5.825e-01    6.404e-01    1.145e+01    5.170e-01
+     1.000e+08    4.521e-01    1.649e-02    2.061e-01    2.192e-01    5.747e+00    2.372e-01
+     1.000e+09    2.786e-01    1.098e-02    1.951e-01    1.962e-01    1.603e+00    2.286e-01
+     3.000e+09    3.238e-01    9.216e-03    1.910e-01    1.879e-01    9.453e-01    2.025e-01
+```
+
+From 1e8 nodes on, every sampled variant except `Full` sits between 0.16 and
+0.24 and full vanilla CFR wanders between 0.28 and 0.45. DCFR gets to 9.2e-3.
+So the stall belongs to plain regret matching in this game, not to sampling,
+and discounting is what gets past it.
+
+![NashConv against nodes touched in six-card three-player Leduc](docs/es-leduc3-6.svg)
+
+Four players is where sampling pays for itself. `leduc4` (ten cards, five
+ranks in two suits) has 25.7 million nodes and 127,980 infosets; one DCFR
+iteration touches 1e8 nodes and takes about 5 s, while an external-sampling
+iteration touches 159 on average.
+
+```
+$ dune exec cfr-solver -- multi-es -g leduc4 -r dcfr,es,es-weighted -b 10000000000 --start 100000000
+leduc-4p: 4 players, mean of 1 seed for the sampled runs
+
+nash conv of the average strategy
+ nodes touched         dcfr           es  es-weighted
+     1.000e+08    2.231e+01    2.412e-01    2.449e-01
+     1.000e+09    2.654e+00    4.078e-02    4.649e-02
+     3.162e+09    4.321e-01    2.251e-02    2.833e-02
+     1.000e+10    5.402e-02    1.253e-02    1.320e-02
+
+                  cpu s  values (first seed)
+dcfr             469.52  -0.094921 -0.066970 +0.020163 +0.141728
+es               697.47  -0.093973 -0.065417 +0.017150 +0.142241
+es-weighted      738.25  -0.093793 -0.065385 +0.016903 +0.142276
+```
+
+External sampling gets to DCFR's final 5.4e-2 at about 7e8 nodes, fourteen
+times fewer, and is still ahead at 1e10, when DCFR has done 97 iterations.
+Per node it is slower (14 million nodes a second against 21 million, since
+sampled paths jump around a tree of several gigabytes), so in CPU time the
+gap is about ten times rather than fourteen. The values agree to about 3e-3.
+The process sat at about 4.8 GB.
+
+![NashConv against nodes touched in four-player Leduc](docs/es-leduc4.svg)
+
+Measuring NashConv on a 25.7-million-node game needed a faster best response.
+`Multi_br` used to walk the game through `G.node`, look up every strategy by
+string key, and pick the best action of an infoset by evaluating the subtrees
+under it, which then got evaluated again on the way back up. It now works on
+the same flat tree as the solvers. One pass collects, for each of the
+responder's infosets, the histories in it and the reach of everyone else. The
+infosets are then sorted by how many of the responder's own decisions come
+before them, deepest first, so that by the time an infoset picks its action
+every decision of the responder below it is already made. Perfect recall is
+what makes that order well defined. Same NashConv to twelve digits; eight-card
+three-player Leduc went from 1.17 s to 0.028 s and four-player Leduc from
+204 s to 12.4 s. The old version is kept in the tests as a reference and the
+two are compared on random profiles.
+
+### Which equilibrium
+
+On the six-card deck CFR+ and DCFR end at different approximate equilibria.
+`multi-select` runs both for a number of iterations and external sampling
+(weighted averaging) with several seeds, then compares the end points with a
+reach-weighted distance: for each player, the total variation between the two
+strategies at each infoset, weighted by how often the infoset is reached under
+either profile. It also builds the mix of the seeds. `Multi_profile.mix`
+averages each player's strategies weighted by that player's own reach, which
+plays exactly like picking one of the profiles at random for that player (the
+test checks that the values come out as the mean).
+
+```
+$ dune exec cfr-solver -- multi-select -g leduc3-6 -n 5000 -b 3000000000 --seeds 5
+          nash conv  values
+cfr+      1.286e-03  -0.0009 -0.1943 +0.1952
+dcfr      1.092e-02  -0.0518 -0.0231 +0.0749
+es1       1.866e-01  -0.0930 -0.0116 +0.1047
+es2       1.915e-01  -0.0648 +0.0396 +0.0251
+es3       1.858e-01  -0.0718 -0.0135 +0.0852
+es4       1.411e-01  -0.0719 +0.0089 +0.0630
+es5       1.677e-01  -0.0853 +0.0087 +0.0766
+es-mix    1.165e-01  -0.0779 +0.0063 +0.0716
+
+nash conv of the mix of the first k seeds
+  1  1.866e-01  -0.0930 -0.0116 +0.1047
+  2  1.542e-01  -0.0790 +0.0138 +0.0652
+  3  1.347e-01  -0.0771 +0.0053 +0.0718
+  4  1.197e-01  -0.0760 +0.0061 +0.0698
+  5  1.165e-01  -0.0779 +0.0063 +0.0716
+```
+
+The distances between CFR+ and DCFR are 0.12, 0.16 and 0.07 for the three
+players. The sampled seeds are 0.025 to 0.062 from each other, 0.03 to 0.08
+from DCFR and 0.10 to 0.19 from CFR+. So the seeds land in the same region as DCFR,
+where the second player loses about 0.02 a hand, and not in CFR+'s, where they
+lose 0.19. Mixing the seeds brings NashConv down from 0.19 to 0.12, and the
+mix is 0.014 to 0.040 from the seeds, roughly half their distance from each
+other, which is what noise around a single point looks like. With three players a mix of equilibria
+is not in general an equilibrium, so this only says that the seeds have not
+split between different ones. CFR+ is the odd one out.
 
 ## Convergence
 
@@ -1163,6 +1360,22 @@ The tests check against numbers that come from outside this code:
   16 pure strategies per card (qcheck, 40 random profiles); and DCFR lands in
   the Szafron et al. equilibrium family (second player at -1/48, beta in
   [0, 1], no opening bets) in 2,000 iterations.
+- External sampling for n players: on two-player Kuhn and Leduc it matches
+  `Mccfr` exactly (nodes touched and every probability) under three
+  weightings and both sampled averaging rules; with frozen regrets and two
+  alternating profiles on three-player Kuhn, `Weighted` averaging comes within
+  0.025 of the exact own-reach mix after 40,000 rounds, `Full` within 1e-12,
+  and `Simple` stays more than 0.03 away; a pass only moves the traverser's
+  strategy; runs are reproducible by seed; and every averaging rule lands near
+  the Szafron family (second player within 0.01 of -1/48).
+- The array best response against the old one (kept in
+  `test/multi_br_ref.ml`) on random profiles with zeros in them, on three- and
+  four-player Kuhn, Leduc and six-card three-player Leduc: values and gains to
+  1e-12, and the strategy it returns earns what it claims.
+- `Multi_profile`: the distance is zero to itself, symmetric and inside
+  (0, 1) for different profiles; mixing two profiles that differ for one
+  player gives exactly the mean of their values; mixing a profile with itself
+  gives it back.
 - Every CFR variant against a slow reference implementation in
   `test/reference_cfr.ml`, written separately: it enumerates histories with
   their reach probabilities instead of carrying them in one walk, evaluates
