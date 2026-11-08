@@ -7,4 +7,9 @@ type result =
   | Unbounded
 
 val maximize :
-  ?bland:bool -> vars:int -> (int * Rat.t) list -> row list -> result
+  ?bland:bool ->
+  ?warm:bool ->
+  vars:int ->
+  (int * Rat.t) list ->
+  row list ->
+  result

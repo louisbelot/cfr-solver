@@ -9,8 +9,8 @@ let i = Rat.of_int
 let rat = Alcotest.testable Rat.pp Rat.equal
 let row coeffs rel rhs = { Lp.coeffs; rel; rhs }
 
-let optimum ?bland ~vars obj rows =
-  match Lp.maximize ?bland ~vars obj rows with
+let optimum ?bland ?warm ~vars obj rows =
+  match Lp.maximize ?bland ?warm ~vars obj rows with
   | Lp.Optimal { value; x; _ } -> (value, x)
   | Infeasible -> Alcotest.fail "infeasible"
   | Unbounded -> Alcotest.fail "unbounded"
@@ -64,9 +64,9 @@ let phase_one () =
     (optimum ~vars:1 [ (0, i 1) ] [ row [ (0, i (-1)) ] Ge (i (-3)) ])
     (i 3)
 
-let beale bland () =
+let beale bland warm () =
   let value, x =
-    optimum ~bland ~vars:4
+    optimum ~bland ~warm ~vars:4
       [ (0, q 3 4); (1, i (-20)); (2, q 1 2); (3, i (-6)) ]
       [
         row [ (0, q 1 4); (1, i (-8)); (2, i (-1)); (3, i 9) ] Le (i 0);
@@ -144,22 +144,24 @@ let random_2d () =
   in
   prop ~count:300 "matches vertex enumeration" gen (fun (rows, obj) ->
       let rows = ((1, 0), 10) :: ((0, 1), 10) :: rows in
-      let value =
+      let solve warm =
         fst
-          (optimum ~vars:2
+          (optimum ~warm ~vars:2
              [ (0, i (fst obj)); (1, i (snd obj)) ]
              (List.map
                 (fun ((a, b), c) -> row [ (0, i a); (1, i b) ] Le (i c))
                 rows))
       in
-      Rat.equal value (vertices rows obj))
+      let value = solve true in
+      Rat.equal value (solve false) && Rat.equal value (vertices rows obj))
 
 let tests =
   [
     Alcotest.test_case "wyndor" `Quick wyndor;
     Alcotest.test_case "phase one" `Quick phase_one;
-    Alcotest.test_case "beale, bland" `Quick (beale true);
-    Alcotest.test_case "beale, dantzig" `Quick (beale false);
+    Alcotest.test_case "beale, bland" `Quick (beale true false);
+    Alcotest.test_case "beale, dantzig" `Quick (beale false false);
+    Alcotest.test_case "beale, warm start" `Quick (beale false true);
     Alcotest.test_case "infeasible and unbounded" `Quick failures;
     random_2d ();
   ]

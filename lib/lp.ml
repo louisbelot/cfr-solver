@@ -26,6 +26,25 @@ module Exact = struct
   let of_rat = Fun.id
 end
 
+module Approx = struct
+  type t = float
+
+  let eps = 1e-9
+  let zero = 0.
+  let one = 1.
+  let of_rat = Rat.to_float
+  let add = ( +. )
+
+  let sub a b =
+    let d = a -. b in
+    if Float.abs d < eps then 0. else d
+
+  let mul = ( *. )
+  let div = ( /. )
+  let sign x = if x > eps then 1 else if x < -.eps then -1 else 0
+  let compare = Float.compare
+end
+
 module Simplex (F : FIELD) = struct
   type t = {
     rows : F.t array array;
@@ -100,10 +119,11 @@ module Simplex (F : FIELD) = struct
       t.rows;
     (!best, !ratio)
 
-  let run t ~bland ~allowed =
+  let run ?(limit = max_int) t ~bland ~allowed =
     let rec loop stall =
       let s = entering t ~bland:(bland || stall > 50) ~allowed in
       if s < 0 then `Optimal
+      else if t.pivots >= limit then `Stopped
       else
         let r, ratio = leaving t s in
         if r < 0 then `Unbounded
@@ -172,9 +192,11 @@ module Simplex (F : FIELD) = struct
     in
     (t, first_art)
 
-  let phase1 t ~bland ~first_art =
+  let phase1 ?limit t ~bland ~first_art =
     price t (fun j -> if j >= first_art then F.sub F.zero F.one else F.zero);
-    run t ~bland ~allowed:t.cols = `Optimal && F.sign (rhs t t.obj) >= 0
+    run ?limit t ~bland ~allowed:t.cols = `Optimal && F.sign (rhs t t.obj) >= 0
+
+  let primal t = Array.for_all (fun r -> F.sign (rhs t r) >= 0) t.rows
 
   let expel t ~first_art =
     Array.iteri
@@ -187,12 +209,30 @@ module Simplex (F : FIELD) = struct
           find 0)
       t.rows
 
-  let phase2 t ~bland ~first_art cost =
+  let phase2 ?limit t ~bland ~first_art cost =
     expel t ~first_art;
     price t (fun j -> if j < first_art then cost j else F.zero);
-    run t ~bland ~allowed:first_art
+    run ?limit t ~bland ~allowed:first_art
+
+  let install t target =
+    let wanted = Hashtbl.create 64 in
+    List.iter (fun j -> Hashtbl.replace wanted j ()) target;
+    List.iter
+      (fun j ->
+        if not (Array.exists (( = ) j) t.basis) then
+          let rec find i =
+            if i < Array.length t.rows then
+              if
+                (not (Hashtbl.mem wanted t.basis.(i)))
+                && not (zero t.rows.(i).(j))
+              then pivot t i j
+              else find (i + 1)
+          in
+          find 0)
+      target
 end
 
+module A = Simplex (Approx)
 module E = Simplex (Exact)
 
 let flip = function Le -> Ge | Ge -> Le | Eq -> Eq
@@ -210,9 +250,18 @@ let normalize rows =
     rows
   |> Array.of_list
 
+let float_basis ~bland ~vars c rows =
+  let t, first_art = A.setup ~vars rows in
+  let limit = 20 * (Array.length rows + t.cols) in
+  if not (A.phase1 ~limit t ~bland ~first_art) then None
+  else
+    match A.phase2 ~limit t ~bland ~first_art (fun j -> Rat.to_float c.(j)) with
+    | `Optimal -> Some (Array.to_list t.basis)
+    | `Unbounded | `Stopped -> None
+
 let finish ~bland ~vars ~first_art c t =
   match E.phase2 t ~bland ~first_art (fun j -> c.(j)) with
-  | `Unbounded -> Unbounded
+  | `Unbounded | `Stopped -> Unbounded
   | `Optimal ->
       let x = Array.make vars Rat.zero in
       Array.iteri
@@ -220,7 +269,7 @@ let finish ~bland ~vars ~first_art c t =
         t.basis;
       Optimal { value = E.rhs t t.obj; x; pivots = t.pivots }
 
-let maximize ?(bland = false) ~vars objective rows =
+let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
   let rows = normalize rows in
   let t, first_art = E.setup ~vars rows in
   let c = Array.make first_art Rat.zero in
@@ -229,5 +278,12 @@ let maximize ?(bland = false) ~vars objective rows =
       if j < 0 || j >= vars then invalid_arg "Lp.maximize: variable";
       c.(j) <- Rat.add c.(j) v)
     objective;
+  let t =
+    match if warm then float_basis ~bland ~vars c rows else None with
+    | Some basis ->
+        E.install t basis;
+        if E.primal t then t else fst (E.setup ~vars rows)
+    | None -> t
+  in
   if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art c t
   else Infeasible
