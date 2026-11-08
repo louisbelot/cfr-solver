@@ -964,4 +964,4 @@ let () =
              scale_cmd;
              sweep_cmd;
            ]
-          @ Holdem.cmds @ Multiplayer.cmds)))
+          @ Holdem.cmds @ Multiplayer.cmds @ Exact.cmds)))
