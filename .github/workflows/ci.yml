@@ -47,6 +47,13 @@ jobs:
           opam exec -- dune exec cfr-solver -- subgame --board "Qs Jh 8d 5c" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, KQ, QJs" --pot 4 --limit 1 -n 20
           opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --single
           opam exec -- dune exec cfr-solver -- subgame --board "Ks 9s 5s 2s" --oop "TT+, AQ+, KQs" --ip "88+, AJ+, QJs" --pot 4 --limit 1 -n 20 --no-iso
+          opam exec -- dune exec cfr-solver -- auction --top 10 --void -n 500 --exact
+          opam exec -- dune exec cfr-solver -- auction --rule allpay --bidders 3 --top 6 --symmetric -n 500
+          opam exec -- dune exec cfr-solver -- auction-bids --top 20 -n 200 --csv bids.csv --svg bids.svg
+          opam exec -- dune exec cfr-solver -- auction-reserve --top 10 --step 5 -n 200 --csv res.csv --svg res.svg
+          opam exec -- dune exec cfr-solver -- market --cards 4 --width 1
+          opam exec -- dune exec cfr-solver -- market --cards 4 --width 1 --rounds 2 -n 100
+          opam exec -- dune exec cfr-solver -- market-width --cards 5 --widths 4 --csv mw.csv --svg mw.svg
           opam exec -- dune exec cfr-solver -- buckets --board "Qs Jh 8d 5c" --oop "TT+, AQ+" --ip "88+, AJ+" --pot 4 --limit 1 -n 20 --sizes 2,8 --csv b.csv --svg b.svg
           opam exec -- dune exec cfr-solver -- buckets --board "Qs Jh 8s 5c" --oop "TT+, AQ+" --ip "88+, AJ+" --pot 4 --limit 1 -n 20 --sizes 2,8 --features ehs2,hist20,emd,pot4 --turn-only
           opam exec -- dune exec cfr-solver -- resolve --board "Qs Jh 8d 5c" --oop "TT+, AQ+" --ip "88+, AJ+" --pot 4 --limit 1 --blueprint 5,20 -n 20 --csv r.csv --svg r.svg
