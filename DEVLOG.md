@@ -1516,3 +1516,115 @@ Checks:
 Next: the exact sequence-form LP once rationals are available (or a small
 exact rational type), then team play in three-player Kuhn and the lazily
 expanded n-player tree.
+
+## 2026-11-08: exact equilibria from the sequence-form LP
+
+The solvers measure their distance from equilibrium with a float best
+response, and on Kuhn the best ones reach 1e-15, right where doubles run out.
+This entry adds an exact solver to answer two questions: what is each game's
+value as a fraction, and how far is a CFR strategy really from equilibrium
+once rounding is out of the picture.
+
+What was built:
+
+- `Bigint`: arbitrary-precision integers with no dependency. Sign-magnitude
+  with 30-bit limbs (14 bits on a 31-bit OCaml, so js_of_ocaml stays possible),
+  schoolbook multiplication, Knuth's algorithm D for division, Euclid for gcd.
+  Numbers below 2^60 live in a single machine word and only spill into limbs
+  when an operation overflows. `Bigint.Make` takes the limb width, which is how
+  the tests run everything again with 3-bit limbs: algorithm D's rare add-back
+  step happens in roughly one division out of 2^29 with real limbs and all the
+  time with tiny ones.
+- `Rat`: fractions in lowest terms. Addition and multiplication cancel common
+  factors first (Knuth 4.5.1), so the gcds stay small. `of_float` is exact
+  (a double is a binary fraction); `recover` turns a chance probability such as
+  0.1666... back into 1/6 by continued fractions.
+- `Lp`: a dense tableau simplex, two-phase with artificials, written once as a
+  functor over the number field and instantiated with rationals and with
+  doubles. Dantzig's rule with a lexicographic ratio test on the rows of the
+  basis inverse, and Bland's rule during long degenerate stalls. The float
+  run comes first; its final basis is pivoted into the exact tableau (columns
+  that cannot be pivoted in are skipped), and if that basis is primal feasible
+  the exact simplex continues from it, otherwise it starts cold.
+- `Sequence_form`: builds the realization-plan constraints and the sparse
+  payoff matrix from any `Game.S` (checking perfect recall and that every
+  chance node's recovered probabilities sum to exactly one), solves
+  max_x min_y and max_y min_x as two LPs and fails if their values differ.
+  It also converts any float strategy to exact realization plans and computes
+  exact best responses by a backward pass over each player's treeplex.
+- CLI: `cfr-solver exact -g GAME [--cold] [-n N --csv --svg]`. With `-n` it
+  runs CFR, CFR+, DCFR, PCFR+ and PDCFR+ and prints float against exact
+  exploitability at each checkpoint.
+
+Design notes:
+
+- Zarith would have been the obvious choice, but it does not install on this
+  Windows switch (its pkg-config dependency fails). An own bignum also keeps
+  C stubs out of the browser build later.
+- The first version used Dantzig with a switch to Bland's rule for good after
+  50 degenerate pivots. Leduc ran past 16,500 pivots in 100 s without
+  finishing. Switching back to Dantzig after each nondegenerate pivot did not
+  help (14,800 pivots, still going). The lexicographic ratio test was the fix
+  for pivot count: Leduc with two ranks went from 834 + 876 pivots to
+  376 + 342 cold.
+- A pure float simplex cycled on these LPs until its ratio-test noise was
+  cleaned (anything under 1e-9 is set to zero) and its pivot count capped at
+  20 times rows plus columns. A tolerance-aware compare in the float ratio test
+  made it worse (it never finished phase one), so ties are broken on raw
+  doubles.
+- The small-integer fast path made Leduc with two ranks six times faster
+  (3.8 s to 0.6 s, before the pivot changes).
+
+Results (all values checked against the published tables in the tests):
+
+- Kuhn: -1/18, 16 + 16 pivots. Leduc with two ranks: exactly 0, 163 + 166
+  pivots, 0.03 s.
+- Leduc: -1454920850547486749701863871533/16995463438839962469905132501930
+  = -0.085606424319, 358 + 362 pivots in 21 s. Cold, it did not finish in 15
+  minutes.
+- Liar's dice: 1x2 0 and 1/2 (wild), 1x3 -1/9 and 1/9, 1x4 -1/8 and 1/16,
+  2x2 1/8 and 7/8, the same fractions as the published LP values the existing
+  tests quote. All but 1x4 wild solve in under half a second. On 1x4 wild the
+  float pass takes 49,477 pivots and ends on a basis with 126 negative rows in
+  exact arithmetic, so the exact solve starts cold: 2538 + 909 pivots, 52 s.
+- On every other game the float basis was already exactly optimal: the exact
+  simplex made no pivots beyond installing it.
+- True gap on Kuhn (docs/exact-kuhn.svg): float and exact best responses agree
+  to three digits down to about 1e-13. PDCFR+ at 10,000 iterations is 2.36e-16
+  by the float best response and 1.88e-16 exactly. From 5,000 to a million
+  iterations PDCFR+ wanders between 5.3e-17 and 7.5e-16 exactly, and PCFR+
+  flattens between 7.5e-16 and 2.9e-15 after 200,000. The floor belongs to the
+  float-averaged strategy, not to the best response measuring it.
+
+Checks:
+
+- 289 tests (full suite 218 s). New: bigint against native ints, the division
+  identity and remainder bound for 60-digit numbers with 30-bit and 3-bit
+  limbs, the two limb widths agreeing on products, quotients and gcds, gcd
+  properties, 30! and 2^100. Rationals: field laws and lowest terms against
+  the naive formulas, float round trips over the whole exponent range
+  (subnormals included), continued-fraction recovery. Simplex: Wyndor, a
+  phase-one problem, equality and redundant rows, negative right-hand sides,
+  Beale's cycling example under Bland, Dantzig and the warm start,
+  infeasible and unbounded, and 300 random 2D LPs against vertex enumeration
+  in exact arithmetic, warm and cold. Sequence form: Kuhn sizes, -1/18 and an
+  LP equilibrium inside the alpha family, exact best responses equal to the
+  float ones on random strategies (Kuhn and Leduc with two ranks), weights
+  normalized exactly, CFR+'s value within its NashConv of the LP value, the
+  Liar's dice fractions, warm and cold agreeing, Leduc's -0.085606 (slow),
+  1x4 wild (slow), and rejection of imperfect recall and bad chance nodes.
+- Mutants: algorithm D without the add-back (4 failures) or without the qhat
+  correction (6), the Knuth addition shortcut dividing the wrong denominator
+  (2), the wrong sign on child infosets in the dual constraints (5), min
+  instead of max in the best response (7). Removing the lexicographic tie-break
+  or the primal check after the warm start fails nothing: both affect speed or
+  guard a rare float failure, and the final answer is certified by the exact
+  NashConv anyway.
+- Every commit was built and its new tests run on its own.
+- Chart rendered and looked at: docs/exact-kuhn.svg.
+
+Next: team play in three-player Kuhn and the lazily expanded n-player tree.
+The exact solver opens two follow-ups: a sparse LU in place of the dense
+tableau (Leduc's 21 s has not been profiled yet, but its exact entries reach
+30-digit fractions), and
+exact values for the turn and river subgames once they fit.
