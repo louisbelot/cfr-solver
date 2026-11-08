@@ -965,4 +965,4 @@ let () =
              sweep_cmd;
            ]
           @ Holdem.cmds @ Multiplayer.cmds @ Exact.cmds @ Auctions.cmds
-          @ Markets.cmds)))
+          @ Markets.cmds @ Trading.cmds)))

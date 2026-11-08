@@ -278,7 +278,9 @@ type curve = {
 }
 
 let nice span =
-  List.find (fun s -> span /. s <= 8.) [ 0.05; 0.1; 0.2; 0.25; 0.5; 1.; 2. ]
+  List.find
+    (fun s -> span /. s <= 8.)
+    [ 0.05; 0.1; 0.2; 0.25; 0.5; 1.; 2.; 5.; 10.; 20. ]
 
 let lines ~title ~xlabel ~ylabel ~note curves =
   let all = List.concat_map (fun c -> c.xy) curves in
