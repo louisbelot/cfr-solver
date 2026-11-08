@@ -37,4 +37,5 @@ let () =
       ("best response", Test_best_response.tests);
       ("json", Test_json.tests);
       ("bigint", Test_bigint.tests);
+      ("rat", Test_rat.tests);
     ]
