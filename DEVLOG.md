@@ -1396,6 +1396,11 @@ Checks:
   the mean.
 - Charts rendered and looked at: docs/es-kuhn3.svg, docs/es-leduc3.svg,
   docs/es-leduc3-6.svg, docs/es-leduc4.svg.
+- CI caught a race: the best response first kept its tree in a `lazy`, and
+  the `abstract` command evaluates exploitability from two domains at once.
+  Forcing a lazy value from two domains raises `CamlinternalLazy.Undefined`
+  in OCaml 5. The tree is now built when the functor is applied; after that
+  it is only read, and each call allocates its own scratch arrays.
 
 Next: team play in three-player Kuhn (two players sharing a payoff against
 the third), then a lazily expanded tree for n players so four-player Leduc
