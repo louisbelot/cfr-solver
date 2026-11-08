@@ -7,7 +7,10 @@ linear CFR, discounted CFR, DCFR+, and the predictive PCFR+ and PDCFR+), two
 Monte Carlo ones (external and outcome sampling) and optimistic FTRL on the
 sequence form as a baseline that is not CFR, runs
 the Monte Carlo ones in parallel on OCaml 5 domains, and measures how far any
-strategy is from equilibrium with an exact best response. Kuhn and Leduc also
+strategy is from equilibrium with an exact best response. For games up to
+Leduc's size it also solves the sequence-form linear program in exact rational
+arithmetic (its own bignums and simplex), so the game value comes out as a
+fraction and a solver's gap can be measured with no rounding. Kuhn and Leduc also
 come in three-player (or n-player) versions, where the full-tree variants and
 external sampling run on a game signature with payoff vectors and progress is
 measured as NashConv.
@@ -666,6 +669,73 @@ from equilibrium after the work of 5,000 CFR+ iterations (10,000 of its own,
 since it updates both players in one pass), while plain FTRL with the same
 step is still 0.25 away. Farina et al. use per-infoset weights on the regularizer
 to get their convergence bounds, which this version leaves out.
+
+## Exact equilibria
+
+`cfr-solver exact` writes the sequence-form linear program (Koller, Megiddo
+and von Stengel 1996) for each player and solves it with a simplex in exact
+rational arithmetic. There is no GMP dependency: `Bigint` is sign-magnitude
+with 30-bit limbs (Knuth's algorithm D for division) and a fast path for
+numbers that fit in one machine word, and `Rat` keeps fractions in lowest terms
+with the gcd tricks from Knuth 4.5.1. The two LPs, max over x of min over y and
+the reverse, must give the same value exactly, and the solver fails loudly if
+they don't.
+
+```
+$ cfr-solver exact -g leduc
+leduc: 337 + 337 sequences, 144 + 144 infosets, 966 payoff entries (0.00s)
+exact LP: 358 + 362 pivots, 21.12s
+value      -1454920850547486749701863871533/16995463438839962469905132501930
+           = -0.085606424319
+nash conv  0
+```
+
+That is the -0.085606 usually quoted for Leduc. The small Liar's dice variants
+come out as the fractions in the published tables, and the test suite checks
+each one:
+
+| game | sequences per player | pivots | time | value |
+|---|---:|---:|---:|---:|
+| Kuhn | 13 | 16 + 16 | 0.00 s | -1/18 |
+| Leduc, 2 ranks | 155 | 163 + 166 | 0.03 s | 0 |
+| Liar's dice 1x2 | 31 | 38 + 39 | 0.00 s | 0 |
+| Liar's dice 1x2 wild | 31 | 36 + 36 | 0.00 s | 1/2 |
+| Liar's dice 1x3 | 190 | 187 + 180 | 0.02 s | -1/9 |
+| Liar's dice 1x3 wild | 190 | 197 + 193 | 0.03 s | 1/9 |
+| Liar's dice 1x4 | 1021 | 805 + 809 | 0.39 s | -1/8 |
+| Liar's dice 1x4 wild | 1021 | 2538 + 909 | 52.5 s | 1/16 |
+| Liar's dice 2x2 | 766 | 775 + 739 | 0.44 s | 1/8 |
+| Liar's dice 2x2 wild | 766 | 692 + 709 | 0.25 s | 7/8 |
+
+Two things make this fast enough. Sequence-form LPs are very degenerate (most
+right-hand sides are zero), and a plain Dantzig rule with a fallback to Bland's
+rule needed more than 15,000 pivots on Leduc without finishing. The ratio test
+now breaks ties lexicographically on the rows of the basis inverse, which
+cannot cycle, and Bland's rule only takes over during a long degenerate stall.
+Then the same simplex, written once as a functor over the number field, runs
+first in floating point. Its final basis is pivoted into the exact tableau and
+the exact simplex carries on from there. The float answer is only a starting
+point: the exact phases still check every reduced cost, so a bad float basis
+costs time, never correctness. On every game above except 1x4 wild the float
+basis was already exactly optimal and the exact simplex made no further
+pivots; on 1x4 wild the float pass ends on a basis that is infeasible in exact
+arithmetic, and the solver starts cold. Without the float start, Leduc did not
+finish in 15 minutes and Leduc with two ranks took 376 + 342 pivots.
+
+With the exact equilibrium in hand, `--iterations` runs CFR, CFR+, DCFR, PCFR+
+and PDCFR+ and evaluates each average strategy exactly: every infoset's float
+probabilities are read as exact binary fractions, normalized, and the best
+response is a backward pass over the treeplex in rationals.
+
+![Exact exploitability of CFR variants on Kuhn](docs/exact-kuhn.svg)
+
+Float and exact best responses agree to three digits down to about 1e-13. Below
+that they drift apart (PDCFR+ at 10,000 iterations: 2.36e-16 by the float best
+response, 1.88e-16 exactly), but the exact curve flattens in the same place.
+From 5,000 to a million iterations PDCFR+ wanders between 5.3e-17 and 7.5e-16
+exactly, and PCFR+ flattens between 7.5e-16 and 2.9e-15 after 200,000. The floor is
+in the strategy itself, which is accumulated and normalized in doubles, and
+not in the float best response that measures it.
 
 ## Tuning discounted CFR
 
