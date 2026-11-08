@@ -29,6 +29,8 @@ module Make (G : Game.S) = struct
         invalid_arg "Mccfr.create: epsilon must be in (0, 1]"
     | _ -> ());
     if interval < 1 then invalid_arg "Mccfr.create: interval must be positive";
+    if Cfr.predictive weighting then
+      invalid_arg "Mccfr.create: predictive weighting";
     let tree = Tree.build (module G) in
     let height, width = Tree.shape tree.root in
     {

@@ -27,6 +27,8 @@ module Make (G : Multi.S) = struct
 
   let create ?(seed = 1) ?(weighting = Cfr.Vanilla) ?(interval = 1)
       ?(averaging = Simple) () =
+    if Cfr.predictive weighting then
+      invalid_arg "Multi_mccfr.create: predictive weighting";
     if interval < 1 then
       invalid_arg "Multi_mccfr.create: interval must be positive";
     let tree = Multi_tree.build (module G) in

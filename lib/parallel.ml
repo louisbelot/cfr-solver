@@ -20,6 +20,8 @@ module Make (G : Game.S) = struct
       ?(mode = Shared) ?(pool = Pool.default ()) ~domains sampling =
     if domains < 1 then invalid_arg "Parallel.create: domains must be positive";
     if batch < 1 then invalid_arg "Parallel.create: batch must be positive";
+    if Cfr.predictive weighting then
+      invalid_arg "Parallel.create: predictive weighting";
     let first = M.create ~seed sampling and shared = mode = Shared in
     {
       mode;

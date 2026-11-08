@@ -16,7 +16,10 @@ val discount : t -> float * float * float -> unit
 val discount_range : t -> int -> int -> float * float * float -> unit
 val blit : src:t -> dst:t -> unit
 val refresh : t -> int -> int -> unit
+val refresh_predicted : t -> float array -> int -> int -> unit
 val average_strategy : t -> Strategy.t
 val current_strategy : t -> Strategy.t
+val predicted_strategy : t -> float array -> Strategy.t
 val regrets : t -> (string * float array) list
 val strategy_sums : t -> (string * float array) list
+val behavior : t -> Strategy.t

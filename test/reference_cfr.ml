@@ -2,19 +2,24 @@ open Cfr_solver
 
 type algorithm = {
   alternating : bool;
+  predictive : bool;
   pos : int -> float;
   neg : int -> float;
   avg : int -> float;
 }
 
 let ratio e t =
-  let x = float_of_int t ** e in
-  x /. (x +. 1.)
+  if e = infinity then 1.
+  else if e = neg_infinity then 0.
+  else
+    let x = float_of_int t ** e in
+    x /. (x +. 1.)
 
 let of_algorithm = function
   | Cfr.Vanilla ->
       {
         alternating = false;
+        predictive = false;
         pos = Fun.const 1.;
         neg = Fun.const 1.;
         avg = Fun.const 1.;
@@ -22,17 +27,33 @@ let of_algorithm = function
   | Plus ->
       {
         alternating = true;
+        predictive = false;
         pos = Fun.const 1.;
         neg = Fun.const 0.;
         avg = float_of_int;
       }
   | Linear ->
-      { alternating = true; pos = ratio 1.; neg = ratio 1.; avg = float_of_int }
+      {
+        alternating = true;
+        predictive = false;
+        pos = ratio 1.;
+        neg = ratio 1.;
+        avg = float_of_int;
+      }
   | Discounted { alpha; beta; gamma } ->
       {
         alternating = true;
+        predictive = false;
         pos = ratio alpha;
         neg = ratio beta;
+        avg = (fun t -> float_of_int t ** gamma);
+      }
+  | Predictive { alpha; gamma } ->
+      {
+        alternating = true;
+        predictive = true;
+        pos = ratio alpha;
+        neg = Fun.const 0.;
         avg = (fun t -> float_of_int t ** gamma);
       }
 
@@ -86,7 +107,7 @@ module Make (G : Game.S) = struct
     go G.root 1. 1.;
     !found
 
-  let update ~regrets ~sums alg sigma t p =
+  let update ~regrets ~pred ~sums alg sigma t p =
     let cfv = Hashtbl.create 16 and reach = Hashtbl.create 16 in
     List.iter
       (fun (key, children, own, others) ->
@@ -104,11 +125,18 @@ module Make (G : Game.S) = struct
         let probs = Strategy.probs sigma key ~n in
         let ev = ref 0. in
         Array.iteri (fun a qa -> ev := !ev +. (probs.(a) *. qa)) q;
-        let r = table regrets key n in
+        let r = table regrets key n and m = table pred key n in
         Array.iteri
           (fun a qa ->
-            let x = r.(a) +. qa -. !ev in
-            r.(a) <- (x *. if x > 0. then alg.pos t else alg.neg t))
+            let inst = qa -. !ev in
+            if alg.predictive then begin
+              let x = Float.max 0. ((r.(a) *. alg.pos (t - 1)) +. inst) in
+              r.(a) <- x;
+              m.(a) <- Float.max 0. ((x *. alg.pos t) +. inst)
+            end
+            else
+              let x = r.(a) +. inst in
+              r.(a) <- (x *. if x > 0. then alg.pos t else alg.neg t))
           q;
         let s = table sums key n in
         let own = Hashtbl.find reach key in
@@ -117,22 +145,34 @@ module Make (G : Game.S) = struct
           probs)
       cfv
 
-  let run algorithm iterations =
+  let solve algorithm iterations =
     let regrets = Hashtbl.create 16 and sums = Hashtbl.create 16 in
-    let update = update ~regrets ~sums in
+    let pred = Hashtbl.create 16 in
+    let update = update ~regrets ~pred ~sums in
     let alg = of_algorithm algorithm in
+    let current () = profile (if alg.predictive then pred else regrets) in
     for t = 1 to iterations do
       if alg.alternating then begin
-        update alg (profile regrets) t P0;
-        update alg (profile regrets) t P1
+        update alg (current ()) t P0;
+        update alg (current ()) t P1
       end
       else begin
-        let sigma = profile regrets in
+        let sigma = current () in
         update alg sigma t P0;
         update alg sigma t P1
       end
     done;
+    (sums, if alg.predictive then pred else regrets)
+
+  let run algorithm iterations =
     Hashtbl.fold
       (fun key s acc -> (key, Regret_matching.normalize s) :: acc)
-      sums []
+      (fst (solve algorithm iterations))
+      []
+
+  let current algorithm iterations =
+    Hashtbl.fold
+      (fun key r acc -> (key, Regret_matching.strategy r) :: acc)
+      (snd (solve algorithm iterations))
+      []
 end

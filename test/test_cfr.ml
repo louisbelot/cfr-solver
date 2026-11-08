@@ -53,7 +53,8 @@ let lands_in_equilibrium_family () =
 module R = Reference_cfr.Make (Kuhn)
 module B = Best_response.Make (Kuhn)
 
-let algorithms = Cfr.[ Vanilla; Plus; Linear; dcfr ]
+let algorithms =
+  Cfr.[ Vanilla; Plus; Linear; dcfr; dcfr_plus; pcfr_plus; pdcfr_plus ]
 
 let solve_with algorithm n =
   let t = C.create ~algorithm () in
@@ -85,6 +86,24 @@ let dcfr_matches_reference () =
           Array.for_all2 (fun x y -> Float.abs (x -. y) < 1e-10) expected got)
         (R.run algorithm 8))
 
+let random_predictive =
+  QCheck2.Gen.(
+    map2
+      (fun alpha gamma -> Cfr.Predictive { alpha; gamma })
+      (oneof [ float_range 0. 4.; pure infinity ])
+      (float_range 0. 6.))
+
+let predictive_matches_reference () =
+  QCheck2.Test.check_exn
+  @@ QCheck2.Test.make ~count:20 ~name:"predictive" random_predictive
+       (fun algorithm ->
+         let s = solve_with algorithm 12 in
+         List.for_all
+           (fun (key, expected) ->
+             let got = Strategy.probs s key ~n:(Array.length expected) in
+             Array.for_all2 (fun x y -> Float.abs (x -. y) < 1e-10) expected got)
+           (R.run algorithm 12))
+
 let every_algorithm_starts_uniform () =
   List.iter
     (fun algorithm ->
@@ -110,6 +129,62 @@ let variants_beat_vanilla () =
         Alcotest.failf "%s: %g vs vanilla %g" (Cfr.algorithm_name alg) x base)
     Cfr.[ Plus; Linear; dcfr ]
 
+let predictive_on_kuhn () =
+  let e alg = B.exploitability (solve_with alg 1000) in
+  let plus = e Plus and pcfr = e Cfr.pcfr_plus and pdcfr = e Cfr.pdcfr_plus in
+  if pcfr > 1e-6 || pcfr > plus /. 100. then
+    Alcotest.failf "pcfr+ %g, cfr+ %g" pcfr plus;
+  if pdcfr > 1e-9 then Alcotest.failf "pdcfr+ %g" pdcfr
+
+let predictive_last_iterate () =
+  let last alg =
+    let t = C.create ~algorithm:alg () in
+    C.run t 2000;
+    B.exploitability (C.current_strategy t)
+  in
+  let plus = last Plus and pcfr = last Cfr.pcfr_plus in
+  if pcfr > 1e-12 || plus < 1e-3 then
+    Alcotest.failf "pcfr+ last %g, cfr+ last %g" pcfr plus
+
+module CL = Cfr.Make (Leduc)
+module BL = Best_response.Make (Leduc)
+
+let pdcfr_overtakes_on_leduc () =
+  let e alg n =
+    let t = CL.create ~algorithm:alg () in
+    CL.run t n;
+    BL.exploitability (CL.average_strategy t)
+  in
+  let early = e Cfr.pdcfr_plus 1000 and dcfr_early = e Cfr.dcfr 1000 in
+  if early < dcfr_early then
+    Alcotest.failf "pdcfr+ %g already ahead of dcfr %g" early dcfr_early;
+  let late = e Cfr.pdcfr_plus 30_000 and dcfr_late = e Cfr.dcfr 30_000 in
+  if late > dcfr_late /. 10. then
+    Alcotest.failf "pdcfr+ %g, dcfr %g" late dcfr_late
+
+let samplers_reject_prediction () =
+  let module M = Mccfr.Make (Kuhn) in
+  let module P = Parallel.Make (Kuhn) in
+  let rejects name f =
+    match f () with
+    | () -> Alcotest.failf "%s accepted a predictive weighting" name
+    | exception Invalid_argument _ -> ()
+  in
+  rejects "mccfr" (fun () ->
+      ignore (M.create ~weighting:Cfr.pcfr_plus Mccfr.External));
+  rejects "parallel" (fun () ->
+      ignore (P.create ~weighting:Cfr.pdcfr_plus ~domains:1 Mccfr.External))
+
+let current_is_predicted () =
+  let t = C.create ~algorithm:Cfr.pcfr_plus () in
+  C.run t 7;
+  List.iter
+    (fun (key, expected) ->
+      Alcotest.(check (array (float 1e-12)))
+        key expected
+        (Strategy.probs (C.current_strategy t) key ~n:(Array.length expected)))
+    (R.current Cfr.pcfr_plus 7)
+
 let touched () =
   let after algorithm =
     let t = C.create ~algorithm () in
@@ -129,6 +204,8 @@ let tests =
   @ [
       Alcotest.test_case "random dcfr matches reference" `Quick
         dcfr_matches_reference;
+      Alcotest.test_case "random predictive matches reference" `Quick
+        predictive_matches_reference;
       Alcotest.test_case "first iteration is uniform" `Quick
         first_iteration_is_uniform;
       Alcotest.test_case "OpenSpiel two iterations" `Quick
@@ -138,6 +215,15 @@ let tests =
       Alcotest.test_case "variants start uniform" `Quick
         every_algorithm_starts_uniform;
       Alcotest.test_case "OpenSpiel CFR+" `Quick openspiel_cfr_plus;
+      Alcotest.test_case "predictive on kuhn" `Quick predictive_on_kuhn;
+      Alcotest.test_case "predictive last iterate" `Quick
+        predictive_last_iterate;
+      Alcotest.test_case "pdcfr+ overtakes dcfr on leduc" `Slow
+        pdcfr_overtakes_on_leduc;
+      Alcotest.test_case "samplers reject prediction" `Quick
+        samplers_reject_prediction;
+      Alcotest.test_case "current strategy is predicted" `Quick
+        current_is_predicted;
       Alcotest.test_case "variants beat vanilla" `Quick variants_beat_vanilla;
       Alcotest.test_case "nodes touched" `Quick touched;
     ]

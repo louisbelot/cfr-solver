@@ -14,6 +14,8 @@ module Make (G : Multi.S) = struct
   }
 
   let create ?(algorithm = Cfr.Vanilla) () =
+    if Cfr.predictive algorithm then
+      invalid_arg "Multi_cfr.create: predictive updates are two-player only";
     let tree = Multi_tree.build (module G) in
     let slots = Multi_tree.slots tree in
     {

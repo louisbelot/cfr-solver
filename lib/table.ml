@@ -62,21 +62,32 @@ let share t =
     stamp = Array.make (Array.length t.stamp) (-1);
   }
 
-let match_regrets t i =
+let normalize_current t i =
   let base = t.offset.(i) and n = t.offset.(i + 1) - t.offset.(i) in
   let total = ref 0. in
   for a = base to base + n - 1 do
-    total := !total +. Float.max t.regret.(a) 0.
+    total := !total +. t.current.(a)
   done;
   for a = base to base + n - 1 do
     t.current.(a) <-
-      (if !total > 0. then Float.max t.regret.(a) 0. /. !total
-       else 1. /. float_of_int n)
+      (if !total > 0. then t.current.(a) /. !total else 1. /. float_of_int n)
   done
 
 let refresh t i stamp =
   if t.stamp.(i) <> stamp then begin
-    match_regrets t i;
+    for a = t.offset.(i) to t.offset.(i + 1) - 1 do
+      t.current.(a) <- Float.max t.regret.(a) 0.
+    done;
+    normalize_current t i;
+    t.stamp.(i) <- stamp
+  end
+
+let refresh_predicted t last i stamp =
+  if t.stamp.(i) <> stamp then begin
+    for a = t.offset.(i) to t.offset.(i + 1) - 1 do
+      t.current.(a) <- Float.max (t.regret.(a) +. last.(a)) 0.
+    done;
+    normalize_current t i;
     t.stamp.(i) <- stamp
   end
 
@@ -94,9 +105,13 @@ let to_strategy t f a =
 let average_strategy t = to_strategy t Regret_matching.normalize t.strategy_sum
 let current_strategy t = to_strategy t Regret_matching.strategy t.regret
 
+let predicted_strategy t last =
+  to_strategy t Regret_matching.strategy (Array.map2 ( +. ) t.regret last)
+
 let slices t a =
   List.init (Array.length t.infosets) (fun i ->
       (t.infosets.(i).key, slice t a i))
 
 let regrets t = slices t t.regret
 let strategy_sums t = slices t t.strategy_sum
+let behavior t = to_strategy t Fun.id t.current
