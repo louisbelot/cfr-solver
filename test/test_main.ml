@@ -3,9 +3,25 @@ let () =
     [
       ("kuhn", Test_kuhn.tests);
       ("leduc", Test_leduc.tests);
+      ("liars dice", Test_liars_dice.tests);
+      ("multi", Test_multi.tests);
+      ("multi br", Test_multi_br.tests);
+      ("multi mccfr", Test_multi_mccfr.tests);
+      ("multi profile", Test_multi_profile.tests);
+      ("leduc n", Test_leduc_n.tests);
+      ("play", Test_play.tests);
       ("abstraction", Test_abstraction.tests);
       ("strength", Test_strength.tests);
       ("cluster", Test_cluster.tests);
+      ("hand", Test_hand.tests);
+      ("range", Test_range.tests);
+      ("suit", Test_suit.tests);
+      ("equity", Test_equity.tests);
+      ("holdem buckets", Test_holdem_buckets.tests);
+      ("bet tree", Test_bet_tree.tests);
+      ("subgame", Test_subgame.tests);
+      ("resolve", Test_resolve.tests);
+      ("translation", Test_translation.tests);
       ("regret matching", Test_regret_matching.tests);
       ("strategy", Test_strategy.tests);
       ("eval", Test_eval.tests);
