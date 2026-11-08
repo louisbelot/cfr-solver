@@ -41,4 +41,5 @@ let () =
       ("lp", Test_lp.tests);
       ("sequence form", Test_sequence_form.tests);
       ("auction", Test_auction.tests);
+      ("market", Test_market.tests);
     ]
