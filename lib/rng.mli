@@ -8,3 +8,4 @@ val bits : t -> int
 val int : t -> int -> int
 val float : t -> float
 val draw : t -> float array -> int
+val pick : t -> float array -> int -> int -> int

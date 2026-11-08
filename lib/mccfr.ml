@@ -6,14 +6,6 @@ let sampling_name = function
   | External -> "es"
   | Outcome { epsilon } -> Printf.sprintf "os(%g)" epsilon
 
-let pick rng probs base n =
-  let x = ref (Rng.float rng) and a = ref 0 in
-  while !a < n - 1 && !x >= probs.(base + !a) do
-    x := !x -. probs.(base + !a);
-    incr a
-  done;
-  !a
-
 module Make (G : Game.S) = struct
   type t = {
     root : Tree.node;
@@ -77,7 +69,7 @@ module Make (G : Game.S) = struct
     | Tree.Terminal u -> t.ret.(0) <- u
     | Chance { probs; children } ->
         external_walk t i
-          children.(pick t.rng probs 0 (Array.length probs))
+          children.(Rng.pick t.rng probs 0 (Array.length probs))
           (d + 1)
     | Decision { infoset; children } ->
         let tab = t.table in
@@ -87,7 +79,7 @@ module Make (G : Game.S) = struct
           for k = base to base + n - 1 do
             tab.strategy_sum.(k) <- tab.strategy_sum.(k) +. tab.current.(k)
           done;
-          external_walk t i children.(pick t.rng tab.current base n) (d + 1)
+          external_walk t i children.(Rng.pick t.rng tab.current base n) (d + 1)
         end
         else begin
           let row = d * t.width and v = ref 0. in
@@ -115,7 +107,7 @@ module Make (G : Game.S) = struct
         t.weights.(w + 2) <- opp;
         t.weights.(w + 3) <- s;
         outcome_walk t i epsilon
-          children.(pick t.rng probs 0 (Array.length probs))
+          children.(Rng.pick t.rng probs 0 (Array.length probs))
           (d + 1)
     | Decision { infoset; children } ->
         let tab = t.table in
@@ -126,7 +118,7 @@ module Make (G : Game.S) = struct
             tab.strategy_sum.(k) <-
               tab.strategy_sum.(k) +. (opp *. tab.current.(k) /. s)
           done;
-          let a = pick t.rng tab.current base n in
+          let a = Rng.pick t.rng tab.current base n in
           let p = tab.current.(base + a) in
           t.weights.(w + 2) <- opp *. p;
           t.weights.(w + 3) <- s *. p;
@@ -136,7 +128,7 @@ module Make (G : Game.S) = struct
         else begin
           let a =
             if Rng.float t.rng < epsilon then Rng.int t.rng n
-            else pick t.rng tab.current base n
+            else Rng.pick t.rng tab.current base n
           in
           let p = tab.current.(base + a) in
           let q = (epsilon /. float_of_int n) +. ((1. -. epsilon) *. p) in

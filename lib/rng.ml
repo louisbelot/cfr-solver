@@ -32,3 +32,11 @@ let draw rng w =
     incr i
   done;
   !i
+
+let pick rng probs base n =
+  let x = ref (float rng) and a = ref 0 in
+  while !a < n - 1 && !x >= probs.(base + !a) do
+    x := !x -. probs.(base + !a);
+    incr a
+  done;
+  !a
