@@ -584,6 +584,9 @@ let subgame_cmd =
         ("cfr+", (Plus, false));
         ("lcfr", (Linear, false));
         ("dcfr", (Cfr.dcfr, false));
+        ("dcfr+", (Cfr.dcfr_plus, false));
+        ("pcfr+", (Cfr.pcfr_plus, false));
+        ("pdcfr+", (Cfr.pdcfr_plus, false));
         ("cfr-rbp", (Vanilla, true));
         ("lcfr-rbp", (Linear, true));
       ]
@@ -595,8 +598,8 @@ let subgame_cmd =
           [ ("dcfr", (Cfr.dcfr, false)) ]
       & info [ "a"; "algorithms" ] ~docv:"LIST"
           ~doc:
-            "Algorithms to run: cfr, cfr+, lcfr, dcfr, cfr-rbp, lcfr-rbp (the \
-             last two with regret-based pruning).")
+            "Algorithms to run: cfr, cfr+, lcfr, dcfr, dcfr+, pcfr+, pdcfr+, \
+             cfr-rbp, lcfr-rbp (the last two with regret-based pruning).")
   in
   Cmd.v
     (Cmd.info "subgame"

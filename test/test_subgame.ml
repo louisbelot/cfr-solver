@@ -382,12 +382,18 @@ let tests =
       (matches_scalar_cfr river river_board r0 r1 Cfr.Plus 25);
     Alcotest.test_case "river dcfr" `Quick
       (matches_scalar_cfr river river_board r0 r1 Cfr.dcfr 25);
+    Alcotest.test_case "river pcfr+" `Quick
+      (matches_scalar_cfr river river_board r0 r1 Cfr.pcfr_plus 25);
+    Alcotest.test_case "river pdcfr+" `Quick
+      (matches_scalar_cfr river river_board r0 r1 Cfr.pdcfr_plus 25);
     Alcotest.test_case "river values" `Quick
       (matches_scalar_values river river_board r0 r1);
     Alcotest.test_case "turn cfr" `Slow
       (matches_scalar_cfr turn turn_board small0 small1 Cfr.Vanilla 3);
     Alcotest.test_case "turn cfr+" `Slow
       (matches_scalar_cfr turn turn_board small0 small1 Cfr.Plus 3);
+    Alcotest.test_case "turn pdcfr+" `Slow
+      (matches_scalar_cfr turn turn_board small0 small1 Cfr.pdcfr_plus 3);
     Alcotest.test_case "turn values" `Slow
       (matches_scalar_values turn turn_board small0 small1);
     Alcotest.test_case "folded turn cfr" `Quick
@@ -396,6 +402,8 @@ let tests =
       (folds_exactly turn mono_turn sym0 sym1 Cfr.Plus 6);
     Alcotest.test_case "folded turn dcfr" `Quick
       (folds_exactly turn mono_turn sym0 sym1 Cfr.dcfr 6);
+    Alcotest.test_case "folded turn pcfr+" `Quick
+      (folds_exactly turn mono_turn sym0 sym1 Cfr.pcfr_plus 6);
     Alcotest.test_case "folded flop" `Slow
       (folds_exactly flop mono_flop sym0 sym1 Cfr.Plus 2);
     Alcotest.test_case "symmetric strategy" `Quick symmetric_strategy;
@@ -403,6 +411,7 @@ let tests =
     Alcotest.test_case "single precision" `Quick single_precision;
     Alcotest.test_case "pruning cfr+" `Quick (prunes_exactly Cfr.Plus);
     Alcotest.test_case "pruning dcfr" `Quick (prunes_exactly Cfr.dcfr);
+    Alcotest.test_case "pruning pdcfr+" `Quick (prunes_exactly Cfr.pdcfr_plus);
     Alcotest.test_case "rbp exact cfr" `Quick (rbp_matches_plain Cfr.Vanilla);
     Alcotest.test_case "rbp exact lcfr" `Quick (rbp_matches_plain Cfr.Linear);
     Alcotest.test_case "rbp converges cfr" `Quick (rbp_converges Cfr.Vanilla);
@@ -415,6 +424,8 @@ let tests =
       (bucketed_matches_scalar [ 0; 4 ] Cfr.Vanilla 3);
     Alcotest.test_case "bucketed both" `Slow
       (bucketed_matches_scalar [ 2; 3 ] Cfr.dcfr 3);
+    Alcotest.test_case "bucketed pdcfr+" `Slow
+      (bucketed_matches_scalar [ 2; 3 ] Cfr.pdcfr_plus 3);
     Alcotest.test_case "emd turn buckets" `Slow
       (bucketed_matches_scalar ~feature:Emd [ 3; 2 ] Cfr.Plus 3);
     Alcotest.test_case "potential-aware turn buckets" `Slow

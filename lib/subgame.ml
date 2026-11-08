@@ -9,6 +9,10 @@ external ( .^()<- ) : f32 -> int -> float -> unit = "%caml_ba_unsafe_set_1"
 
 type store = Double of float array array | Single of f32 array
 
+let rows = function
+  | Double r -> Array.length r.(0)
+  | Single r -> Bigarray.Array1.dim r.(0)
+
 let store single k n =
   if single then
     Single
@@ -130,6 +134,7 @@ type t = {
   mutable scale : float;
   mutable iterations : int;
   mutable weight : float;
+  optimism : (float array array * float array array) array;
 }
 
 let side range other =
@@ -453,6 +458,15 @@ let create ?(algorithm = Cfr.Vanilla) ?(iso = true) ?(single = false)
       scale = 1.;
       iterations = 0;
       weight = 1.;
+      optimism =
+        (if Cfr.predictive algorithm then
+           Array.map
+             (fun dn ->
+               let k = Array.length dn.actions and m = rows dn.regret in
+               let zeros () = Array.init k (fun _ -> Array.make m 0.) in
+               (zeros (), zeros ()))
+             decisions
+         else [||]);
     }
   in
   let total = pair_mass t in
@@ -597,10 +611,6 @@ let symmetrize dn =
         end
       done)
     dn.orbits
-
-let rows = function
-  | Double r -> Array.length r.(0)
-  | Single r -> Bigarray.Array1.dim r.(0)
 
 let bucketed_matching dn n sc =
   let k = Array.length dn.actions and norm = sc.norm and b = dn.bucket in
@@ -1038,6 +1048,26 @@ let discount t active n =
                 rs)
       t.decisions
 
+let predict t active n =
+  let pos, neg, _ = Cfr.discounts t.algorithm n in
+  Array.iteri
+    (fun i dn ->
+      if active.(dn.player) then begin
+        let base, last = t.optimism.(i) in
+        for a = 0 to Array.length dn.actions - 1 do
+          let s = base.(a) and m = last.(a) in
+          for x = 0 to rows dn.regret - 1 do
+            let r = get dn.regret a x -. s.(x) -. m.(x) in
+            let y = s.(x) +. r in
+            let y = y *. if y > 0. then pos else neg in
+            s.(x) <- y;
+            m.(x) <- r;
+            set dn.regret a x (y +. r)
+          done
+        done
+      end)
+    t.decisions
+
 let follows follow quit h =
   let f = follow.(h) and q = quit.(h) in
   if f +. q > 0. then f /. (f +. q) else 1.
@@ -1107,7 +1137,8 @@ let iterate t =
         let o = opponent g in
         if active.(o) then update g out.(o))
       t.gadget;
-    discount t active n
+    if Cfr.predictive t.algorithm then predict t active n
+    else discount t active n
   in
   if Cfr.alternating t.algorithm then begin
     pass [| true; false |];
@@ -1151,13 +1182,16 @@ let regrets t =
     (fun dn ->
       Array.iteri (fun a -> Option.iter (catch_up t dn a 0)) dn.windows)
     t.decisions;
-  Array.map
-    (fun dn ->
+  Array.mapi
+    (fun i dn ->
       let n = t.sides.(dn.player).n in
+      let last a x =
+        if Array.length t.optimism = 0 then 0. else (snd t.optimism.(i)).(a).(x)
+      in
       Array.init (Array.length dn.actions) (fun a ->
           Array.init n (fun h ->
               let x = if Array.length dn.bucket > 0 then dn.bucket.(h) else h in
-              if x < 0 then 0. else get dn.regret a x)))
+              if x < 0 then 0. else get dn.regret a x -. last a x)))
     t.decisions
 
 let current t =
