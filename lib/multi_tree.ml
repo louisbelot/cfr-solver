@@ -29,7 +29,9 @@ let build (module G : Multi.S) =
   let rec go h d =
     incr size;
     height := max !height d;
-    let children l = Array.of_list (List.map (fun (_, h') -> go h' (d + 1)) l) in
+    let children l =
+      Array.of_list (List.map (fun (_, h') -> go h' (d + 1)) l)
+    in
     match G.node h with
     | Multi.Terminal u -> Leaf u
     | Chance outcomes ->
