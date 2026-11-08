@@ -32,6 +32,8 @@ jobs:
           printf '1\nliar\n2\n' | opam exec -- dune exec cfr-solver -- play -g liars -n 50 --hands 3
           printf 'b\np\n' | opam exec -- dune exec cfr-solver -- play -g kuhn --seat 1
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --csv compare.csv --svg compare.svg
+          opam exec -- dune exec cfr-solver -- exact -g leduc2 -n 200 --csv exact.csv --svg exact.svg
+          opam exec -- dune exec cfr-solver -- exact -g kuhn --cold
           opam exec -- dune exec cfr-solver -- compare -g leduc -n 1000 --algorithms cfr+,dcfr+,pcfr+,pdcfr+,oftrl:3 --last --csv last.csv --svg last.svg
           opam exec -- dune exec cfr-solver -- landscape -g kuhn -n 200 --domains 2 --csv land.csv --svg land.svg
           opam exec -- dune exec cfr-solver -- multi -g kuhn3 -n 200 --csv k3.csv --svg k3.svg
