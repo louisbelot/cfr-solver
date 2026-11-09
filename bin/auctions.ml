@@ -448,4 +448,85 @@ let lemke_cmd =
           Lemke's           algorithm on the sequence form.")
     Term.(const lemke $ rule $ top $ void $ reserve $ priors $ seed)
 
-let cmds = [ solve_cmd; bids_cmd; reserve_cmd; lemke_cmd ]
+let mean_bid row =
+  let acc = ref Rat.zero in
+  Array.iteri (fun b p -> acc := Rat.add !acc (Rat.mul (Rat.of_int b) p)) row;
+  Rat.to_float !acc
+
+let bidding case top =
+  let prior, value, bids, standard =
+    match case with
+    | `Asymmetric ->
+        ( Bidding.independent top (top / 2),
+          Bidding.private_value,
+          top,
+          fun _ s -> s )
+    | `Affiliated ->
+        (Bidding.affiliated top, Bidding.private_value, top, fun _ s -> s)
+    | `Wallet ->
+        (Bidding.independent top top, Bidding.wallet, 2 * top, fun _ s -> 2 * s)
+  in
+  let c rule = { Bidding.bids; rule; ties = Split; prior; value } in
+  let first = c First_price and second = c Second_price in
+  let start = Unix.gettimeofday () in
+  let t, sol, sigma = Bidding.equilibrium first in
+  let g0, g1 = Lemke.gains t sol.plans in
+  Format.printf "first price: %d pivots, %.2f s, gains %s %s@." sol.pivots
+    (Unix.gettimeofday () -. start)
+    (Rat.to_string g0) (Rat.to_string g1);
+  Format.printf "%4s  %-26s %-26s %6s %6s@." "s" "bidder 0" "bidder 1" "mean 0"
+    "mean 1";
+  let all =
+    List.sort_uniq compare (Bidding.signals first 0 @ Bidding.signals first 1)
+  in
+  List.iter
+    (fun s ->
+      let cell i =
+        if List.mem s (Bidding.signals first i) then exact_support (sigma i s)
+        else "-"
+      and mean i =
+        if List.mem s (Bidding.signals first i) then
+          Printf.sprintf "%.3f" (mean_bid (sigma i s))
+        else "-"
+      in
+      Format.printf "%4d  %-26s %-26s %6s %6s@." s (cell 0) (cell 1) (mean 0)
+        (mean 1))
+    all;
+  let show name (u0, u1, r) =
+    Format.printf "%-28s revenue %-12s = %.4f  profits %.4f %.4f@." name
+      (Rat.to_string r) (Rat.to_float r) (Rat.to_float u0) (Rat.to_float u1)
+  in
+  Format.printf "@.";
+  show "first price, lemke" (Bidding.outcome first sigma);
+  show "second price, standard"
+    (Bidding.outcome second (Bidding.pure second standard));
+  if case = `Wallet then (
+    let deviate c eq i =
+      if i = 0 then Bidding.pure c (Bidding.naive c) i else eq i
+    in
+    show "second price, 0 naive"
+      (Bidding.outcome second (deviate second (Bidding.pure second standard)));
+    show "first price, 0 naive" (Bidding.outcome first (deviate first sigma)))
+
+let case =
+  Arg.(
+    value
+    & opt
+        (enum
+           [
+             ("asymmetric", `Asymmetric);
+             ("affiliated", `Affiliated);
+             ("wallet", `Wallet);
+           ])
+        `Asymmetric
+    & info [ "case" ] ~docv:"CASE" ~doc:"asymmetric, affiliated or wallet.")
+
+let bidding_cmd =
+  Cmd.v
+    (Cmd.info "bidding"
+       ~doc:
+         "Two-bidder auctions with asymmetric priors, affiliated values or \
+          a           common value, solved exactly with Lemke's algorithm.")
+    Term.(const bidding $ case $ top)
+
+let cmds = [ solve_cmd; bids_cmd; reserve_cmd; lemke_cmd; bidding_cmd ]
