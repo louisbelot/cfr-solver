@@ -1,15 +1,26 @@
-type meta = Exact | Nash | Uniform
+type meta =
+  | Exact
+  | Nash
+  | Uniform
+  | Prd of { iterations : int; dt : float; gamma : float }
+  | Alpharank of { alpha : float; m : int }
+
+type oracle = Best | Cfr of int
 
 type step = {
   iteration : int;
-  sizes : int * int;
-  value : float;
+  sizes : int array;
+  values : float array;
   nash_conv : float;
+  seconds : float;
 }
 
-val matrix : Rat.t array array -> Rat.t array * Rat.t array * Rat.t
-val mixture : Tree.t -> Game.player -> (float * Strategy.t) list -> Strategy.t
-val pure : Tree.t -> Game.player -> Strategy.t
+val mixture : Multi_tree.t -> int -> (float * Strategy.t) list -> Strategy.t
+val pure : Multi_tree.t -> int -> Strategy.t
 
 val run :
-  ?meta:meta -> (module Game.S) -> iterations:int -> step list * Strategy.t
+  ?meta:meta ->
+  ?oracle:oracle ->
+  (module Multi.S) ->
+  iterations:int ->
+  step list * Strategy.t
