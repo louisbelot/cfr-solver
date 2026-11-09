@@ -13,6 +13,7 @@ let () =
       ("leduc", Test_leduc.tests);
       ("liars dice", Test_liars_dice.tests);
       ("goofspiel", Test_goofspiel.tests);
+      ("lbr", Test_lbr.tests);
       ("multi", Test_multi.tests);
       ("multi br", Test_multi_br.tests);
       ("multi mccfr", Test_multi_mccfr.tests);
