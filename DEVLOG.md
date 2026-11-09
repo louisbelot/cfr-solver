@@ -1781,3 +1781,97 @@ Checks:
 
 Next: an abstracted Figgie for n-player MCCFR (card-count beliefs, a few price
 levels), scored against these bots, then Goofspiel against published numbers.
+
+## 2026-11-08: Lemke's algorithm, general-sum auctions
+
+CFR has no convergence guarantee off zero-sum games, and the two-bidder
+auction with split ties showed it: the averages sat near 1.6e-4 of the top
+value from 10k to 100k iterations. The LP from the exact solver only handles
+zero-sum games. This entry adds an exact solver for any two-player game with
+perfect recall and uses it on auctions that are not symmetric.
+
+What was built:
+
+- `Lemke`: builds the sequence form of a two-player `Multi.S` game (both
+  payoff matrices, plus the chance reach of each sequence pair so payoffs can
+  be shifted), then runs Lemke's algorithm on the LCP of Koller, Megiddo and
+  von Stengel with the covering vector of von Stengel, van den Elzen and
+  Talman: the prior's payoffs on the best-response rows and e, f on the
+  realization rows. At z0 = 1 the only solution is x = y = 0, so the start
+  basis is built directly: z0, all duals, the sequences chosen by a full best
+  response to the prior (one per infoset, even unreached ones, basic at zero)
+  and the slacks of the rest. x for the empty sequence and its slack are both
+  nonbasic, and x for the empty sequence enters first.
+- The tableau is a dense `Rat` matrix with an identity block appended once the
+  start basis is installed. That block becomes B^-1 B0, and the ratio test
+  breaks ties lexicographically on it, which is the same as perturbing the
+  right-hand side by (eps, eps^2, ...) in the start basis coordinates. Every
+  start row is then lexicographically positive, even though most sequences
+  are basic at zero. Free duals never enter the ratio test.
+- Priors are rounded to whole percents before use. A float prior converted
+  exactly gave 53-bit denominators in every gradient entry and random priors
+  took 30 s on a 50-sequence auction; rounded, 0.07 s. The prior only chooses
+  the path, so this changes which equilibrium is found, never whether it is
+  one.
+- `Lemke.gains` is the certificate: an exact backward pass over each
+  treeplex for the best response, minus the value. Every result in this entry
+  has both gains equal to 0.
+- `Bidding`: two-bidder first-price, second-price and all-pay auctions with
+  any joint prior over integer signals and any value function. Constructors
+  for independent uniform signals on different ranges, an affiliated prior
+  (density proportional to x + s0 s1, log-supermodular because
+  f(a', b') f(a, b) - f(a', b) f(a, b') = x (a' - a)(b' - b)), private values
+  and the wallet game's common value s0 + s1.
+- CLI: `exact -g GAME --lemke`, `auction-lemke [--top --void --priors K]`,
+  `bidding --case asymmetric|affiliated|wallet --top X`.
+
+Results:
+
+- Zero-sum games, Lemke against the LP: Kuhn 13 pivots against 16 + 16,
+  two-rank Leduc 167 against 163 + 166, Liar's dice 1x3 37 against 187 + 180,
+  2x2 143 against 775 + 739, 1x4 87 against 805 + 809. Same fractions every
+  time. Lemke is slower in wall time (4.82 s against 0.03 s on two-rank Leduc)
+  because the LP starts from a float basis and Lemke pivots a dense rational
+  tableau of about 440 by 1,200 entries.
+- First price, split ties, x = 10: 9 pivots, 0.6 s. Symmetric, pure except at
+  v = 7 (3 with probability 8/19) and v = 10 (4 with probability 9/19).
+  Revenue 138707/43681. Three random priors found the same equilibrium.
+- Void ties, x = 8: the uniform prior and six random ones gave four distinct
+  equilibria, with revenues 176/81, 8/3 (twice) and 212/81.
+- All-pay, x = 8: pure, bids 0 up to v = 3, revenue 20/9, 45 to 49 pivots from
+  every prior.
+- Asymmetric, values 0..8 against 0..4: the weak bidder mixes 1 and 2 at
+  v = 3 (mean 1.667) where the strong bids 1. First price 233/135 = 1.726,
+  second price 14/9 = 1.556. x = 12: 2.681 against 2.385.
+- Affiliated, x = 8: second price 3.883, first price 3.558 (mixes with
+  denominators near 371,347). x = 10: 4.927 against 4.591.
+- Wallet, x = 8, bids up to 16: first price 157 pivots, 2.5 s, bids close to
+  the continuous b(s) = s (1 1 1 3 3 5 5 7 7 for s = 0..8), revenue 401/81
+  against 136/27 for second price with b(s) = 2s. A first-price bidder who
+  bids E[V | s] against the equilibrium loses 0.358 a round; in second price
+  the same naive bid earns 1.395 against 1.481.
+
+Checks:
+
+- 14 new tests (full suite 337 tests, 197 s). Lemke: Kuhn and two-rank Leduc
+  values, a 2x2 game whose only equilibrium is mixed (2/3, 1/4), Battle of the
+  Sexes steered to each pure equilibrium by the prior, the x = 10 mix, zero
+  NashConv from `Auction.Exact` (written separately, closed-form payoffs) for
+  void and split ties on x = 2..6, and a qcheck property over 60 random
+  general-sum trees with chance, hidden moves and perfect recall by
+  construction: valid plans, gains exactly 0. Bidding: the Lemke equilibrium
+  of the symmetric case has zero NashConv in `Auction.Exact`, values from the
+  tree match a direct sum over the prior, truthful second price with
+  asymmetric priors, 2s and not the naive bid in the wallet game, and the
+  affiliation inequality at every pair of grid points.
+- Mutants: flipping the sign of the child-infoset duals fails three tests
+  (Kuhn, Leduc, the random games). Dropping the preference for z0 in the ratio
+  test fails nothing, which is expected: the lexicographic rule already picks
+  a unique row and the preference only ends the path one pivot earlier.
+- A wrong expectation in the first Battle of the Sexes test: from the uniform
+  prior both players switch at the same point (t = 1/3) and the path ends at a
+  pure equilibrium, not the mixed one. The test now only asks for a pure one.
+
+Next: integer pivoting (entries kept as integers over a common determinant,
+as in von Stengel's lrs-style code) to cut the rational overhead, then Goofspiel
+and the abstracted Figgie for n-player MCCFR.
