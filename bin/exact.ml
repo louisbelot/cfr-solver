@@ -35,7 +35,7 @@ let timed f =
   let r = f () in
   (r, Unix.gettimeofday () -. start)
 
-let solve game cold iterations csv svg =
+let solve game cold lemke iterations csv svg =
   let ((module G : Game.S) as g) = List.assoc game games in
   let module B = Best_response.Make (G) in
   let t, build = timed (fun () -> S.build g) in
@@ -52,6 +52,15 @@ let solve game cold iterations csv svg =
   Format.printf "value      %s@.           = %.12f@." (Rat.to_string sol.value)
     (Rat.to_float sol.value);
   Format.printf "nash conv  %s@.@." (Rat.to_string gap);
+  (if lemke then
+     let t = Lemke.build (module Multi.Of_game (G)) in
+     let sol, secs = timed (fun () -> Lemke.solve t) in
+     let g0, g1 = Lemke.gains t sol.plans in
+     Format.printf
+       "lemke: %d pivots, %.2fs@.value      %s@.gains      %s %s@.@." sol.pivots
+       secs
+       (Rat.to_string (fst sol.values))
+       (Rat.to_string g0) (Rat.to_string g1));
   if iterations > 0 then (
     let runs =
       List.map
@@ -145,6 +154,11 @@ let cmd =
       value & flag
       & info [ "cold" ]
           ~doc:"Skip the floating-point warm start of the simplex.")
+  and lemke =
+    Arg.(
+      value & flag
+      & info [ "lemke" ]
+          ~doc:"Also solve the sequence-form LCP with Lemke's algorithm.")
   and iterations =
     Arg.(
       value & opt int 0
@@ -170,6 +184,7 @@ let cmd =
        ~doc:
          "Solve the sequence-form linear program in exact rational arithmetic \
           and print the game value as a fraction.")
-    Term.(term_result (const solve $ game $ cold $ iterations $ csv $ svg))
+    Term.(
+      term_result (const solve $ game $ cold $ lemke $ iterations $ csv $ svg))
 
 let cmds = [ cmd ]
