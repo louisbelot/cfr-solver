@@ -9,8 +9,8 @@ let probs tree sigma =
     tree.keys;
   p
 
-let values tree sigma =
-  let p = probs tree sigma and total = Array.make tree.players 0. in
+let payoff tree p =
+  let total = Array.make tree.players 0. in
   let rec go node w =
     if w > 0. then
       match node with
@@ -23,6 +23,8 @@ let values tree sigma =
   in
   go tree.root 1.;
   total
+
+let values tree sigma = payoff tree (probs tree sigma)
 
 let argmax n f =
   let best = ref 0 and best_v = ref (f 0) in
@@ -111,3 +113,16 @@ module Make (G : Multi.S) = struct
   let gains sigma = gains tree sigma
   let nash_conv sigma = nash_conv tree sigma
 end
+
+let strategy (tree : t) p flat =
+  let s = ref Strategy.empty in
+  Array.iteri
+    (fun k key ->
+      if tree.owner.(k) = p then
+        let n = Array.length tree.labels.(k) in
+        s :=
+          Strategy.add key ~actions:tree.labels.(k)
+            ~probs:(Array.sub flat tree.offset.(k) n)
+            !s)
+    tree.keys;
+  !s

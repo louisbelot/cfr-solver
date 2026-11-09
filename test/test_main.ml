@@ -7,6 +7,7 @@ let () =
       ("psro", Test_psro.tests);
       ("meta lp", Test_meta_lp.tests);
       ("meta game", Test_meta_game.tests);
+      ("cfr br", Test_cfr_br.tests);
       ("bidding", Test_bidding.tests);
       ("figgie", Test_figgie.tests);
       ("leduc", Test_leduc.tests);
