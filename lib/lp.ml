@@ -287,3 +287,23 @@ let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
   in
   if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art c t
   else Infeasible
+
+let maximize_float ?(bland = false) ~vars objective rows =
+  let rows = normalize rows in
+  let t, first_art = A.setup ~vars rows in
+  let c = Array.make first_art 0. in
+  List.iter
+    (fun (j, v) ->
+      if j < 0 || j >= vars then invalid_arg "Lp.maximize_float: variable";
+      c.(j) <- c.(j) +. Rat.to_float v)
+    objective;
+  if not (A.phase1 t ~bland ~first_art) then None
+  else
+    match A.phase2 t ~bland ~first_art (fun j -> c.(j)) with
+    | `Unbounded | `Stopped -> None
+    | `Optimal ->
+        let x = Array.make vars 0. in
+        Array.iteri
+          (fun i b -> if b < vars then x.(b) <- A.rhs t t.rows.(i))
+          t.basis;
+        Some (A.rhs t t.obj, x)

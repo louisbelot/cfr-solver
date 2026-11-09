@@ -13,3 +13,10 @@ val maximize :
   (int * Rat.t) list ->
   row list ->
   result
+
+val maximize_float :
+  ?bland:bool ->
+  vars:int ->
+  (int * Rat.t) list ->
+  row list ->
+  (float * float array) option
