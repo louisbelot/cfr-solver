@@ -5,6 +5,7 @@ let () =
       ("lemke", Test_lemke.tests);
       ("exploit", Test_exploit.tests);
       ("psro", Test_psro.tests);
+      ("meta lp", Test_meta_lp.tests);
       ("bidding", Test_bidding.tests);
       ("figgie", Test_figgie.tests);
       ("leduc", Test_leduc.tests);
