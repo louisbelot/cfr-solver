@@ -20,7 +20,8 @@ interview-style market-making card game solved exactly, and Figgie gets a full
 rules engine with exact Bayesian hand values and a field of bots. Against a
 known or observed opponent it computes restricted Nash and data-biased
 responses, which trade exploitation for worst-case loss, and plays repeated
-sessions that only risk what they have already won.
+sessions that only risk what they have already won. PSRO grows populations of
+best responses and solves the game between them.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -1195,6 +1196,45 @@ kept for the whole session (`--after 3000`, 20 seeds), the expected budget makes
 switch at 300 it again ends at exactly 0 with no seed below it, while realized
 budgets go negative in 12 of 20.
 
+### Populations of best responses
+
+`Psro` is policy-space response oracles (Lanctot et al. 2017) with an exact
+best response as the oracle. Each player keeps a population of pure strategies,
+starting from "first action everywhere". The meta-game is the matrix of
+expected values between every pair, a meta-solver picks a mixture over each
+population, and both players add a best response to the other's mixture. With
+a Nash meta-solver this is the double oracle method (McMahan, Gordon and Blum
+2003); with uniform weights it is fictitious play over pure strategies.
+
+Mixing strategies in an extensive-form game is not the same as averaging their
+probabilities at each information set. `Psro.mixture` weights each strategy by
+its own reach of the information set, so the result plays exactly like picking
+one strategy at random at the start of the hand. A test checks that the value
+of the mixture equals the weighted sum of values, to 1e-12, for random mixed
+strategies in Leduc.
+
+The Nash meta-game can be solved exactly (the rational simplex, entries
+recovered as fractions) or with the float simplex. On Kuhn both stop after 8
+iterations with the population sizes at 9 and 8 (or 8 and 9: the meta-game has
+several equilibria), value -1/18 and NashConv 0. Uniform weights still have
+NashConv 0.108 after 50 iterations.
+
+![NashConv of the PSRO mixture in Leduc hold'em](docs/psro-leduc.svg)
+
+```
+$ cfr-solver psro -g leduc --iterations 160 --svg docs/psro-leduc.svg
+nash      160 iterations, populations 159 and 160, value -0.089302, NashConv 0.122, 123.8s
+uniform   160 iterations, populations 161 and 161, value -0.203599, NashConv 0.731, 2.9s
+```
+
+Leduc is a different story: 160 pure strategies per side and the mixture is
+still 0.122 from equilibrium, while CFR+ is at exploitability 0.0008 after
+about 515 iterations (2 million nodes touched, docs/leduc.csv). Each best
+response only adds one pure strategy,
+and Leduc's equilibrium mixes at many information sets. The time also grows
+fast with the population (4.2 s for 80 iterations, 33 s for 120, 124 s for 160),
+and the meta LP is solved from scratch every iteration.
+
 ## Tuning discounted CFR
 
 DCFR has three knobs: alpha discounts positive regrets, beta negative ones,
@@ -2300,6 +2340,10 @@ Nash equilibrium, at p = 1 a best response to the model. The expected budget is
 checked to stay at or above 0 against the adaptive opponent on three seeds,
 and a plain best response to drop more than 300 below it. Swapping c and 1 - c
 in the data-biased coin, or p and 1 - p at the root, fails one and five tests.
+PSRO's meta-game solver is checked on rock-paper-scissors, a 2x2 game with a
+mixed solution (3/7, 4/7) against (2/7, 5/7) and value 1/7, and a game with a
+saddle point, all as exact fractions; double oracle on Kuhn must stop early at
+value -1/18 with zero NashConv under both meta-solvers.
 
 ## License
 
