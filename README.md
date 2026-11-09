@@ -21,7 +21,8 @@ rules engine with exact Bayesian hand values and a field of bots. Against a
 known or observed opponent it computes restricted Nash and data-biased
 responses, which trade exploitation for worst-case loss, and plays repeated
 sessions that only risk what they have already won. PSRO grows populations of
-best responses and solves the game between them.
+responses and solves the game between them with a warm-started LP, replicator
+dynamics or alpha-rank.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -1198,13 +1199,14 @@ budgets go negative in 12 of 20.
 
 ### Populations of best responses
 
-`Psro` is policy-space response oracles (Lanctot et al. 2017) with an exact
-best response as the oracle. Each player keeps a population of pure strategies,
-starting from "first action everywhere". The meta-game is the matrix of
-expected values between every pair, a meta-solver picks a mixture over each
-population, and both players add a best response to the other's mixture. With
-a Nash meta-solver this is the double oracle method (McMahan, Gordon and Blum
-2003); with uniform weights it is fictitious play over pure strategies.
+`Psro` is policy-space response oracles (Lanctot et al. 2017) for any number
+of players. Each player keeps a population of strategies, starting from "first
+action everywhere". The meta-game is the tensor of expected values between
+every combination of members, a meta-solver picks a mixture over each
+population, and every player adds a response to the others' mixtures. With a
+Nash meta-solver and exact best responses this is the double oracle method
+(McMahan, Gordon and Blum 2003); with uniform weights it is fictitious play
+over the population.
 
 Mixing strategies in an extensive-form game is not the same as averaging their
 probabilities at each information set. `Psro.mixture` weights each strategy by
@@ -1213,27 +1215,105 @@ one strategy at random at the start of the hand. A test checks that the value
 of the mixture equals the weighted sum of values, to 1e-12, for random mixed
 strategies in Leduc.
 
-The Nash meta-game can be solved exactly (the rational simplex, entries
-recovered as fractions) or with the float simplex. On Kuhn both stop after 8
-iterations with the population sizes at 9 and 8 (or 8 and 9: the meta-game has
-several equilibria), value -1/18 and NashConv 0. Uniform weights still have
-NashConv 0.108 after 50 iterations.
+#### A warm-started meta LP
 
-![NashConv of the PSRO mixture in Leduc hold'em](docs/psro-leduc.svg)
+Double oracle adds one row and one column to the meta-game per iteration.
+Solving the new LP from scratch made the meta-solver almost the whole cost:
+0.05 ms per payoff entry and per best response, 1.2 s for one cold LP on a
+random 160x160 game. `Meta_lp` keeps a simplex tableau alive across iterations.
+It solves the column player's problem, max sum(y) subject to (A + c) y <= 1 and
+y >= 0, with the shift c making every entry positive, so the game value is
+1/z - c and the row player's mixture comes out of the dual prices of the slack
+columns for free. That LP is cheap to grow in both directions:
+
+- A new column is a new variable. The old basis stays primal feasible, its
+  tableau column is B^-1 a, read off the slack columns that hold B^-1, and a
+  few primal simplex pivots restore optimality.
+- A new row is a new constraint. Its slack enters the basis and the old basis
+  stays dual feasible, so the dual simplex repairs the one infeasible row.
+
+The tableau is generic over the field, so the same code runs in exact
+rationals and in floats. Floats needed real work. Double oracle matrices are
+very degenerate, and past about 340 strategies the first version started
+reporting optimal tableaus whose mixtures were 0.03 from an equilibrium of the
+restricted game. Three changes fixed it. Entries that the tolerance calls zero
+are still divided and eliminated (the first version skipped them and left
+them stale). The ratio test is Harris's two-pass rule: relax every bound by
+1e-9, then take the largest pivot within that step. And after every solve the
+normalized mixtures are checked against the stored matrix; if the restricted
+game's duality gap is above 1e-10, the tableau is rebuilt from the original
+matrix with the same basis, the way revised simplex codes reinvert. On the
+full Leduc run that rebuild happens twice.
 
 ```
-$ cfr-solver psro -g leduc --iterations 160 --svg docs/psro-leduc.svg
-nash      160 iterations, populations 159 and 160, value -0.089302, NashConv 0.122, 123.8s
-uniform   160 iterations, populations 161 and 161, value -0.203599, NashConv 0.731, 2.9s
+$ cfr-solver psro -g leduc --iterations 403 --meta nash,uniform --svg docs/psro-leduc.svg
+nash        403 iterations, populations 403/404, value -0.085606, NashConv 5.88e-11, 20.4s
+uniform     403 iterations, populations 404/404, value -0.140735, NashConv 0.348, 5.1s
 ```
 
-Leduc is a different story: 160 pure strategies per side and the mixture is
-still 0.122 from equilibrium, while CFR+ is at exploitability 0.0008 after
-about 515 iterations (2 million nodes touched, docs/leduc.csv). Each best
-response only adds one pure strategy,
-and Leduc's equilibrium mixes at many information sets. The time also grows
-fast with the population (4.2 s for 80 iterations, 33 s for 120, 124 s for 160),
-and the meta LP is solved from scratch every iteration.
+Fictitious play never stops on its own, so the run is capped at 403. Double
+oracle stops there by itself, and it stops at the same place with a cap of 3000.
+
+![NashConv of double oracle and fictitious play in Leduc](docs/psro-leduc.svg)
+
+The same 160 iterations that took 95.3 s with a cold LP per iteration now take
+1.1 s, and double oracle runs to the end: after 403 iterations no best
+response is new, the value is -0.085606424 (the exact sequence-form LP gives
+-0.085606424) and NashConv is 6e-11.
+
+#### Other meta-solvers and approximate oracles
+
+`Meta_game` holds the meta-game tensor and two more solvers. Projected
+replicator dynamics (PRD, from the PSRO paper) runs discrete replicator steps
+on every population at once, projects each mixture back onto the simplex with
+a floor of gamma/K per strategy, and returns the average over the trajectory
+(10,000 steps of dt = 0.001, gamma = 1e-6). Alpha-rank (Omidshafiei et al.
+2019) builds a Markov chain over pure profiles in which one population at a
+time is invaded by a mutant, with fixation probability
+(1 - e^(-alpha d)) / (1 - e^(-m alpha d)) for a payoff gain d, and uses the
+marginals of its stationary distribution (alpha = 100, m = 50 here). The
+fixation probability goes through `expm1` with a factored form for losses, so
+alpha = 10^4 underflows to 0 instead of giving NaN. The stationary
+distribution is a dense linear solve, which limits alpha-rank to a few
+thousand profiles.
+
+`Cfr_br` is an approximate oracle: k iterations of CFR+ for one player while
+the others are frozen, returning the linearly weighted average. Its output is
+mixed, so populations can hold mixed strategies, and the reach-weighted
+mixing above handles that.
+
+On Leduc after 50 iterations the alpha-rank and PRD mixtures are at NashConv
+0.467 and 0.552, Nash at 1.18 and uniform at 2.12, so early on the softer
+meta-solvers lead (docs/psro-meta-leduc.svg). Approximate responses help more
+than a different meta-solver:
+
+```
+$ cfr-solver psro -g leduc --iterations 150 --meta nash --oracle best,cfr:10,cfr:100,cfr:1000
+nash best        150 iterations, populations 150/151, value -0.076189, NashConv 0.129, 1.0s
+nash cfr:10      150 iterations, populations 151/151, value -0.085071, NashConv 0.0882, 1.3s
+nash cfr:100     150 iterations, populations 151/151, value -0.087379, NashConv 0.0519, 2.8s
+nash cfr:1000    150 iterations, populations 151/151, value -0.085850, NashConv 0.0518, 16.9s
+```
+
+![NashConv by oracle in Leduc](docs/psro-oracle-leduc.svg)
+
+A pure best response adds one corner of the strategy space per iteration. A
+CFR+ average after 100 iterations is already mixed wherever the opponent's
+mixture leaves several actions close in value, so each new member covers more
+of the equilibrium's support. Going from 100 to 1000 CFR+ iterations buys
+nothing.
+
+Three-player Kuhn has no LP meta-solver (the code refuses one for games that
+are not two-player zero-sum), so it runs PRD, alpha-rank and uniform. PRD with
+exact best responses stops after 10 iterations at NashConv 0.192: PRD's
+mixture is not a Nash equilibrium of the meta-game, every best response to it
+is already in the population, and nothing new gets added. With the CFR+ oracle
+it keeps going, to 0.084 at 30 iterations. Alpha-rank reaches 0.214 (best) and
+0.139 (CFR+) in 10 iterations, where its chain already has 1331 states.
+Full-tree DCFR gets three-player Kuhn to 6e-10, so populations are not how to
+solve a game this small; the comparison between meta-solvers is the point.
+
+![NashConv of PSRO in three-player Kuhn](docs/psro-kuhn3.svg)
 
 ## Tuning discounted CFR
 
@@ -2343,7 +2423,19 @@ in the data-biased coin, or p and 1 - p at the root, fails one and five tests.
 PSRO's meta-game solver is checked on rock-paper-scissors, a 2x2 game with a
 mixed solution (3/7, 4/7) against (2/7, 5/7) and value 1/7, and a game with a
 saddle point, all as exact fractions; double oracle on Kuhn must stop early at
-value -1/18 with zero NashConv under both meta-solvers.
+value -1/18 with zero NashConv under both meta-solvers. The warm-started LP is
+grown in random row and column orders on 60 random games in exact arithmetic
+and must match the cold LP's value exactly, with mixtures checked to be
+optimal (every column pays at least the value, every row at most), and on 40
+games up to 40x40 in floats to 1e-9. PRD must find the mixed equilibrium of
+matching pennies, kill a dominated row and respect its floor. The fixation
+probability is checked against the naive formula and against detailed
+balance, rho(d) / rho(-d) = e^((m-1) alpha d), and alpha-rank's stationary
+distribution against an independent one from squaring the transition matrix
+40 times, on a random three-player game and the prisoner's dilemma (which has
+to put all its mass on defect, defect for large alpha). The CFR+ oracle must
+never beat the exact best response and must come within 1e-3 of it after 2000
+iterations against random opponents in Kuhn, Leduc and three-player Kuhn.
 
 ## License
 
