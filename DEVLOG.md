@@ -1976,3 +1976,112 @@ Next: warm-started meta LPs (or a few iterations of the meta-game solver
 carried over) so double oracle on Leduc can run to convergence, PSRO with
 approximate best responses from CFR as the oracle, then Goofspiel against
 published numbers.
+
+## 2026-11-09: warm-started double oracle, PSRO meta-solvers and oracles
+
+The last entry left double oracle on Leduc at NashConv 0.122 after 160
+iterations and 124 s, with the meta LP solved from scratch every iteration and
+the split not profiled. This entry profiles it, makes the LP incremental, and
+generalizes PSRO to n players with more meta-solvers and an approximate oracle.
+
+Profile first (Leduc, old code): a payoff entry costs 0.05 ms, a best response
+0.05 ms, NashConv 0.1 ms, a reach-weighted mixture over 160 strategies 7 ms,
+and one cold float LP on a random 160x160 game 1.2 s (3 ms at 40, 57 ms at 80).
+Two of those per iteration, so the LP was nearly everything. The old 160
+iterations measured 95.3 s today.
+
+What was built:
+
+- `Meta_lp`: a simplex tableau for a matrix game that grows. It solves the
+  column player's LP max sum(y) s.t. (A + c) y <= 1, y >= 0, with c making all
+  entries positive. The row mixture comes from the reduced costs of the slack
+  columns (the dual prices), so one LP gives both mixtures. Adding a column
+  keeps primal feasibility: its tableau column is B^-1 a, and B^-1 is sitting
+  in the slack columns. Adding a row keeps dual feasibility: the new row is
+  reduced against the basic variables and its slack enters the basis. So every
+  add is followed by primal or dual simplex and the tableau is always optimal.
+  It is a functor over the field (exact rationals or floats) plus a Harris
+  tolerance.
+- `Meta_game`: the meta-game tensor for any number of players, the cold exact
+  matrix solver that used to live in `Psro`, projected replicator dynamics
+  (Euclidean projection onto the simplex with a floor, Duchi et al. 2008, then
+  the trajectory average), and alpha-rank (fixation probabilities, transition
+  matrix with eta = 1 / sum(|S_k| - 1), stationary distribution by a dense
+  solve with partial pivoting, marginals per player).
+- `Cfr_br`: k iterations of CFR+ (regret matching+, linear averaging) for one
+  player against frozen opponents on the flat n-player tree, pruning subtrees
+  the others never reach.
+- `Psro` rewritten on `Multi_tree` for n players: populations are flat
+  probability arrays plus each member's own reach per information set, so
+  mixing is a reach-weighted sum of arrays, and payoff entries walk the tree
+  with the members' arrays merged by owner instead of unioning `Strategy`
+  maps. Meta-solvers: exact LP, float LP, uniform, PRD, alpha-rank. Oracles:
+  exact best response or `cfr:k`.
+- `psro` command: lists of meta-solvers and oracles, kuhn3 as a game, CSV with
+  CPU seconds per iteration.
+
+Numerics (this took most of the day):
+
+- The first float version used `Lp.Approx`, which snaps any difference under
+  1e-9 to 0. The restricted-game duality gap grew from 1e-8 at 200 strategies
+  to 3e-7 at 375 and then jumped to 0.03, and the run stopped at 401
+  iterations with NashConv 0.0296: no best response was new, which can only
+  happen with a correct meta solution if NashConv is 0.
+- Without snapping the gap stayed under 1e-10 until 337 strategies and then
+  broke all at once, which pointed at a pivot, not drift. Bug: `pivot` skipped
+  entries the tolerance called zero, so they were neither divided by the pivot
+  nor eliminated, and stayed in the row unscaled. Sparsity now tests exact
+  zero; the tolerance only decides pivoting.
+- Still breaking around 350, so I added reinversion: keep the original matrix,
+  check the gap of the normalized mixtures after each solve (it has to be the
+  normalized ones: one bad tableau had row weights summing to 1.0013 and
+  column weights to 0.9804, with a small unnormalized gap), and if it is above
+  1e-10 rebuild the tableau from the original rows, pivoting the same basis
+  back in with partial pivoting. That fixed most cases but one rebuild came
+  out at gap 1.05 and later the dual simplex declared the LP infeasible.
+- Harris's two-pass ratio test fixed the rest: find the largest step with
+  every bound relaxed by 1e-9, then among the rows within that step take the
+  largest pivot. With it the full run needs two rebuilds (at 350 and 385
+  strategies), each taking the gap from about 1e-10 back to 1e-14.
+
+Results:
+
+- Leduc double oracle, 160 iterations: 95.3 s before, 1.1 s after, NashConv
+  0.132 (the LP picks a different equilibrium of the restricted game than the
+  old code, which ended at 0.122).
+- Leduc double oracle to convergence: 403 iterations, populations 403/404,
+  value -0.085606424 against the exact sequence-form value -0.085606424,
+  NashConv 5.9e-11, 20.4 s of CPU. Most of what is left is pivots in the
+  generic tableau, where every float is boxed. Uniform weights over the same
+  403 iterations: NashConv 0.348, 5.1 s (10.7 s before payoff entries
+  stopped going through `Strategy` maps).
+- Meta-solvers on Leduc at 50 iterations with exact best responses: alpha-rank
+  0.467 (28.9 s, the dense solve over 2450 profiles dominates), PRD 0.552
+  (18.1 s), Nash 1.18, uniform 2.12.
+- Oracles on Leduc at 150 iterations with the Nash meta-solver: exact best
+  response 0.129, CFR+ with 10 iterations 0.0882, 100 iterations 0.0519, 1000
+  iterations 0.0518. Mixed members cover more of the equilibrium's support
+  per iteration than pure ones.
+- Three-player Kuhn: PRD with exact best responses stalls after 10 iterations
+  at 0.192 because no best response to the PRD mixture is new. PRD with CFR+
+  responses reaches 0.084 at 30 iterations (72 s, PRD over 10,230 profiles is
+  the cost). Alpha-rank at 10 iterations: 0.214 with exact responses, 0.139
+  with CFR+. Uniform at 30: 0.34 and 0.255.
+
+Checks:
+
+- 9 new tests (suite at 362). Warm LP against the cold rational LP on 60
+  random games grown in random orders, exact equality of the value plus
+  optimality of both mixtures; float version on 40 games up to 40x40 to 1e-9.
+  Simplex projection on hand-worked cases. PRD on matching pennies (time
+  average within 0.02 of 1/2), a dominated row, and the floor. Fixation
+  probability against the naive formula, detailed balance and the 1/m limit,
+  and no NaN at alpha = 10^4. Alpha-rank against an independent stationary
+  distribution from 40 squarings of the transition matrix (rows renormalized
+  each time: without that, (1 + eps)^(2^40) drift made the reference wrong at
+  1e-6). RPS marginals are exactly 1/3 and the prisoner's dilemma ends on
+  defect, defect. CFR+ responses never beat the best response and get within
+  1e-3 of it in Kuhn, Leduc and kuhn3. The LP meta-solvers refuse kuhn3.
+
+Next: Goofspiel and phantom tic-tac-toe against published numbers, then the
+sparse exact LU for the sequence-form LP so standard Leduc solves in seconds.
