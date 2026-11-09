@@ -855,6 +855,90 @@ strategies and replacing a float fold in regret matching with a loop took
 5,000 iterations at 101 values from 6.9 s to 1.55 s with two bidders and from
 41.6 s to 5.9 s with five, with bit-identical output.
 
+## Exact equilibria of general-sum games
+
+The sequence-form LP only works when one player's gain is the other's loss.
+Auctions are not zero-sum, and CFR on two bidders with split ties stalls
+around 1.6e-4 of the top value. `Lemke` solves the general-sum case exactly:
+the Nash conditions of a two-player game in sequence form are a linear
+complementarity problem (Koller, Megiddo and von Stengel 1996), and Lemke's
+algorithm follows a path of almost-complementary bases to a solution.
+
+The path is the one of von Stengel, van den Elzen and Talman (2002). Both
+players start by best-responding to a prior pair of strategies (x0, y0). The
+extra variable z0 mixes the prior into what each player faces:
+
+```
+E x + e z0 = e          F y + f z0 = f
+E'p - A y - (A y0) z0 >= 0   _|_  x >= 0
+F'q - B'x - (B'x0) z0 >= 0   _|_  y >= 0
+```
+
+At z0 = 1 everyone plays against the prior; the algorithm pivots until z0
+leaves the basis, and then x and y are realization plans in equilibrium.
+With a completely mixed prior the equilibrium is normal-form perfect. Payoffs
+are shifted negative first, which rules out a secondary ray. The tableau is
+dense and exact (`Rat`); p and q are free and never leave; ties in the ratio
+test are broken lexicographically on the rows of B^-1 B0, which perturbs the
+starting point and makes every pivot well defined even when the start is
+degenerate (most sequences sit in the basis at level zero). Each answer is
+certified by an exact best response for both players: both gains must be 0.
+
+On zero-sum games it reproduces the LP values with fewer pivots, but each
+pivot is slower, because the LP has a float warm start and this has none:
+
+| game | LP pivots | LP time | Lemke pivots | Lemke time | value |
+|---|---|---|---|---|---|
+| Kuhn | 16 + 16 | 0.00 s | 13 | 0.00 s | -1/18 |
+| Leduc, 2 ranks | 163 + 166 | 0.03 s | 167 | 4.82 s | 0 |
+| Liar's dice 1x3 | 187 + 180 | 0.02 s | 37 | 0.14 s | -1/9 |
+| Liar's dice 2x2 | 775 + 739 | 0.44 s | 143 | 3.54 s | 1/8 |
+| Liar's dice 1x4 | 805 + 809 | 0.42 s | 87 | 3.38 s | -1/8 |
+
+(`cfr-solver exact -g GAME --lemke`; the Liar's dice rows are the no-wild
+variants.)
+
+The split-tie auction that CFR could not finish takes 9 pivots:
+
+```
+$ cfr-solver auction-lemke --top 10
+first-n2-x10: 122 + 122 sequences
+uniform prior: 9 pivots, 0.60 s, nash conv 0, revenue 138707/43681, equilibrium 1
+   v  bidder 0                      bidder 1
+   ...
+   6  3                             3
+   7  3:8/19 4:11/19                3:8/19 4:11/19
+   8  4                             4
+   9  4                             4
+  10  4:9/19 5:10/19                4:9/19 5:10/19
+```
+
+The equilibrium mixes at v = 7 and v = 10 with weights in nineteenths, which
+no-regret averaging only approaches slowly. The NashConv of 0 comes from
+`Auction.Exact`, a separate evaluator. With `--priors K` it also starts from K
+random priors: on x = 10 with split ties all of them land on the same
+equilibrium, while x = 8 with void ties gives four different ones (revenues
+176/81, 8/3 and 212/81 among them).
+
+`Bidding` generalizes the auction to any joint prior over two signals and
+any value function, which covers three classic departures from the symmetric
+private-values model (`cfr-solver bidding --case CASE --top X`):
+
+- Asymmetric bidders (Maskin and Riley 2000): values on 0..8 against 0..4.
+  At a value of 3 the weak bidder bids 1 or 2 (mean 1.667) where the strong
+  one bids 1. First price raises 233/135 = 1.726 against 14/9 = 1.556 for
+  second price; at x = 12 it is 2.681 against 2.385.
+- Affiliated private values (Milgrom and Weber 1982): density proportional to
+  x + s0 s1, which is log-supermodular (a test checks every pair of points).
+  Second price raises more, as the linkage principle says: 3.883 against
+  3.558 at x = 8 and 4.927 against 4.591 at x = 10.
+- The wallet game (Klemperer 1998): both bidders value the prize at s0 + s1.
+  Bidding 2s is an exact second-price equilibrium on the grid. Bidding the
+  naive E[V | s] in first price, against the equilibrium, earns -0.358 per
+  auction: winning is bad news about the other signal. In second price the
+  naive bidder still makes 1.395 against 1.481, since the price is set by the
+  other bid.
+
 ## A market-making game
 
 Trading interviews like "make me a market on the sum of these cards". `Market`
@@ -1859,6 +1943,18 @@ The tests check against numbers that come from outside this code:
   two values] as exact revenue, 1/3 and Myerson's 5/12 from the continuous
   formula, which is itself checked against a Simpson integral, and the
   3 sqrt(2) - 4 mix to 1e-9.
+- Lemke: -1/18 on Kuhn and 0 on two-rank Leduc through the zero-sum adapter,
+  the unique mixed equilibrium of a 2x2 game with no pure one (2/3 and 1/4),
+  priors that steer Battle of the Sexes to either pure equilibrium, the x = 10
+  split-tie mix in nineteenths, zero NashConv from the independent auction
+  evaluator for void and split ties, and a property test over 60 random
+  general-sum trees (chance, hidden moves, 2 or 3 actions, depth 2 to 5) that
+  every solution is a valid pair of plans with both gains exactly 0. Flipping
+  the sign of the child-infoset duals fails three of these.
+- Bidding: the same equilibrium as `Auction` on symmetric values, truthful
+  bidding as an exact second-price equilibrium with asymmetric priors, 2s
+  (and not the naive bid) in the wallet game, and log-supermodularity of the
+  affiliated prior at every pair of points.
 - Market game: terminal and infoset counts in closed form, payoffs and infoset
   keys along hand-picked paths, the revealing maker's 2/3 loss derived by
   hand, a wide enough market worth exactly 0, and the exact LP value inside
