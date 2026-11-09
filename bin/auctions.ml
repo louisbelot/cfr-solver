@@ -354,4 +354,98 @@ let reserve_cmd =
       $ file "csv" "Write the revenue to $(docv)."
       $ file "svg" "Write the chart to $(docv).")
 
-let cmds = [ solve_cmd; bids_cmd; reserve_cmd ]
+let exact_profile (c : Auction.config) t (x, y) =
+  Array.init c.bidders (fun i ->
+      let rows = Lemke.behavior t i (if i = 0 then x else y) in
+      Array.init (c.top + 1) (fun v -> List.assoc (Auction.key i v) rows))
+
+let random_prior (c : Auction.config) rng =
+  let actions = Array.init (c.top + 1) string_of_int in
+  List.fold_left
+    (fun acc (i, v) ->
+      let w =
+        Array.init (c.top + 1) (fun _ -> float_of_int (1 + Rng.int rng 9))
+      in
+      let total = Array.fold_left ( +. ) 0. w in
+      Strategy.add (Auction.key i v) ~actions
+        ~probs:(Array.map (fun p -> p /. total) w)
+        acc)
+    Strategy.empty
+    (List.concat_map
+       (fun i -> List.init (c.top + 1) (fun v -> (i, v)))
+       (List.init c.bidders Fun.id))
+
+let exact_support row =
+  let picked =
+    List.filter
+      (fun b -> not (Rat.is_zero row.(b)))
+      (List.init (Array.length row) Fun.id)
+  in
+  match picked with
+  | [ b ] -> string_of_int b
+  | _ ->
+      String.concat " "
+        (List.map
+           (fun b -> Printf.sprintf "%d:%s" b (Rat.to_string row.(b)))
+           picked)
+
+let lemke rule top void reserve priors seed =
+  let c =
+    {
+      Auction.bidders = 2;
+      top;
+      rule;
+      ties = (if void then Void else Split);
+      reserve;
+    }
+  in
+  let t = Lemke.build (module (val Auction.game c)) in
+  Format.printf "%s: %d + %d sequences@." (Auction.name c) (Lemke.sequences t 0)
+    (Lemke.sequences t 1);
+  let rng = Rng.make seed in
+  let found = ref [] in
+  for k = 0 to priors do
+    let prior = if k = 0 then Strategy.empty else random_prior c rng in
+    let start = Unix.gettimeofday () in
+    let sol = Lemke.solve ~prior t in
+    let secs = Unix.gettimeofday () -. start in
+    let q = exact_profile c t sol.plans in
+    let nc = Auction.Exact.nash_conv c q in
+    let fresh = not (List.exists (fun q' -> q' = q) !found) in
+    if fresh then found := q :: !found;
+    Format.printf "%s prior: %d pivots, %.2f s, nash conv %s, revenue %s%s@."
+      (if k = 0 then "uniform" else Printf.sprintf "random %d" k)
+      sol.pivots secs (Rat.to_string nc)
+      (Rat.to_string (Auction.Exact.revenue c q))
+      (if fresh then Printf.sprintf ", equilibrium %d" (List.length !found)
+       else "")
+  done;
+  List.iteri
+    (fun n q ->
+      Format.printf "@.equilibrium %d@.%4s  %-28s  %s@." (n + 1) "v" "bidder 0"
+        "bidder 1";
+      for v = 0 to c.top do
+        Format.printf "%4d  %-28s  %s@." v
+          (exact_support q.(0).(v))
+          (exact_support q.(1).(v))
+      done)
+    (List.rev !found)
+
+let priors =
+  Arg.(
+    value & opt int 0
+    & info [ "priors" ] ~docv:"K"
+        ~doc:"Also start from $(docv) random completely mixed priors.")
+
+let seed =
+  Arg.(value & opt int 1 & info [ "seed" ] ~docv:"S" ~doc:"Prior seed.")
+
+let lemke_cmd =
+  Cmd.v
+    (Cmd.info "auction-lemke"
+       ~doc:
+         "Exact Bayes-Nash equilibria of a two-bidder auction from \
+          Lemke's           algorithm on the sequence form.")
+    Term.(const lemke $ rule $ top $ void $ reserve $ priors $ seed)
+
+let cmds = [ solve_cmd; bids_cmd; reserve_cmd; lemke_cmd ]
