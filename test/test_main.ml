@@ -3,6 +3,7 @@ let () =
     [
       ("kuhn", Test_kuhn.tests);
       ("lemke", Test_lemke.tests);
+      ("exploit", Test_exploit.tests);
       ("bidding", Test_bidding.tests);
       ("figgie", Test_figgie.tests);
       ("leduc", Test_leduc.tests);
