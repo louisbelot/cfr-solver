@@ -2085,3 +2085,82 @@ Checks:
 
 Next: Goofspiel and phantom tic-tac-toe against published numbers, then the
 sparse exact LU for the sequence-form LP so standard Leduc solves in seconds.
+
+## 2026-11-09: Goofspiel, the game of pure strategy, local best response
+
+Two additions: Goofspiel as a standard benchmark, with an independent solver
+for its open variant that reproduces a published table, and local best
+response as a cheap lower bound on exploitability.
+
+What was built:
+
+- `Goofspiel`: OpenSpiel's rules (descending, ascending or shuffled prize
+  deck, win/loss or points scoring, bids hidden or revealed). The simultaneous
+  bid is player 0 then player 1, with player 1's infoset leaving out the
+  pending bid. Infosets are the player, the prize cards seen, the player's own
+  bids and either the win/loss/tie sequence or the opponent's bids. Hands are
+  bitmasks.
+- `Gops`: the Ross (1971) recursion that Rhoads and Bartholdi (2012) used.
+  f(V, Y, P) over hands and prizes left, each upcard a matrix game whose
+  entries are k sign(V_i - Y_j) plus the value of the smaller subgame. A
+  functor over the field: exact rationals through the dense simplex in
+  `Meta_game.matrix`, floats through the `Meta_lp` tableau with the gap check
+  and refactor from the PSRO work. Memo keyed by the three 13-bit masks packed
+  into one int, with f(V, V, P) = 0 and f(Y, V, P) = -f(V, Y, P).
+- `Goofspiel.profile` exports any per-state mixture to the extensive-form open
+  game, so the recursion's answer can be checked by the tree best response.
+- `gops` command: first-move table, exact digits, and the exploitability of
+  the points-optimal profile under win/loss scoring.
+- `Lbr`: local best response on `Multi_tree`. One pass accumulates the
+  belief-weighted action values at every responder infoset (reach of chance
+  and opponents times the rollout value of the subtree), the argmax becomes a
+  pure strategy, and `Multi_br.payoff` scores it. Rollouts: the target's own
+  strategy, uniform, a preferred action label, or any fixed strategy.
+- `lbr` command: exact NashConv against LBR NashConv along a CFR+ run.
+
+Matching OpenSpiel's sizes took some digging. D'Orazio et al. (2020) give
+2,124 infosets for 5-card descending imperfect-information Goofspiel and 3,608
+for 4-card shuffled. A brute-force count in Python with OpenSpiel's infoset
+contents gave 9,948 for the first. Per depth it was 2, 26, 260, 1836, 7824,
+and the first four sum to exactly 2,124: OpenSpiel plays the last card
+automatically. With that rule the shuffled count came out at 3,608 too.
+
+Results:
+
+- `gops -n 5` reproduces Table 1 of Rhoads and Bartholdi to the four printed
+  digits, and in exact arithmetic (0.5 s) the top-left entry is the fraction
+  they print, 254 digits over 256. Their 12.52 example comes out as 313/25.
+  Float timings: 0.02 s for 5 cards, 0.22 s for 6, 2.1 s for 7, 27 s for 8
+  (363,146 subgames). The generic simplex on boxed floats is the limit; they
+  reached 13 cards on a 1 TB machine.
+- Points against win/loss: a best response under win/loss scoring gains 0.41
+  per game from either seat against the points-optimal 5-card profile, 0.40
+  with a descending deck, 0.28 with 4 cards.
+- 5-card Goofspiel by nodes touched, 10,000 iterations of the full-tree
+  methods: CFR 9.6e-3, CFR+ 3.5e-5, DCFR 3.4e-5, PCFR+ 4.7e-8, external
+  sampling 3.1e-3, outcome sampling 4.0e-3.
+- LBR with the target's own strategy as rollout: 74% to 96% of the exact
+  NashConv in Leduc down to 1e-5, 91% to 99% in Liar's dice, 35% to 79% in
+  5-card Goofspiel. Uniform and check/call rollouts go negative once CFR+ is
+  past 20 to 50 iterations (-0.05 in Leduc, -0.09 in Goofspiel), the same
+  failure Lisy and Bowling report against strong hold'em bots. LBR costs about
+  half an exact best response on the tree (20 ms against 59 ms in Liar's dice).
+
+Checks:
+
+- 17 new tests. Goofspiel: OpenSpiel's two infoset counts, terminal counts,
+  closed-form infoset counts for the open game (2 sum over t < N-1 of
+  (N!/(N-t)!)^2), payoffs and keys worked out by hand, exact LP value 0 for
+  three variants, PCFR+ convergence. Gops: the 12.52 example, all 25 table
+  entries, the exact 510-digit fraction, exact and float agreeing on every
+  4-card subgame for all three orders, antisymmetry computed from scratch, and
+  NashConv under 1e-9 for the exported profile in three open games.
+- LBR: never above the best response on random profiles (Kuhn, Leduc,
+  Goofspiel, three rollouts), equal to it for Kuhn's second player and with
+  the best response as rollout, no gain at the Kuhn equilibria, and the Kuhn
+  choices against a uniform opponent derived by hand (the jack bluffs, the
+  queen calls a bet).
+
+Next: phantom tic-tac-toe, which needs a lazily expanded tree, and a sampled
+LBR on the hold'em public tree for blueprints too big for an exact best
+response. Pushing GOPS past 8 cards needs a float-specialized matrix solver.
