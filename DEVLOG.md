@@ -1873,5 +1873,5 @@ Checks:
   pure equilibrium, not the mixed one. The test now only asks for a pure one.
 
 Next: integer pivoting (entries kept as integers over a common determinant,
-as in von Stengel's lrs-style code) to cut the rational overhead, then Goofspiel
+as in Avis's lrs) to cut the rational overhead, then Goofspiel
 and the abstracted Figgie for n-player MCCFR.
