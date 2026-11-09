@@ -1414,6 +1414,52 @@ solve a game this small; the comparison between meta-solvers is the point.
 
 ![NashConv of PSRO in three-player Kuhn](docs/psro-kuhn3.svg)
 
+## Local best response
+
+An exact best response needs the whole tree, which stops being possible long
+before the games people care about. Lisy and Bowling (2017) bound
+exploitability from below with a local best response (LBR): at each of its
+decisions, LBR keeps a belief over the opponent's private states (Bayes on the
+opponent's strategy), values each action by assuming play continues with a
+fixed rollout policy (check/call to showdown in their poker version), and takes
+the best one. Whatever LBR plays is a real strategy, so its value against the
+target can never exceed the best response's.
+
+`Lbr` runs this on the flat game tree for any number of players. One pass
+accumulates, for every infoset of the responder, the belief-weighted value of
+each action (chance and opponent reach times the value of the subtree under the
+rollout), the argmax becomes a pure strategy, and a second pass scores it
+exactly. Three rollouts are built in: the target's own strategy for the
+responder (LBR is then one step of policy improvement), uniform, and "prefer
+this action" (`c` for check/call in Leduc). The tree version is not the point
+of LBR (it takes about half the time of the exact best response here: 20 ms
+against 59 ms in Liar's dice), but it allows measuring how tight the bound is:
+
+```
+$ dune exec cfr-solver -- lbr -g leduc -n 10000 --svg docs/lbr-leduc.svg
+leduc: NashConv of the CFR+ average, exact and by local best response
+
+iteration       exact        lbr own    lbr uniform   lbr prefer:c
+        1   4.747e+00      4.400e+00      4.400e+00      3.928e+00
+       10   1.221e+00      1.109e+00      3.412e-01      7.114e-01
+      100   2.683e-02      2.515e-02     -4.347e-02     -1.250e-02
+     1000   5.045e-04      4.228e-04     -5.096e-02     -4.162e-02
+    10000   1.083e-05      9.723e-06     -5.017e-02     -4.206e-02
+```
+
+![Exact and local best response along a CFR+ run in Leduc](docs/lbr-leduc.svg)
+
+With its own strategy as the rollout, LBR finds 74% to 96% of the exact
+NashConv in Leduc all the way down to 1e-5, and 91% to 99% in Liar's dice from
+10 iterations on. The fixed rollouts are only useful far from equilibrium:
+once the target is decent, LBR with a uniform or check/call continuation loses
+to it, and the "bound" goes negative (-0.05 in Leduc, -0.09 in 5-card
+Goofspiel). Lisy and Bowling report the same failure in no-limit hold'em: against a bot
+whose full best response wins about 90 mbb/hand, LBR scored -536. Goofspiel is
+the loosest case for the own rollout, between 35% and 79% of the exact value
+after 20 iterations, probably because each player makes four bids and a
+one-step lookahead misses deviations that only pay off over several turns.
+
 ## Tuning discounted CFR
 
 DCFR has three knobs: alpha discounts positive regrets, beta negative ones,
@@ -2261,6 +2307,11 @@ The tests check against numbers that come from outside this code:
   entries of their 5-card first-move table and the exact 510-digit fraction of
   its first entry. The exact and float recursions agree on every 4-card
   subgame, and the recursion's profile has NashConv 0 in the game tree.
+- Local best response: never above the exact best response for 200 random
+  Kuhn profiles and 20 each in Leduc and Goofspiel under three rollouts, equal
+  to it for Kuhn's second player (who never moves twice), equal to it with the
+  best response as the rollout, no gain at the Kuhn equilibria, and Kuhn
+  choices against a uniform opponent worked out by hand.
 - Auctions: payoffs and best-response gains against an explicit game tree
   built separately (24 rule, tie and reserve combinations, random profiles),
   the fast solver matching the full-tree n-player CFR iterate for iterate,
