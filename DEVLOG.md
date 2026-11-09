@@ -1875,3 +1875,104 @@ Checks:
 Next: integer pivoting (entries kept as integers over a common determinant,
 as in Avis's lrs) to cut the rational overhead, then Goofspiel
 and the abstracted Figgie for n-player MCCFR.
+
+## 2026-11-09: exploiting opponents, PSRO
+
+Everything so far computed equilibria. This entry is about beating a specific
+opponent without becoming easy to beat, and about the population-based view of
+equilibrium finding.
+
+What was built:
+
+- `Model`: counts of the opponent's actions per information set from observed
+  hands (full information afterwards, the setting of Johanson and Bowling 2009),
+  turned into a strategy with an optional Dirichlet prior. Unseen sets are
+  uniform.
+- `Bots`: fixed opponents built from the tree (uniform, first matching label
+  such as "always raise", a behavioural blend of two strategies) and `part`,
+  which cuts one player's half out of a profile.
+- `Restricted.game`: one functor-free construction that wraps any `Game.S`.
+  With `p` it is the restricted Nash response (Johanson, Zinkevich and Bowling
+  2007): a root coin pins the opponent to the model (their decisions become
+  chance nodes) or leaves them free. With `conf` it is the data-biased response:
+  the coin sits at every opponent information set, with probability P_conf(I)
+  from the 1-step, 10-step, 0-10 linear or s-curve functions of the paper, and
+  0 for sets never seen. The result is an ordinary game, so `Cfr`, the best
+  response and the exact LP work on it unchanged.
+- `Restricted.evaluator`: exact value against an opponent, worst case and best
+  response, on a prebuilt `Multi_tree`.
+- `Safe.session`: repeated hands against an opponent that may depend on our
+  current strategy, the model refitted every k hands, policies equilibrium,
+  best response, RNR, DBR and two "risk what you've won" budgets (Ganzfried and
+  Sandholm 2015). `Safe.adversary` baits, then best-responds exactly to
+  whatever we play on each hand.
+- `Psro`: populations of pure best responses, meta-game solved exactly
+  (rational simplex), with the float simplex, or uniformly. `Psro.mixture`
+  combines strategies by reach weight, which is what "play strategy k with
+  probability w_k" means in behavioural terms. `Lp.maximize_float` exposes the
+  float simplex that used to be only the warm start.
+- CLI: `frontier`, `safety`, `psro`.
+
+Design notes:
+
+- The budget's safety argument: let v be the worst case of our equilibrium and
+  loss(s) = v - worst(s). The policy only plays s with loss(s) <= k. With the
+  expected update k' = k + u(s, t) - v >= k - loss(s) >= 0 for every opponent
+  t, so k never goes negative and the session's expected total never drops
+  below the game value at any point. With realized payoffs k also grows on card
+  luck, and the policy then gambles winnings that were never gifts.
+- Defining v as our own equilibrium's guaranteed value (not the true game
+  value) makes the equilibrium's loss exactly 0, so the fallback always fits
+  the budget even though CFR's equilibrium is approximate.
+- The DBR coin at every opponent node breaks perfect recall for an opponent
+  who acts twice in a hand (their later key no longer tells whether the earlier
+  move was free). CFR still computes the right thing, since the free part of
+  the strategy only scales each set's regrets by (1 - c), but the sequence-form
+  LP cannot take that game. The tests only send the LP games where the opponent
+  moves once.
+- First bug found: `against` took the union of our strategy and the
+  opponent's, and the union keeps the left side, so passing a full equilibrium
+  profile as "our strategy" silently replaced the opponent with our own second
+  seat. The evaluator now cuts our half out first.
+
+Results:
+
+- Leduc, opponent half equilibrium and half "always raise", model from 1000
+  probe hands (120 of 144 opponent sets seen), 2000 CFR+ iterations per point
+  (docs/exploit-leduc.svg). With the true strategy, RNR at p = 0.9 gains 1.200
+  of the 1.214 a best response gains at worst-case loss 0.546 instead of 1.414.
+  With the model, RNR peaks at p = 0.5 (0.849 for 0.280) and decays to 0.607
+  gain and 2.849 loss at p = 1. DBR with 0-10 linear: 1.076 for 0.652 at
+  Pmax = 0.9. Same shape as the 2009 paper.
+- Safety, Kuhn, 20 seeds, bait 300 hands then exact best responses: best
+  response ends -401 below 3000 v, RNR p = 0.9 -43, realized budget -35 with 12
+  of 20 seeds below 0, expected budget exactly 0.00 with none below.
+  Equilibrium +56. With the bait kept all session, expected budget +1581,
+  equilibrium +556, best response +1581.
+- Safety, Leduc, 10 seeds: best response -3984, RNR p = 0.9 -1474, DBR -301,
+  realized budget -125 (8 seeds below 0), expected budget +0.02 (none),
+  equilibrium +203, RNR p = 0.5 +64 (one seed dipped to -12.5).
+- PSRO on Kuhn: 8 iterations to value -1/18 and NashConv 0 with either
+  meta-solver; uniform meta still 0.108 after 50. Leduc: double oracle NashConv
+  4.4 at 10 iterations, 0.66 at 60, 0.35 at 100, 0.122 at 160 (124 s);
+  uniform 0.731 at 160 (2.9 s). The meta LP is solved from scratch every
+  iteration and grows with both populations; I have not profiled the split.
+
+Checks:
+
+- 16 new tests (full suite 353). The restricted game's CFR+ value against the
+  exact LP for four (model, p) pairs; DBR with constant c against the LP of RNR
+  with p = c; RNR beats the equilibrium, the best response and every other p's
+  solution on its own objective; the frontier is monotone; endpoints are Nash
+  and a best response; DBR does not trust unseen sets (worst case -0.111
+  against -1/6 for RNR with a uniform default). Restricted games pass the
+  game checker (probabilities, labels, perfect recall). The budget never goes
+  below 0 on three seeds; best response drops below -300. PSRO: exact matrix
+  games, mixture linearity on Leduc to 1e-12, double oracle on Kuhn.
+- Mutants: swapping c and 1 - c in the DBR coin fails one test, swapping p and
+  1 - p at the root fails five.
+
+Next: warm-started meta LPs (or a few iterations of the meta-game solver
+carried over) so double oracle on Leduc can run to convergence, PSRO with
+approximate best responses from CFR as the oracle, then Goofspiel against
+published numbers.
