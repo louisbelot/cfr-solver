@@ -17,7 +17,10 @@ measured as NashConv. The same machinery covers sealed-bid auctions (first
 price, second price and all-pay, with reserves, checked against the Bayes-Nash
 bid functions and the discrete theorems in exact arithmetic) and an
 interview-style market-making card game solved exactly, and Figgie gets a full
-rules engine with exact Bayesian hand values and a field of bots.
+rules engine with exact Bayesian hand values and a field of bots. Against a
+known or observed opponent it computes restricted Nash and data-biased
+responses, which trade exploitation for worst-case loss, and plays repeated
+sessions that only risk what they have already won.
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -1093,6 +1096,104 @@ the fundamentalist still quotes $2 from a value computed without counting.
 ```
 $ cfr-solver figgie-edge --edges 20 --games 1500 --svg docs/figgie-edge.svg
 ```
+
+## Exploiting an opponent
+
+An equilibrium never loses to anyone, but it also leaves most of a weak
+player's mistakes on the table. A best response to a model of the opponent
+takes everything the model offers and can lose badly if the model is wrong or
+the opponent changes. Three modules sit between the two.
+
+`Model` counts the opponent's actions at each information set from observed
+hands, with both players' cards shown afterwards as in Johanson and Bowling
+(2009), and turns the counts into a strategy: frequencies where something was
+seen, uniform where nothing was, or with a Dirichlet prior added to every count.
+
+`Restricted` builds new games out of an existing one. The restricted Nash
+response (Johanson, Zinkevich and Bowling 2007) puts a coin at the root: with
+probability p the opponent is pinned to the model for the whole hand (their
+decisions become chance nodes with the model's probabilities), otherwise they
+play freely. The exploiter never sees the coin, so both branches share the
+exploiter's information sets. Solving that game gives a strategy that maximizes
+
+```
+p u(s, model) + (1 - p) min_t u(s, t)
+```
+
+so for each p it is the best trade between what it wins against the model and
+what it can lose to anyone. The data-biased response (Johanson and Bowling 2009)
+moves the coin to every opponent information set, with a probability that grows
+with the number of times that set was observed: 1-step, 10-step, 0-10 linear or
+the s-curve n / (s + n), each scaled by Pmax. Sets that were never observed get
+0, so the opponent plays freely there and the model needs no default policy.
+Both are plain `Game.S` modules, so CFR, the best response and the exact LP run
+on them unchanged.
+
+![Worst-case loss against gain for counter-strategies in Leduc hold'em](docs/exploit-leduc.svg)
+
+The opponent here plays half equilibrium, half "always raise" at every
+information set. We watch it for 1000 hands while playing uniformly at random,
+which reaches 120 of its 144 information sets, and solve each counter-strategy
+with 2000 CFR+ iterations. Both axes are per hand, measured exactly against the
+real opponent and its best response (selected rows):
+
+```
+$ cfr-solver frontier --opponent loose --hands 1000 --svg docs/exploit-leduc.svg
+method           p       loss       gain
+rnr-truth     0.90     0.5455     1.2004
+rnr-model     0.50     0.2796     0.8486
+rnr-model     0.90     1.8481     0.7738
+rnr-model     1.00     2.8486     0.6071
+dbr-model     0.90     0.6518     1.0758
+rnr-truth     1.00     1.4143     1.2141
+```
+
+Knowing the real strategy, p = 0.9 keeps 1.200 of the 1.214 a best response
+gains and risks 0.546 instead of 1.414. With the estimated model, the
+restricted Nash response peaks at p = 0.5 and then gets worse in both
+directions: at p = 1 it wins half as much and can lose 2.85 a hand, because it
+trusts a frequency from two observations as much as one from two hundred. The
+data-biased response at Pmax = 0.9 wins 1.076 for 0.652. This is the main result
+of the 2009 paper, reproduced on a much smaller game.
+
+`Safe` plays sessions of repeated hands, refits the model every 100 hands and
+measures everything exactly: after each hand it adds u(s_t, t_t) - v to a
+running margin, where v is the guaranteed value of our CFR equilibrium (its own
+worst case, so the equilibrium never goes below 0). The opponent below plays
+uniformly for 300 hands as bait, then plays an exact best response to whatever
+strategy we use on each hand, which is the worst adaptive opponent there is.
+The budget policies follow Ganzfried and Sandholm's "risk what you've won":
+keep a budget k of winnings above v and play the most exploitative restricted
+Nash response (largest p on a grid) whose worst-case loss fits in k. With the
+expected update, k grows by u(s_t, t_t) - v, which is at least k minus the loss
+we allowed, so k never goes negative against any opponent. With the realized
+update, a lucky run of cards grows k without any gift from the opponent, and
+the policy then risks money it never won.
+
+```
+$ cfr-solver safety -g leduc --seeds 10
+leduc, 3000 hands, bait for 300 then a best response to our current strategy, 10 seeds
+policy                 expected   realized  worst low  low < 0  exploit
+equilibrium              203.11     125.71       0.00        0       0%
+best response          -3983.69   -4054.39   -4319.30       10      97%
+rnr p=0.5                 64.07      17.91     -12.49        1      97%
+rnr p=0.9              -1473.81   -1531.59   -1943.61       10      97%
+dbr 0-10 linear 0.9     -301.34    -352.09    -388.47       10      97%
+budget realized         -124.84    -182.59    -340.49        8      13%
+budget expected            0.02    -109.49       0.00        0      11%
+```
+
+"expected" and "realized" are the session's margin above 3000 v (exact and
+sampled), "worst low" the lowest running exact margin over all seeds, and
+"exploit" the share of hands not played with the equilibrium. Only the
+equilibrium and the expected budget stay above 0 in every session. Against
+this opponent the budget gives back everything it won and finishes at 0, while
+the equilibrium keeps its 203: safety against a perfect adapter costs the
+winnings. Against a fixed opponent nothing is given back. In Kuhn with the bait
+kept for the whole session (`--after 3000`, 20 seeds), the expected budget makes
+1581 against 556 for the equilibrium, the same as a best response, and with the
+switch at 300 it again ends at exactly 0 with no seed below it, while realized
+budgets go negative in 12 of 20.
 
 ## Tuning discounted CFR
 
@@ -2187,6 +2288,18 @@ random games and check that cards and cash are conserved and profits sum to
 zero, and that card counting never claims more cards than the deck has.
 Splitting tied bonuses three ways instead of two, or counting every sale as a
 new card, each fail a test.
+
+Opponent exploitation: the value of the restricted game from CFR+ is checked
+against the exact sequence-form LP of the same game for four (model, p) pairs
+in Kuhn, and the data-biased response with a constant confidence c against the
+LP of the restricted Nash response with p = c (equal in Kuhn, where the second
+player moves once per hand). A Pareto test checks that each solution beats the
+equilibrium, the best response and the solutions for every other p on its own
+objective, and that loss and gain both grow with p. At p = 0 the result is a
+Nash equilibrium, at p = 1 a best response to the model. The expected budget is
+checked to stay at or above 0 against the adaptive opponent on three seeds,
+and a plain best response to drop more than 300 below it. Swapping c and 1 - c
+in the data-biased coin, or p and 1 - p at the root, fails one and five tests.
 
 ## License
 
