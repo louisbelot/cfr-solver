@@ -2,7 +2,7 @@
 
 Nash-equilibrium strategies for imperfect-information games, computed in OCaml
 with counterfactual regret minimization (CFR). It solves Kuhn poker, Leduc
-hold'em and Liar's dice with seven full-tree CFR variants (vanilla CFR, CFR+,
+hold'em, Liar's dice and Goofspiel with seven full-tree CFR variants (vanilla CFR, CFR+,
 linear CFR, discounted CFR, DCFR+, and the predictive PCFR+ and PDCFR+), two
 Monte Carlo ones (external and outcome sampling) and optimistic FTRL on the
 sequence form as a baseline that is not CFR, runs
@@ -188,6 +188,105 @@ wide and shallow (up to 12 bids at a node, at most 13 moves deep), so a
 sampled iteration that walks every action of one player and one action of
 the other skips most of it, and the 36 deals average out quickly. DCFR is
 again the best full-tree method, 2.6 times ahead of CFR+ at the end.
+
+## Goofspiel
+
+Goofspiel, or the game of pure strategy, is the standard simultaneous-move
+benchmark. Each player holds cards 1 to N and a third suit, also 1 to N, is
+the prize deck. Every turn a prize card is turned up, both players bid a card
+from their hand at the same time, the higher bid takes the prize's value in
+points and a tie discards it. `Goofspiel.game` follows OpenSpiel's
+`goofspiel`: the prize deck can be descending, ascending or shuffled (then
+each upcard is a chance node), scoring is win/loss (+1, -1, 0 for a draw) or
+points (the difference in points won, which is zero-sum), and in the default
+imperfect-information variant a player never sees the other's bids, only
+whether each turn was won, lost or tied. With `reveal` both bids are shown
+after each turn. The simultaneous bid is encoded as player 0 then player 1,
+with player 1's infoset leaving out the pending bid.
+
+The last turn has one card per hand, so it is played automatically. That
+detail matters for matching published sizes: the 5-card descending game has
+2,124 infosets and the 4-card shuffled one 3,608, the counts D'Orazio et al.
+(2020) give for OpenSpiel's implementations. Counting the forced last
+decision would give 9,948 for the first one.
+
+```
+$ dune exec cfr-solver -- compare -g goofspiel --algorithms cfr,cfr+,dcfr,pcfr+,es,os -n 10000 --svg docs/goofspiel.svg
+goofspiel-5: exploitability of the average strategy by nodes touched
+
+       nodes       cfr      cfr+      dcfr     pcfr+        es        os
+     1000000 3.428e-01 1.773e-01 1.376e-01 1.179e-01 7.846e-02 1.586e-01
+    10000000 9.684e-02 5.223e-03 3.953e-03 3.546e-03 2.302e-02 4.713e-02
+   100000000 2.502e-02 2.311e-04 2.128e-04 1.473e-05 8.155e-03 1.392e-02
+   538620000 9.567e-03 3.451e-05 3.446e-05 4.729e-08 3.097e-03 3.972e-03
+  iterations     20000     10000     10000     10000    766174  29923334
+     cpu (s)      7.56      7.39      7.91      8.65     10.72     26.09
+```
+
+![Exploitability against nodes touched in 5-card Goofspiel](docs/goofspiel.svg)
+
+PCFR+ pulls away: 4.7e-8 after
+10,000 iterations, three orders of magnitude below CFR+ and DCFR, which end
+level with each other. The game value is 0 for every variant since the players
+are symmetric, and the exact sequence-form LP confirms it for three cards.
+
+### Solving the open game by dynamic programming
+
+When bids are revealed, the state after any number of turns is public: both
+hands and the prize cards left. Ross (1971) wrote the value as a recursion over
+those states, and Rhoads and Bartholdi (2012) used it to solve the game up to
+13 cards. With V and Y the hands, P the prizes left and k the upcard,
+
+    f(V, Y, P)    = average over k in P of f_k(V, Y, P)
+    f_k(V, Y, P)  = value of the matrix game X_ij = k sign(V_i - Y_j)
+                                              + f(V - V_i, Y - Y_j, P - k)
+
+and f(V, V, P) = 0, f(V, Y, P) = -f(Y, V, P) by symmetry. `Gops` memoizes f
+over bitmask triples and solves each matrix game as a linear program, in exact
+rationals (the dense simplex behind `Meta_game.matrix`) or in floats (the
+`Meta_lp` tableau). For a fixed prize order the average is over one upcard.
+
+```
+$ dune exec cfr-solver -- gops -n 5 --exact --win-loss
+GOPS 5, random upcards: 1000 subgames stored, 0.02s, value -5.33e-16
+
+bid       up 1    up 2    up 3    up 4    up 5
+1       0.0470  0.1855  0.1182  0.1226  0.1123
+2       0.8327  0.0000  0.1188  0.0735  0.0241
+3       0.1203  0.7375  0.0000  0.1915  0.0000
+4       0.0000  0.0770  0.7630  0.2043  0.0000
+5       0.0000  0.0000  0.0000  0.4081  0.8636
+
+exact: 0.50s, largest gap to the float table 1.05e-15
+  upcard 1, bid 1: 0.0469887015, 254 / 256 digits
+  upcard 1, bid 2: 0.8327260280, 257 / 258 digits
+  upcard 1, bid 3: 0.1202852705, 257 / 258 digits
+  upcard 1, bid 4: 0.0000000000, 1 / 1 digits
+  upcard 1, bid 5: 0.0000000000, 1 / 1 digits
+
+points-optimal profile in the open game (11.83s to export)
+  goofspiel-5-random-open-points best response gains 0.000000 + 0.000000
+  goofspiel-5-random-open best response gains 0.407424 + 0.406874
+```
+
+The table is Table 1 of Rhoads and Bartholdi to the last printed digit, and
+the exact top-left entry is the fraction they print, 254 digits over 256; a
+test compares every digit. Their worked example (queen and king left, 2 and 4
+against ace and 3, king up) comes out as 313/25 = 12.52 with the high card
+played 13/25 of the time. In floats the recursion takes 0.22 s for 6 cards,
+2.1 s for 7 and 27 s for 8 (7,130, 50,764 and 363,146 subgames stored).
+
+The two solvers check each other. `Gops.strategy` exports the recursion's
+mixtures to the extensive-form open game, and the best response there, which
+walks the game tree and knows nothing about matrix games, gains nothing
+against it (NashConv under 1e-9 with shuffled and ascending 4-card decks and a
+descending 5-card one).
+
+The last two lines show what Rhoads and Bartholdi warn about: the recursion
+maximizes expected points, which is not the same as maximizing the chance of
+winning. Scored win/loss, a best response to the points-optimal profile gains
+0.41 per game from either seat with 5 cards (0.40 with a descending deck, 0.28
+with 4 cards), on a scale where a sure win is worth 1.
 
 ## Playing the solver
 
@@ -2156,6 +2255,12 @@ The tests check against numbers that come from outside this code:
   and B possible bids), roll
   probabilities, bid truth with and without wilds, and game values from an
   independent sequence-form LP, including -7/258 for the standard game.
+- Goofspiel: OpenSpiel's 2,124 and 3,608 infosets, terminal counts and
+  closed-form infoset counts for the open game, payoffs and infoset keys worked
+  out by hand, and from Rhoads and Bartholdi (2012) the 12.52 example, all 25
+  entries of their 5-card first-move table and the exact 510-digit fraction of
+  its first entry. The exact and float recursions agree on every 4-card
+  subgame, and the recursion's profile has NashConv 0 in the game tree.
 - Auctions: payoffs and best-response gains against an explicit game tree
   built separately (24 rule, tie and reserve combinations, random profiles),
   the fast solver matching the full-tree n-player CFR iterate for iterate,
