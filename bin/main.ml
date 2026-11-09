@@ -8,6 +8,12 @@ let games : (string * (module Game.S)) list =
     ("liars", Liars_dice.game Liars_dice.standard);
     ("liars-nowild", Liars_dice.game { Liars_dice.standard with wild = false });
     ("liars-2d3", Liars_dice.game { dice = 2; faces = 3; wild = true });
+    ("goofspiel", Goofspiel.game { Goofspiel.standard with cards = 5 });
+    ( "goofspiel-random",
+      Goofspiel.game { Goofspiel.standard with order = Random } );
+    ( "goofspiel-open",
+      Goofspiel.game
+        { Goofspiel.standard with cards = 5; payoff = Points; reveal = true } );
   ]
 
 type algorithm =
