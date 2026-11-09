@@ -73,7 +73,7 @@ let exact_matches_cold () =
     let t = E.create ~shift:(Rat.of_int (1 - lo)) in
     grow (E.add_row t) (E.add_col t) Fun.id a (order rng ~m ~n);
     let x, y, v = E.solution t in
-    let _, _, v' = Psro.matrix a in
+    let _, _, v' = Meta_game.matrix a in
     Alcotest.check rat "value" v' v;
     check_optimal a x y v
   done
@@ -86,7 +86,7 @@ let float_matches_exact () =
     let t = A.create ~shift:21. in
     grow (A.add_row t) (A.add_col t) Rat.to_float a (order rng ~m ~n);
     let x, y, v = A.solution t in
-    let _, _, v' = Psro.matrix a in
+    let _, _, v' = Meta_game.matrix a in
     Alcotest.(check (float 1e-9)) "value" (Rat.to_float v') v;
     let total = Array.fold_left ( +. ) 0. in
     Alcotest.(check (float 1e-9)) "x" 1. (total x);
