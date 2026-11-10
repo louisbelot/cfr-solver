@@ -5,6 +5,7 @@ let () =
       ("autodiff", Test_autodiff.tests);
       ("mlp", Test_mlp.tests);
       ("reservoir", Test_reservoir.tests);
+      ("features", Test_features.tests);
       ("lemke", Test_lemke.tests);
       ("exploit", Test_exploit.tests);
       ("psro", Test_psro.tests);
