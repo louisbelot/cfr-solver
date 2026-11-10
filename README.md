@@ -22,7 +22,8 @@ known or observed opponent it computes restricted Nash and data-biased
 responses, which trade exploitation for worst-case loss, and plays repeated
 sessions that only risk what they have already won. PSRO grows populations of
 responses and solves the game between them with a warm-started LP, replicator
-dynamics or alpha-rank.
+dynamics or alpha-rank. Deep CFR and SD-CFR run on a neural network written
+from scratch (reverse-mode autodiff, Adam, data-parallel training on domains).
 It also builds card
 abstractions (hand-strength buckets, optimal 1D k-means, k-medians under earth
 mover's distance) and measures exactly what each one costs. For hold'em it
@@ -1460,6 +1461,97 @@ the loosest case for the own rollout, between 35% and 79% of the exact value
 after 20 iterations, probably because each player makes four bids and a
 one-step lookahead misses deviations that only pay off over several turns.
 
+## Deep CFR
+
+Everything above stores one regret per infoset and action. Deep CFR (Brown,
+Lerer, Gross and Sandholm 2019) replaces that table with a neural network, so
+that infosets which look alike share what they learn and the game never has to
+be enumerated. This repo has no ML dependency, so the network is written from
+scratch: `Autodiff` is a reverse-mode tape over matrices (matmul, bias, ReLU, a
+masked weighted MSE and a masked softmax cross-entropy), `Mlp` stacks it into a
+ReLU network with Adam and gradient clipping, and every gradient is checked
+against central finite differences in the tests.
+
+One iteration of `Deep_cfr`, for each player in turn:
+
+1. Run K external-sampling traversals with the current policies. At the
+   traverser's decisions every action is explored and the sampled regrets
+   (each action's value minus the policy's value) go into that player's
+   advantage memory, tagged with the iteration t. At the opponent's decisions
+   one action is sampled and the opponent's policy goes into its strategy
+   memory.
+2. Train a fresh network on the advantage memory with loss weighted by t, which
+   is what Linear CFR's weighting looks like for a regressor. Regret matching
+   on its outputs is the next policy, with all the mass on the largest
+   advantage when none is positive, as in the paper.
+
+Both memories are reservoir samples, so every sample ever produced has the
+same chance of being kept. After the last iteration a strategy network is
+trained on the strategy memory, and that network is Deep CFR's answer.
+
+Steinberger (2019) pointed out that the strategy network adds a second
+approximation for no reason: the average strategy is already determined by
+the sequence of advantage networks, weighted by t and by the player's own
+reach. In a game the size of Leduc that average can be computed exactly at
+every iteration from the policies, which gives the SD-CFR curve below. A third
+curve keeps the same memories and the same sampling but replaces each network
+by the exact weighted mean of its targets per infoset, which is what a perfect
+regressor would output. The gap between that curve and the networks is the
+cost of the function approximation alone.
+
+Infosets are encoded from their keys: one-hot private card, one-hot board
+card, and four slots per betting round with a call bit and a raise bit (22
+inputs for standard Leduc, 7 for Kuhn). The tests check the encoding is
+injective over all 936 Leduc infosets.
+
+```
+$ dune exec cfr-solver -- deep -g leduc -n 100 -k 1000 --domains 8 --svg docs/deep-leduc.svg
+iteration  traversals     current      sd-cfr         net       exact     tabular  seconds
+        1        1000   1.902e+00   2.374e+00   2.460e+00   2.374e+00   6.407e-01      4.1
+       10       10000   1.069e+00   5.306e-01   5.822e-01   6.419e-01   1.255e-01     44.6
+       20       20000   8.815e-01   3.087e-01   3.083e-01   2.544e-01   9.681e-02     89.7
+       50       50000   1.756e+00   2.303e-01   2.386e-01   1.290e-01   6.262e-02    257.8
+      100      100000   2.781e+00   1.386e-01   1.855e-01   6.284e-02   3.911e-02    468.0
+```
+
+![Deep CFR on Leduc against exact memories and tabular external sampling](docs/deep-leduc.svg)
+
+Exploitability is half the NashConv, in chips per hand. With a 64x64 network trained for 2,000
+Adam steps of 256 samples per iteration, SD-CFR gets to 0.139 after 100,000
+traversals per player and the strategy network to 0.186. The same memories
+with exact means reach 0.063, so at this budget the network costs a factor of
+2.2, and the gap widens as the run goes on: the memory grows to 870,000
+samples, but each fresh network still sees 512,000 draws. Tabular external
+sampling with linear weighting, which updates its regrets after every
+traversal instead of once per 1,000, is at 0.039. The current policy never
+settles (0.88 to 2.8), which is normal for CFR: only the average carries the
+guarantee. SD-CFR is ahead of the strategy network at 50 and 100 iterations,
+as Steinberger reports, but that is not a rule: on Kuhn below the strategy
+network finished ahead.
+
+The training budget mattered more than anything else. At 50 iterations, 300
+steps of 256 gave SD-CFR 0.475, 1,000 steps of 512 gave 0.236 and 2,000 steps
+of 256 with a learning rate of 3e-3 gave 0.179. On Kuhn (`-g kuhn -n 100 -k
+100 --hidden 32 --steps 300 --batch 64`) a single hidden layer of 32 reaches
+0.028 for SD-CFR, 0.018 for the strategy network and 0.0095 with exact
+memories.
+
+### Training on several domains
+
+Each batch is split across OCaml 5 domains. Every domain has a replica of the
+network that shares the weights but owns its gradient buffers, draws its own
+rows from the memory with its own generator, and runs forward and backward on
+its tape. A spinning barrier then lets domain 0 add the replicas' gradients,
+each scaled by its share of the batch weight, and take the Adam step. The
+first version barely scaled, and the reason was allocation: `Array.iteri`
+over a float array boxes every element, which came to 360,000 words per step,
+and the per-op result arrays went to the shared major heap. Plain loops and a
+tape arena that hands back the same buffers each step cut allocation by a
+factor of 20. Ten Leduc iterations with 300 steps per network went from 17.2 s
+on one domain to 6.5 s on four, with nothing more to gain past that on this
+machine (16 logical cores). Results depend on the number of domains (each one draws its own rows),
+but not on timing.
+
 ## Tuning discounted CFR
 
 DCFR has three knobs: alpha discounts positive regrets, beta negative ones,
@@ -2592,6 +2684,17 @@ distribution against an independent one from squaring the transition matrix
 to put all its mass on defect, defect for large alpha). The CFR+ oracle must
 never beat the exact best response and must come within 1e-3 of it after 2000
 iterations against random opponents in Kuhn, Leduc and three-player Kuhn.
+
+The autodiff tape is checked against central finite differences for every
+parameter of a two-layer network under both losses, with masked entries and
+uneven row weights, and the first Adam step must move every weight by exactly
+the learning rate against the sign of its gradient. A 16-unit network has to
+fit XOR. The reservoir keeps each of 100 items with probability 0.1 within
+0.01 over 20,000 runs. SD-CFR's average is compared to 1e-12 with an
+independent one computed on the game itself (string keys, own reach summed
+over histories rather than once per infoset) for twelve iterations of Kuhn.
+With exact memories Kuhn must get under 0.01 in 200 iterations, and the
+network version under 0.04 in 80, for both SD-CFR and the strategy network.
 
 ## License
 
