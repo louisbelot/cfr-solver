@@ -2164,3 +2164,77 @@ Checks:
 Next: phantom tic-tac-toe, which needs a lazily expanded tree, and a sampled
 LBR on the hold'em public tree for blueprints too big for an exact best
 response. Pushing GOPS past 8 cards needs a float-specialized matrix solver.
+
+## 2026-11-09: Deep CFR and SD-CFR on a hand-written network
+
+Built:
+
+- `Autodiff`: a reverse-mode tape over row-major matrices. Ops are matmul,
+  bias, ReLU, a masked weighted MSE and a masked softmax cross-entropy; each
+  pushes a closure that adds its local gradient, and `backward` runs them in
+  reverse. Constants carry no gradient buffer, so the input layer skips that
+  work. An inference tape records nothing. The tape keeps an arena of buffers
+  that it hands back in the same order after `reset`, so a training loop
+  allocates its activations once.
+- `Mlp`: ReLU network with He-uniform init, Adam with bias correction and
+  global-norm clipping, and replicas that share weights but own their
+  gradients.
+- `Reservoir`: Vitter's algorithm R.
+- `Features`: infoset key to input vector for Kuhn (7) and any Leduc deck
+  (2 x ranks + 16), plus a one-hot encoder.
+- `Deep_cfr`: external-sampling traversals into reservoir advantage and
+  strategy memories, a fresh advantage network per player per iteration with
+  loss weighted by t, regret matching with argmax when nothing is positive,
+  and a strategy network at the end. Next to it, the exact SD-CFR average
+  (Steinberger 2019): before each player's traversals its current policy is
+  added to a running sum weighted by t times its own reach, which is the
+  average of all advantage networks without storing them. An `Exact` learner
+  swaps each network for the per-infoset weighted mean of its targets.
+- Training splits each batch across domains: every worker fills its rows with
+  its own generator, runs forward and backward on its replica, a spin barrier
+  lets domain 0 merge gradients scaled by batch-weight share and step Adam.
+- `deep` command: current, SD-CFR, strategy network, exact-memory twin and
+  tabular linear ES on the same traversal budget, CSV and chart.
+
+Design notes. The paper inserts the opponent's policy into the strategy memory
+at the opponent's own nodes; the visit frequency there is chance times the
+opponent's reach times a constant per infoset, so the weighted mean comes out
+right. Cross-entropy on a masked softmax instead of the paper's MSE for the
+strategy network, since both have the weighted mean distribution as minimizer
+and the softmax always gives a valid strategy. Precomputing the policy for all
+936 Leduc infosets after each training replaces thousands of forward passes
+during traversals with a table lookup; it only works because the game is
+small, and the training cost does not depend on it.
+
+Performance. The first parallel version went from 6.8 s to 5.0 s on four
+domains for three Leduc iterations. Allocation was the problem: 646 million
+minor words for 1,800 steps, from `Array.iteri` boxing each float in the bias,
+ReLU, loss and Adam loops, and fresh result arrays on the major heap. With
+plain loops, the arena and per-worker batch filling it dropped to 30 million.
+Ten iterations at 300 steps: 17.2 s on one domain, 6.5 s on four, 6.8 s on
+eight. Single-domain throughput is about 1.3 GMAC/s, scalar OCaml.
+
+Results (Leduc, 1000 traversals per player per iteration, 64x64):
+
+- Sweep at 50 iterations: 300 steps of 256 gives SD-CFR 0.475, 1000 of 512
+  gives 0.236, 2000 of 256 with lr 3e-3 gives 0.179. The last became the
+  default.
+- 100 iterations: SD-CFR 0.139, strategy network 0.186, exact memories 0.063,
+  tabular ES 0.039. 468 s on eight domains. SD-CFR is ahead of the strategy
+  network at 50 and 100 iterations.
+- Kuhn, 32 hidden units, 300 steps: SD-CFR 0.028, strategy network 0.018,
+  exact memories 0.0095 after 100 iterations of 100 traversals.
+- Training the strategy network at a checkpoint used to advance the shared
+  generator, so results depended on how often the CLI looked. It now trains
+  from a copy, with a test that peeking does not change the run. The sweep
+  above predates that fix.
+
+Checks: 20 new tests. Finite-difference gradients for both losses, masked
+entries and weights, masked softmax, the first Adam step, XOR, reservoir
+inclusion probabilities, injective encodings for Kuhn, Leduc and 5-rank Leduc
+with a hand-checked layout, SD-CFR average against a reference computed on the
+game itself, convergence with exact memories and with networks, determinism.
+
+Next: variance-reduced Deep CFR with learned baselines (VR-DeepDCFR+), and a
+value network over public belief states for ReBeL-style search, both on the
+same autodiff.
