@@ -6,6 +6,7 @@ let () =
       ("mlp", Test_mlp.tests);
       ("reservoir", Test_reservoir.tests);
       ("features", Test_features.tests);
+      ("deep cfr", Test_deep_cfr.tests);
       ("lemke", Test_lemke.tests);
       ("exploit", Test_exploit.tests);
       ("psro", Test_psro.tests);
