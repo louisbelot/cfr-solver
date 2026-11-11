@@ -206,7 +206,26 @@ let vanilla_is_slow () =
 let rejects_sizes () =
   Alcotest.check_raises "one player"
     (Invalid_argument "Kuhn_n.game: players must be in [2, 11]") (fun () ->
-      ignore (Kuhn_n.game 1))
+      ignore (Kuhn_n.game 1));
+  Alcotest.check_raises "too few ranks"
+    (Invalid_argument "Kuhn_n.game: ranks must be in [players, 12]") (fun () ->
+      ignore (Kuhn_n.game ~ranks:2 3))
+
+let ranks () =
+  let deals (module G : Multi.S) =
+    match G.node G.root with Multi.Chance l -> List.length l | _ -> 0
+  in
+  Alcotest.(check int)
+    "12 x 11 x 10" 1320
+    (deals (module (val Kuhn_n.game ~ranks:12 3)));
+  Alcotest.(check int)
+    "default" 24
+    (deals (module (val Kuhn_n.game ~ranks:4 3)));
+  let tree = Multi_tree.build (module (val Kuhn_n.game ~ranks:12 3)) in
+  Alcotest.(check int) "infosets" 144 (Array.length tree.keys);
+  Alcotest.(check bool)
+    "lowest card" true
+    (Array.exists (String.equal "2") tree.keys)
 
 let tests =
   [
@@ -222,4 +241,5 @@ let tests =
     Alcotest.test_case "lands in the Szafron family" `Quick szafron_family;
     Alcotest.test_case "vanilla cfr lags" `Quick vanilla_is_slow;
     Alcotest.test_case "player count" `Quick rejects_sizes;
+    Alcotest.test_case "deck size" `Quick ranks;
   ]

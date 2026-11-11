@@ -1,7 +1,7 @@
 type move = Pass | Bet
 type history = Deal | Play of { cards : int array; moves : move list }
 
-let card_name ~players c = String.make 1 "23456789TJQKA".[11 - players + c]
+let card_name ~ranks c = String.make 1 "23456789TJQK".[12 - ranks + c]
 let move_to_string = function Pass -> "p" | Bet -> "b"
 
 let rec deals k pool =
@@ -38,15 +38,21 @@ let settle n cards moves bettor =
   Array.init n (fun i ->
       float_of_int ((if i = !winner then pot else 0) - paid.(i)))
 
-let game n =
+let game ?ranks n =
+  let ranks = Option.value ranks ~default:(n + 1) in
   if n < 2 || n > 11 then invalid_arg "Kuhn_n.game: players must be in [2, 11]";
+  if ranks < n || ranks > 12 then
+    invalid_arg "Kuhn_n.game: ranks must be in [players, 12]";
   let module G = struct
     type nonrec history = history
 
-    let name = Printf.sprintf "kuhn%d" n
+    let name =
+      if ranks = n + 1 then Printf.sprintf "kuhn%d" n
+      else Printf.sprintf "kuhn%d-r%d" n ranks
+
     let players = n
     let root = Deal
-    let all = List.map Array.of_list (deals n (List.init (n + 1) Fun.id))
+    let all = List.map Array.of_list (deals n (List.init ranks Fun.id))
     let p = 1. /. float_of_int (List.length all)
 
     let node = function
@@ -61,7 +67,7 @@ let game n =
           | _ ->
               let player = len mod n in
               let infoset =
-                card_name ~players:n cards.(player)
+                card_name ~ranks cards.(player)
                 ^ String.concat "" (List.map move_to_string moves)
               in
               let child m =

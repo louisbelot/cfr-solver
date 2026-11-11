@@ -1,4 +1,4 @@
 type history
 
-val game : int -> (module Multi.S with type history = history)
-val card_name : players:int -> int -> string
+val game : ?ranks:int -> int -> (module Multi.S with type history = history)
+val card_name : ranks:int -> int -> string
