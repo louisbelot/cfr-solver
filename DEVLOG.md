@@ -2238,3 +2238,80 @@ game itself, convergence with exact memories and with networks, determinism.
 Next: variance-reduced Deep CFR with learned baselines (VR-DeepDCFR+), and a
 value network over public belief states for ReBeL-style search, both on the
 same autodiff.
+
+## 2026-11-10: two against one, team-maxmin with correlation
+
+Built:
+
+- `Kuhn_n.game ?ranks`: n-player Kuhn on any deck from n to 12 cards, so
+  three-player Kuhn can be played with the 3, 4 and 12 ranks used in the
+  team-game papers. The default deck (players + 1) and its infoset keys are
+  unchanged.
+- `Team`: two players of a three-player zero-sum game share a payoff and a
+  correlation device against the third. The solver computes the team-maxmin
+  equilibrium with correlation (TMECor) by column generation. A column is a
+  pair of pure plans, stored as the team's payoff per adversary sequence. The
+  restricted LP is the adversary's sequence-form LP with one cut per column
+  (minimize w with w >= c.y), whose value is a lower bound. Pricing is the
+  team's best joint pure response to the restricted y, whose value is an
+  upper bound. The loop runs on the float simplex; when it finds nothing
+  better it re-solves the restricted LP in exact rationals and prices once
+  more, and stops only if that also finds nothing. The team's distribution
+  comes from the dual LP over the final columns, solved exactly, so the value
+  is a fraction.
+- Pricing oracle. After the deal each member's infosets fall into one group
+  per private card (union-find over the infosets each deal subtree touches),
+  and each leaf touches one group of each member. A joint plan is then a
+  local plan per group per member, and the team payoff is a sum over group
+  pairs of tables W[ca][cb][la][lb]. Branch and bound assigns one member's
+  local plans, with the other member's best response per group in closed
+  form. The bound is the smaller of two relaxations (unassigned groups pick
+  their best label per partner group, or per own group). Before the search,
+  local plans dominated against every live plan of the other member are
+  dropped, alternating sides until nothing changes; the proof that this keeps
+  an optimum is one line, since swapping a dominated label for its dominator
+  never lowers the sum. The search branches on the side with fewer
+  surviving combinations and starts from coordinate ascent seeded with every
+  existing column.
+- `team` command: for each adversary seat, the Nash team value (DCFR), what
+  the two Nash strategies guarantee against a best response, what the
+  members' marginals of the TMECor distribution guarantee when played
+  independently, TMECor, and the team's best coordinated response to the
+  adversary's Nash strategy. CSV of both bounds per column and a chart of the
+  gap.
+
+Results. Four ranks, exactly: 5/132 (adversary first), 7/264 (second) and
+-1/24 (third). Twelve ranks: 0.066403, 0.037952 and -0.014013, 3 to 7 s per seat. Both match
+Table 2 of Farina, Celli, Gatti and Sandholm (2021) to the four digits
+printed there, and three ranks gives 0 for every seat as in the paper. In
+four-rank Kuhn the team gains 0.012, 0.006 and 0.005 over DCFR's
+equilibrium. The members' marginals, played without the device, guarantee
+between -0.02 and -0.15: worse than Nash, so the value is in the correlation
+and not in better individual strategies. An adversary that keeps playing
+Nash loses 0.10 to 0.14 a hand to a colluding pair.
+
+Performance. The first oracle (branch and bound without pruning) took 333 s
+on one seat of eight-rank Kuhn. Dominance pruning took it to 0.4 s. On
+twelve ranks the hardest seat still took 93 s, almost all in pricing calls
+near the end where y has many ties; warm starts from the existing columns,
+the second bound and a static branching order by spread brought the whole
+solve to 6 to 7 s, with the same exact value. The exact rational LP inside the
+loop cost 75 s on its own, which is why the loop runs in floats and only
+the stopping check is exact.
+
+Checks: 10 new tests. Published values at 4 and 12 ranks, -1/24 as a
+fraction and 0 on three ranks; the adversary's exact best response to the
+final distribution (a backward pass over its sequences, not the LP) equals
+the LP value as a fraction, and pricing against the final y finds nothing
+better; every column against the tree's own evaluation of the pure profile
+under a random adversary strategy; the oracle against brute force over all
+729,000 joint plans of the three-rank game; the team beats DCFR's Nash
+family by more than 0.004 at every seat; deck size checks for `Kuhn_n`.
+
+Not done: team-maxmin without the device (Basilico et al.), which is a
+nonconvex bilinear program. The two uncorrelated columns in the table are
+lower bounds on it.
+
+Next: the same team game on three-player Leduc, where per-card local plans
+are far too many to enumerate and the oracle has to work on sequences
+instead.
