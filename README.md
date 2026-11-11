@@ -13,7 +13,9 @@ arithmetic (its own bignums and simplex), so the game value comes out as a
 fraction and a solver's gap can be measured with no rounding. Kuhn and Leduc also
 come in three-player (or n-player) versions, where the full-tree variants and
 external sampling run on a game signature with payoff vectors and progress is
-measured as NashConv. The same machinery covers sealed-bid auctions (first
+measured as NashConv. Two of the three players can also team up against the
+third, and the team's best correlated plan is solved exactly by column
+generation. The same machinery covers sealed-bid auctions (first
 price, second price and all-pay, with reserves, checked against the Bayes-Nash
 bid functions and the discrete theorems in exact arithmetic) and an
 interview-style market-making card game solved exactly, and Figgie gets a full
@@ -637,6 +639,77 @@ mix is 0.014 to 0.040 from the seeds, roughly half their distance from each
 other, which is what noise around a single point looks like. With three players a mix of equilibria
 is not in general an equilibrium, so this only says that the seeds have not
 split between different ones. CFR+ is the odd one out.
+
+### Two against one
+
+`team` lets two players of three-player Kuhn share their payoff against the
+third. Before the deal they can agree on a plan and draw from a shared random
+device, but they cannot signal during the hand. The best they can guarantee
+is the team-maxmin equilibrium with correlation (TMECor, Celli and Gatti
+2018). The device makes the team's problem convex again: the team picks a
+distribution over pairs of pure plans, and what is left is a zero-sum game
+between that distribution and the adversary.
+
+The solver is column generation over pairs of plans, as in Farina, Celli,
+Gatti and Sandholm (2021). The restricted LP is the adversary's sequence-form
+LP with one cut per column, and its value is a lower bound. The pricing step
+finds the team's best joint pure response to the adversary's restricted
+strategy, and its value is an upper bound. When pricing finds nothing better,
+the restricted LP is re-solved in exact rationals and priced once more, and
+the final distribution comes from the dual LP solved exactly, so the value is
+a fraction.
+
+Pricing is NP-hard in general, and in the paper it is a MIP. Here it uses
+the deal: after it, each team member's infosets split into one group per
+private card, and every leaf touches exactly one group of each member. A joint
+plan is a local plan per card for each member, and the team's payoff is a sum
+over card pairs of small tables. Branch and bound assigns one member's local
+plans, and the other member best-responds card by card in closed form. The
+bound is the smaller of two relaxations. Before the search, local plans that
+are dominated against every surviving plan of the other member are dropped,
+alternating sides until nothing changes. That pruning took one seat of
+eight-rank Kuhn from 333 s to 0.4 s.
+
+```
+$ dune exec cfr-solver -- team
+kuhn3: 48 infosets, dcfr 20000 iterations, nash conv 1.170e-08
+adv       nash   nash-br   marg-br    tmecor   vs-nash  columns  support    secs
+1      +0.0261   +0.0261   -0.0200   +0.0379   +0.1250       17        3    0.01
+2      +0.0208   +0.0208   -0.0914   +0.0265   +0.1046       20        6    0.02
+3      -0.0470   -0.0470   -0.1533   -0.0417   +0.1374       16        4    0.01
+adversary 1: tmecor = 5/132
+adversary 2: tmecor = 7/264
+adversary 3: tmecor = -1/24
+```
+
+The columns are the team's value under DCFR's equilibrium (`nash`), what the
+two Nash strategies guarantee against a best response (`nash-br`), what each
+member's marginal of the TMECor distribution guarantees when they play it
+independently (`marg-br`), the TMECor value, and the team's best coordinated
+response to an adversary who keeps playing Nash (`vs-nash`). Correlation is
+worth 0.005 to 0.012 a hand over Nash. The marginals on their own do worse
+than Nash, so all of that comes from the shared device and not from better
+individual play. An adversary stuck on its Nash strategy loses 0.10 to 0.14 a
+hand to a colluding pair.
+
+On twelve ranks the values are 0.066403, 0.037952 and -0.014013 (as fractions,
+36004510169383/542214731615040 and so on), which match Table 2 of Farina et
+al. to the four digits printed there. Each seat takes 3 to 7 s:
+
+```
+$ dune exec cfr-solver -- team -r 12 --svg docs/team-kuhn12.svg
+kuhn3-r12: 144 infosets, dcfr 20000 iterations, nash conv 1.967e-04
+adv       nash   nash-br   marg-br    tmecor   vs-nash  columns  support    secs
+1      +0.0447   +0.0447   -0.0217   +0.0664   +0.3892       95       11    7.11
+2      +0.0077   +0.0077   -0.0510   +0.0380   +0.1972       72       14    4.38
+3      -0.0524   -0.0525   -0.1093   -0.0140   +0.3483       62        9    3.48
+```
+
+![Gap between the bounds of TMECor column generation on twelve-rank Kuhn](docs/team-kuhn12.svg)
+
+The chart shows the best upper bound so far minus the restricted LP value.
+Gaps below 1e-9 are left off, so each curve stops one column before the
+bounds meet.
 
 ## Convergence
 
@@ -2438,6 +2511,14 @@ The tests check against numbers that come from outside this code:
   16 pure strategies per card (qcheck, 40 random profiles); and DCFR lands in
   the Szafron et al. equilibrium family (second player at -1/48, beta in
   [0, 1], no opening bets) in 2,000 iterations.
+- Team play: TMECor values from Farina et al.'s Table 2 for four and twelve
+  ranks at every adversary seat, -1/24 as a fraction for the last seat and 0
+  for every seat on three ranks; the adversary's exact best response to the
+  final distribution (a backward pass over its sequences, not the LP) equals
+  the LP value as a fraction; the pricing oracle against brute force over all
+  729,000 joint plans of the three-rank game; every column against the tree's
+  own value of the pure profile; and the team beats DCFR's Nash family by
+  more than 0.004 at every seat.
 - External sampling for n players: on two-player Kuhn and Leduc it matches
   `Mccfr` exactly (nodes touched and every probability) under three
   weightings and both sampled averaging rules; with frozen regrets and two
