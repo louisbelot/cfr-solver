@@ -155,6 +155,47 @@ let random_2d () =
       let value = solve true in
       Rat.equal value (solve false) && Rat.equal value (vertices rows obj))
 
+let beale_bound () =
+  match
+    Lp.bound_float ~vars:4
+      [ (0, q 3 4); (1, i (-20)); (2, q 1 2); (3, i (-6)) ]
+      [
+        row [ (0, q 1 4); (1, i (-8)); (2, i (-1)); (3, i 9) ] Le (i 0);
+        row [ (0, q 1 2); (1, i (-12)); (2, q (-1) 2); (3, i 3) ] Le (i 0);
+        row [ (2, i 1) ] Le (i 1);
+      ]
+  with
+  | Some (v, x) ->
+      Alcotest.(check (float 1e-9)) "value" 1.25 v;
+      Alcotest.(check (array (float 1e-6))) "point" [| 1.; 0.; 1.; 0. |] x
+  | None -> Alcotest.fail "no bound"
+
+let degenerate_bound () =
+  let gen =
+    QCheck2.Gen.(
+      pair
+        (list_size (int_range 1 4) (array_size (pure 4) (int_range (-3) 3)))
+        (array_size (pure 4) (int_range (-4) 4)))
+  in
+  prop ~count:200 "bound matches exact on degenerate LPs" gen (fun (eqs, obj) ->
+      let center = [| 1; 1; 1; 1 |] in
+      let eq a =
+        let rhs =
+          Array.fold_left ( + ) 0 (Array.mapi (fun j c -> c * center.(j)) a)
+        in
+        row (List.init 4 (fun j -> (j, i a.(j)))) Eq (i rhs)
+      in
+      let rows =
+        List.map eq eqs @ List.map eq eqs
+        @ List.init 4 (fun j -> row [ (j, i 1) ] Le (i 2))
+        @ [ row [ (0, i 1); (1, i 1) ] Le (i 2) ]
+      in
+      let obj = List.init 4 (fun j -> (j, i obj.(j))) in
+      match (Lp.maximize ~vars:4 obj rows, Lp.bound_float ~vars:4 obj rows) with
+      | Lp.Optimal { value; _ }, Some (v, _) ->
+          Float.abs (v -. Rat.to_float value) < 1e-7
+      | _ -> false)
+
 let tests =
   [
     Alcotest.test_case "wyndor" `Quick wyndor;
@@ -164,4 +205,6 @@ let tests =
     Alcotest.test_case "beale, warm start" `Quick (beale false true);
     Alcotest.test_case "infeasible and unbounded" `Quick failures;
     random_2d ();
+    Alcotest.test_case "bound on beale" `Quick beale_bound;
+    degenerate_bound ();
   ]
