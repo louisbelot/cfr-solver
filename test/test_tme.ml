@@ -122,6 +122,18 @@ let nash () =
   let _, s = solution 4 0 in
   Alcotest.(check bool) "beats nash" true (-.br <= Rat.to_float s.lower +. 1e-6)
 
+let middle_seat () =
+  let t = Team.build (kuhn 4) ~adversary:1 in
+  let s = Tme.solve ~limit:25 t in
+  let known = 356448315271. /. 15055072223808. in
+  Alcotest.(check bool) "upper stays valid" true (s.upper >= known -. 1e-9);
+  List.iter
+    (fun (_, lo, _) ->
+      Alcotest.(check bool) "incumbent is attainable" true (lo <= known +. 1e-7))
+    s.trace;
+  Alcotest.(check bool) "ordered" true (Rat.to_float s.lower <= s.upper);
+  Alcotest.(check bool) "below tmecor" true (s.upper <= (7. /. 264.) +. 1e-9)
+
 let three_ranks () =
   List.iter
     (fun o ->
@@ -136,5 +148,6 @@ let tests =
     Alcotest.test_case "bounds" `Quick bracket;
     Alcotest.test_case "kuhn values" `Quick values;
     Alcotest.test_case "above nash" `Quick nash;
+    Alcotest.test_case "middle seat, truncated" `Quick middle_seat;
     Alcotest.test_case "three ranks" `Quick three_ranks;
   ]
