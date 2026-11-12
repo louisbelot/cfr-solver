@@ -223,6 +223,25 @@ let members t =
   let a, b = t.sides in
   (a.player, b.player)
 
+type plex = { size : int; infos : (int * int * int) array }
+
+let plex_of t first size =
+  let infos = ref [] in
+  Array.iteri
+    (fun k f ->
+      if f >= 0 then
+        infos := (t.parent.(k), f, Array.length t.tree.labels.(k)) :: !infos)
+    first;
+  { size; infos = Array.of_list (List.rev !infos) }
+
+let plexes t =
+  let a, b = t.sides in
+  ( plex_of t a.first (Array.length a.local),
+    plex_of t b.first (Array.length b.local),
+    plex_of t t.first t.seqs )
+
+let terms t = Array.map (fun (k, w) -> (k.sa, k.sb, k.so, w)) t.terms
+
 let local_plans t =
   let a, b = t.sides in
   (Array.map Array.length a.plans, Array.map Array.length b.plans)
@@ -609,12 +628,7 @@ let mixture t cols =
   | Optimal { value; x; _ } -> (value, Array.init ncols (fun i -> x.(lam i)))
   | Infeasible | Unbounded -> invalid_arg "Team: master LP"
 
-let guarantee t support =
-  let c = Array.make t.seqs Rat.zero in
-  List.iter
-    (fun (l, p) ->
-      Array.iteri (fun i x -> c.(i) <- Rat.add c.(i) (Rat.mul l x)) (column t p))
-    support;
+let worst t c =
   let kids = Array.make t.seqs [] in
   Array.iteri
     (fun k f -> if f >= 0 then kids.(t.parent.(k)) <- k :: kids.(t.parent.(k)))
@@ -631,6 +645,23 @@ let guarantee t support =
       c.(s) kids.(s)
   in
   value 0
+
+let guarantee t support =
+  let c = Array.make t.seqs Rat.zero in
+  List.iter
+    (fun (l, p) ->
+      Array.iteri (fun i x -> c.(i) <- Rat.add c.(i) (Rat.mul l x)) (column t p))
+    support;
+  worst t c
+
+let guard t x z =
+  let c = Array.make t.seqs Rat.zero in
+  Array.iter
+    (fun (k, w) ->
+      let p = Rat.mul x.(k.sa) z.(k.sb) in
+      if not (Rat.is_zero p) then c.(k.so) <- Rat.add c.(k.so) (Rat.mul w p))
+    t.terms;
+  worst t c
 
 let solve ?budget ?(iterations = 10_000) t =
   let na, nb = local_plans t in
