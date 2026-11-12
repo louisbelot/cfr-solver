@@ -220,14 +220,28 @@ let reply_rows t (free : Team.plex) coef =
   let adv, vars, obj = dual t (free.size - 1) g in
   (vars, obj, flows free fv @ adv)
 
+let project (p : Team.plex) x =
+  let r = Array.make p.size 0. in
+  r.(0) <- 1.;
+  Array.to_list p.infos
+  |> List.sort (fun (_, f, _) (_, f', _) -> compare f f')
+  |> List.iter (fun (q, f, n) ->
+      let probs = Array.init n (fun a -> Float.max 0. x.(f + a)) in
+      let total = Array.fold_left ( +. ) 0. probs in
+      Array.iteri
+        (fun a pr ->
+          r.(f + a) <-
+            (r.(q) *. if total <= 1e-12 then 1. /. float n else pr /. total))
+        probs);
+  r
+
 let reply t (free : Team.plex) coef =
   let vars, obj, rows = reply_rows t free coef in
   let plan x =
-    Array.init free.size (fun j -> if j = 0 then 1. else x.(j - 1))
+    project free
+      (Array.init free.size (fun j -> if j = 0 then 1. else x.(j - 1)))
   in
-  match
-    Lp.maximize_float ~limit:(20 * (vars + List.length rows)) ~vars obj rows
-  with
+  match robust ~vars obj rows with
   | Some (_, x) -> plan x
   | None -> (
       match Lp.maximize ~vars obj rows with
@@ -261,6 +275,7 @@ let climb t x =
     else if k < 20 then go (k + 1) x' z' v'
     else (v', x', z')
   in
+  let x = project t.pa x in
   let z = reply_b t x in
   go 0 x z (worst t x z)
 
@@ -279,20 +294,18 @@ let near p =
 let down p = Rat.of_ints (Float.to_int (Float.of_int 1048576 *. p)) 1048576
 
 let exact_plan (p : Team.plex) x =
+  let x = project p x in
   let r = Array.make p.size Rat.zero in
   r.(0) <- Rat.one;
   Array.to_list p.infos
   |> List.sort (fun (_, f, _) (_, f', _) -> compare f f')
   |> List.iter (fun (q, f, n) ->
-      let above = x.(q) in
       let probs =
         Array.init n (fun a ->
-            if above <= 1e-12 then 1. /. float n
-            else Float.max 0. (x.(f + a) /. above))
+            if x.(q) <= 1e-12 then 1. /. float n else x.(f + a) /. x.(q))
       in
-      let total = Array.fold_left ( +. ) 0. probs in
       let rounded round =
-        let ps = Array.map (fun p -> round (p /. total)) probs in
+        let ps = Array.map round probs in
         let sum = Array.fold_left Rat.add Rat.zero (Array.sub ps 0 (n - 1)) in
         ps.(n - 1) <- Rat.sub Rat.one sum;
         ps
