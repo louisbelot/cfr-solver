@@ -3,6 +3,7 @@ let () =
     [
       ("kuhn", Test_kuhn.tests);
       ("team", Test_team.tests);
+      ("tme", Test_tme.tests);
       ("autodiff", Test_autodiff.tests);
       ("mlp", Test_mlp.tests);
       ("reservoir", Test_reservoir.tests);
