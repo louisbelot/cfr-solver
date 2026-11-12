@@ -711,6 +711,95 @@ The chart shows the best upper bound so far minus the restricted LP value.
 Gaps below 1e-9 are left off, so each curve stops one column before the
 bounds meet.
 
+### Without the device
+
+`tme` takes the device away. Each member now mixes on their own, so the team
+plays a product of two independent strategies, and the best it can guarantee
+is the team-maxmin equilibrium (TME, von Stengel and Koller 1997). Write the
+adversary's best response as the dual of its sequence-form LP. With member
+plans x and z, adversary sequences s and leaf weights w (chance times team
+payoff), the team solves
+
+```
+max v_root  s.t.  (E^T v)_s <= sum over leaves under s of w * x_i * z_j   for every s
+                  x in member a's treeplex,  z in member b's treeplex
+```
+
+The right-hand side is bilinear in x and z, so the problem is nonconvex.
+Zhang and An (2020) solve it as a MILP over a digit-by-digit discretization
+of one member's plan. Here it is spatial branch and bound over an LP
+relaxation.
+
+The relaxation replaces every product x_i z_j by a variable W_ij and adds the
+cuts you get by multiplying one member's treeplex equalities by the other
+member's sequence variables (RLT): each row of W is member b's treeplex
+scaled by x_i, and each column is member a's treeplex scaled by z_j. A product
+of two plans satisfies this, and so does any mixture of products, so the root
+bound can never be below TMECor. On four-rank Kuhn it equals TMECor at every
+seat. Pairs of sequences whose root infosets never meet at a leaf (same card,
+for one) can always be filled in with x_i z_j without touching any other row,
+so they are left out: 384 W variables per seat instead of 1,024, about 600
+rows.
+
+Branching is on member a's sequences only. A box l <= x_i <= u becomes
+l z_j <= W_ij <= u z_j for every j, which together with the flow rows is the
+McCormick envelope, and once the box shrinks to a point row i of W is forced
+to x_i z. The variable to branch on is the one with the largest
+payoff-weighted gap between W_ij and x_i z_j, split at its relaxed value so
+that both children contain the current point and stay feasible. Lower bounds
+come from the relaxation's x: member b best-responds (an LP against the
+adversary), then member a, and so on until nothing improves. At the end the
+best pair is rounded to fractions and both one-sided LPs are solved in exact
+rationals, so the lower bound printed is an exact guarantee and the
+certificate is checked against the adversary's exact best response.
+
+The relaxations are very degenerate: zero right-hand sides everywhere and many
+redundant flow rows. The tableau simplex with Dantzig pricing and the
+lexicographic ratio test stalled at 20,000 pivots on about one node in seven,
+and in floats its phase one sometimes drifted to objective values with the
+wrong sign. `Lp.bound_float`
+fixes that in three steps. It shifts every variable by a small distinct amount
+(x = x' - d), so the right-hand sides become b + Ad, which keeps redundant
+equalities consistent. It runs the primal simplex with a Harris ratio test,
+which prefers large pivots among near ties. Then it puts the true b back
+through the basis inverse (the columns of the starting basis) and finishes
+with a dual simplex. If that last pass gives up, the basis is still dual
+feasible, so b^T y is still a valid upper bound. With it every node solves.
+
+```
+$ dune exec cfr-solver -- tme --svg docs/tme-kuhn.svg
+kuhn3: dcfr 20000 iterations, nash conv 1.170e-08, gap 1.000e-06
+
+adv    nash-br       tme    tme-up    tmecor     price      root   nodes     secs
+1     +0.02612  +0.03646  +0.03646  +0.03788   0.00142  +0.03788      15     0.61
+2     +0.02083  +0.02368  +0.02368  +0.02652   0.00284  +0.02652    1389  1078.77
+3     -0.04696  -0.04167  -0.04167  -0.04167   0.00000  -0.04167       2     0.22
+
+adversary 1: tme >= 7/192
+adversary 2: tme >= 356448315271/15055072223808
+adversary 3: tme >= -1/24
+```
+
+![Gap between the bounds of the TME branch and bound on four-rank Kuhn](docs/tme-kuhn.svg)
+
+`price` is TMECor minus TME, what the device is worth (Basilico et al. 2017
+call the ratio the price of uncorrelation; with values near zero and of either
+sign the difference reads better). With the adversary last the device is worth
+nothing: TME is exactly -1/24, the same as TMECor. With the adversary first it
+is worth 0.0014 (TME 7/192 against 5/132), and with the adversary in the
+middle 0.0028. Measured against the Nash family, independent play keeps 88%,
+50% and 100% of what correlation gains at the three seats, so a pair of
+colluders without any shared randomness still takes most of it.
+
+The three seats behave very differently. With the adversary last, the
+relaxation is tight at the root and the members' plans from it are already
+optimal, so the solve takes two nodes. With the adversary first, 15 nodes.
+With the adversary in the middle it takes 1,389 nodes and 18 minutes. Both
+bounds move slowly: the best pair kept improving until node 1,249, and the
+gap fell below 1e-3 at node 153, 1e-4 at node 988 and 1e-5 at node 1,374. Each node is a 600-row LP
+solved from scratch in the dense tableau, 0.4 to 1 s. The chart stops each
+curve at the last node that branched.
+
 ## Convergence
 
 `cfr-solver compare -g GAME -n N --svg FILE` runs the six algorithms below on
@@ -2519,6 +2608,18 @@ The tests check against numbers that come from outside this code:
   729,000 joint plans of the three-rank game; every column against the tree's
   own value of the pure profile; and the team beats DCFR's Nash family by
   more than 0.004 at every seat.
+- Team play without the device: the two-member guessing game where the team
+  wins when both pick the same bit and the adversary guesses the other one has
+  TME 1/4 and TMECor 1/2 in closed form, and the solver returns 1/4 exactly
+  with a root bound of 1/2; on four-rank Kuhn the gap closes to 1e-6, the
+  upper bound sits below TMECor and the root bound above it, -1/24 and 7/192
+  come out as fractions, the certificate plans satisfy the treeplex equations
+  exactly and their exact guarantee equals the reported value, 25 random
+  independent pairs never beat the upper bound, the TME beats the guarantee of
+  DCFR's Nash strategies, and three ranks gives 0 at every seat.
+- Perturbed LP bound: on Beale's cycling example and on 200 random degenerate
+  LPs with duplicated equality rows, `Lp.bound_float` matches the exact
+  rational optimum to 1e-7.
 - External sampling for n players: on two-player Kuhn and Leduc it matches
   `Mccfr` exactly (nodes touched and every probability) under three
   weightings and both sampled averaging rules; with frozen regrets and two
