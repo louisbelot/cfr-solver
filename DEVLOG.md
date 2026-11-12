@@ -2315,3 +2315,80 @@ lower bounds on it.
 Next: the same team game on three-player Leduc, where per-card local plans
 are far too many to enumerate and the oracle has to work on sequences
 instead.
+
+## 2026-11-11: team-maxmin without the device
+
+Built: `Tme`, the team-maxmin equilibrium (TME) of three-player Kuhn, where the
+two team members mix independently instead of sharing a random device. The
+team's problem is max over two plans of the adversary's sequence-form dual
+with x_i z_j products on the right-hand side, a nonconvex bilinear program.
+`tme` in the CLI prints it next to the Nash family and TMECor, with the
+difference between TMECor and TME as the price of the device.
+
+Design. Spatial branch and bound over an RLT relaxation. Products become
+W_ij, each row of W is member b's treeplex scaled by x_i and each column is
+member a's treeplex scaled by z_j, so the relaxation contains every mixture of
+product plans and the root bound is at least TMECor. Pairs of sequences whose
+root infosets never meet at a leaf can always be completed with x_i z_j, so
+they are dropped (384 W variables per seat on four ranks, about 600 rows).
+Branching splits one of member a's sequence variables at its relaxed value;
+the box l <= x_i <= u adds l z_j <= W_ij <= u z_j for every j, which with the
+flow rows gives the full McCormick envelope. The variable is the one with the
+largest payoff-weighted |W_ij - x_i z_j|. Lower bounds come from alternating
+best responses (each an LP of one member against the adversary) starting at
+the relaxation's x, every reply projected back onto a valid plan and scored by
+a backward pass over the adversary's tree. At the end the best pair is rounded
+to fractions (denominators up to 1000, else 2^-20 steps) and both one-sided
+LPs are solved in exact rationals, so the lower bound is an exact guarantee.
+`Team` now exposes the three treeplexes, the leaf terms and `guard`, the exact
+guarantee of a pair of realization plans.
+
+LP. The relaxations broke the dense tableau simplex. With Dantzig pricing and
+the lexicographic ratio test, about one node in seven hit 20,000 pivots in
+phase one, and some phase-one objectives drifted to the wrong sign. Shuffling the
+rows and retrying only rescued some of them. `Lp.bound_float` shifts every variable by a distinct
+amount around 1e-6 (rhs becomes b + Ad, so redundant equalities stay
+consistent), uses a Harris ratio test, then restores b through the starting
+basis columns and finishes with a dual simplex. If the dual pass stops, the
+basis is still dual feasible and b^T y is a valid upper bound, so the node
+keeps a correct bound either way. Harris is only switched on for this entry
+point: turned on everywhere, it left the warm-start bases of the exact LP
+slightly infeasible and the liar's dice tests fell back to cold exact solves
+that ran for minutes.
+
+A bug worth writing down: the first version of the lower bound used the float
+LP's reply plans as they came out. On the middle seat some were slightly off
+the treeplex, their values were inflated (0.02436 against a true TME of
+0.02368), the search pruned on that and reported an upper bound below its own
+certified guarantee. Projecting each reply to a valid plan before scoring it
+fixed it; the certified value now agrees with the float search to 1e-7.
+
+Results (four ranks, gap 1e-6):
+
+| adversary | Nash guarantee | TME | TMECor | price | nodes | time |
+|---|---|---|---|---|---|---|
+| 1 | 0.02612 | 7/192 = 0.03646 | 5/132 | 0.00142 | 15 | 0.6 s |
+| 2 | 0.02083 | 0.0236763 | 7/264 | 0.00284 | 1,389 | 1079 s |
+| 3 | -0.04696 | -1/24 | -1/24 | 0 | 2 | 0.2 s |
+
+The root relaxation equals TMECor at all three seats. Independent play keeps
+88%, 50% and 100% of what correlation gains over the Nash family. The middle
+seat is slow on both sides: the incumbent improved until node 1,249, and the
+gap fell below 1e-3 at node 153, 1e-4 at 988 and 1e-5 at 1,374. A trial
+branching on member b instead was not faster.
+
+Checks: 9 new tests (suite at 418, 265 s). The guessing game (TME 1/4, TMECor 1/2, root bound 1/2,
+all exact); certificate plans satisfy the treeplex equations exactly and
+`Team.guard` of them equals the reported value; gap closed, upper bound below
+TMECor and root above it at two seats; 25 random independent pairs per seat
+never beat the upper bound; TME at or above the guarantee of DCFR's Nash
+strategies; three ranks gives 0; a truncated middle-seat run keeps a valid
+upper bound and an attainable incumbent. LP: `bound_float` on Beale's cycling
+example and on 200 random degenerate LPs with duplicated equality rows
+against the exact optimum.
+
+Next: make the middle seat fast. Each node re-solves a 600-row LP from
+scratch; keeping the parent's basis and running the dual simplex after the
+new bound rows should cut most of the 0.8 s per node, and reliability
+branching should cut the node count. Then five and six ranks to compare with
+Zhang and An's runtimes.
