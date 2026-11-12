@@ -11,6 +11,7 @@ module type FIELD = sig
 
   val zero : t
   val one : t
+  val tol : t
   val of_rat : Rat.t -> t
   val add : t -> t -> t
   val sub : t -> t -> t
@@ -23,6 +24,7 @@ end
 module Exact = struct
   include Rat
 
+  let tol = zero
   let of_rat = Fun.id
 end
 
@@ -30,6 +32,7 @@ module Approx = struct
   type t = float
 
   let eps = 1e-9
+  let tol = 1e-9
   let zero = 0.
   let one = 1.
   let of_rat = Rat.to_float
@@ -53,6 +56,7 @@ module Simplex (F : FIELD) = struct
     cols : int;
     init : int array;
     mutable pivots : int;
+    mutable harris : bool;
   }
 
   let zero x = F.sign x = 0
@@ -106,7 +110,7 @@ module Simplex (F : FIELD) = struct
     in
     go 0
 
-  let leaving t s =
+  let lexical t s =
     let best = ref (-1) and ratio = ref F.zero in
     Array.iteri
       (fun i r ->
@@ -118,6 +122,33 @@ module Simplex (F : FIELD) = struct
             ratio := q))
       t.rows;
     (!best, !ratio)
+
+  let harris t s =
+    let bound = ref None in
+    Array.iter
+      (fun r ->
+        if F.sign r.(s) > 0 then
+          let q = F.div (F.add (rhs t r) F.tol) r.(s) in
+          match !bound with
+          | Some b when F.compare b q <= 0 -> ()
+          | _ -> bound := Some q)
+      t.rows;
+    match !bound with
+    | None -> (-1, F.zero)
+    | Some b ->
+        let best = ref (-1) in
+        Array.iteri
+          (fun i r ->
+            if
+              F.sign r.(s) > 0
+              && F.compare (F.div (rhs t r) r.(s)) b <= 0
+              && (!best < 0 || F.compare r.(s) t.rows.(!best).(s) > 0)
+            then best := i)
+          t.rows;
+        let r = t.rows.(!best) in
+        (!best, F.div (rhs t r) r.(s))
+
+  let leaving t s = if t.harris then harris t s else lexical t s
 
   let run ?(limit = max_int) t ~bland ~allowed =
     let rec loop stall =
@@ -188,13 +219,15 @@ module Simplex (F : FIELD) = struct
         cols;
         init = Array.copy basis;
         pivots = 0;
+        harris = false;
       }
     in
     (t, first_art)
 
-  let phase1 ?limit t ~bland ~first_art =
+  let phase1 ?limit ?(slack = F.zero) t ~bland ~first_art =
     price t (fun j -> if j >= first_art then F.sub F.zero F.one else F.zero);
-    run ?limit t ~bland ~allowed:t.cols = `Optimal && F.sign (rhs t t.obj) >= 0
+    run ?limit t ~bland ~allowed:t.cols = `Optimal
+    && F.compare (F.add (rhs t t.obj) slack) F.zero >= 0
 
   let primal t = Array.for_all (fun r -> F.sign (rhs t r) >= 0) t.rows
 
@@ -213,6 +246,46 @@ module Simplex (F : FIELD) = struct
     expel t ~first_art;
     price t (fun j -> if j < first_art then cost j else F.zero);
     run ?limit t ~bland ~allowed:first_art
+
+  let restore t b =
+    Array.iter
+      (fun r ->
+        let v = ref F.zero in
+        Array.iteri (fun k c -> v := F.add !v (F.mul r.(t.init.(k)) c)) b;
+        r.(t.cols) <- !v)
+      t.rows;
+    let v = ref F.zero in
+    Array.iteri (fun k c -> v := F.add !v (F.mul t.obj.(t.init.(k)) c)) b;
+    t.obj.(t.cols) <- !v
+
+  let dual ?(limit = max_int) ?(slack = F.zero) t ~allowed =
+    let rec loop () =
+      let r = ref (-1) in
+      Array.iteri
+        (fun i row ->
+          if
+            F.compare (F.add (rhs t row) slack) F.zero < 0
+            && (!r < 0 || F.compare (rhs t row) (rhs t t.rows.(!r)) < 0)
+          then r := i)
+        t.rows;
+      if !r < 0 then `Optimal
+      else if t.pivots >= limit then `Stopped
+      else
+        let row = t.rows.(!r) and s = ref (-1) in
+        for j = 0 to allowed - 1 do
+          if F.sign row.(j) < 0 then
+            let q = F.div t.obj.(j) (F.sub F.zero row.(j)) in
+            if
+              !s < 0
+              || F.compare q (F.div t.obj.(!s) (F.sub F.zero row.(!s))) < 0
+            then s := j
+        done;
+        if !s < 0 then `Infeasible
+        else (
+          pivot t !r !s;
+          loop ())
+    in
+    loop ()
 
   let install t target =
     let wanted = Hashtbl.create 64 in
@@ -288,22 +361,64 @@ let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
   if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art c t
   else Infeasible
 
-let maximize_float ?(bland = false) ~vars objective rows =
+let float_problem name ~vars objective rows =
   let rows = normalize rows in
   let t, first_art = A.setup ~vars rows in
   let c = Array.make first_art 0. in
   List.iter
     (fun (j, v) ->
-      if j < 0 || j >= vars then invalid_arg "Lp.maximize_float: variable";
+      if j < 0 || j >= vars then invalid_arg (name ^ ": variable");
       c.(j) <- c.(j) +. Rat.to_float v)
     objective;
-  if not (A.phase1 t ~bland ~first_art) then None
+  (t, first_art, c)
+
+let primal t ~vars shift =
+  let x = Array.map Float.neg shift in
+  Array.iteri
+    (fun i b -> if b < vars then x.(b) <- x.(b) +. A.rhs t t.rows.(i))
+    t.basis;
+  x
+
+let maximize_float ?(bland = false) ?limit ~vars objective rows =
+  let t, first_art, c =
+    float_problem "Lp.maximize_float" ~vars objective rows
+  in
+  if not (A.phase1 ?limit t ~bland ~first_art) then None
   else
-    match A.phase2 t ~bland ~first_art (fun j -> c.(j)) with
+    match A.phase2 ?limit t ~bland ~first_art (fun j -> c.(j)) with
     | `Unbounded | `Stopped -> None
-    | `Optimal ->
-        let x = Array.make vars 0. in
-        Array.iteri
-          (fun i b -> if b < vars then x.(b) <- A.rhs t t.rows.(i))
-          t.basis;
-        Some (A.rhs t t.obj, x)
+    | `Optimal -> Some (A.rhs t t.obj, primal t ~vars (Array.make vars 0.))
+
+let bound_float ?limit ~vars objective rows =
+  let d =
+    Array.init vars (fun j ->
+        Rat.of_ints (1000 + ((j + 1) * 7919 mod 1000)) 1_000_000_000)
+  in
+  let moved =
+    List.map
+      (fun r ->
+        let rhs =
+          List.fold_left
+            (fun acc (j, c) -> Rat.add acc (Rat.mul c d.(j)))
+            r.rhs r.coeffs
+        in
+        ({ r with rhs }, if Rat.sign rhs < 0 then Rat.neg r.rhs else r.rhs))
+      rows
+  in
+  let original =
+    Array.of_list (List.map (fun (_, b) -> Rat.to_float b) moved)
+  in
+  let t, first_art, c =
+    float_problem "Lp.bound_float" ~vars objective (List.map fst moved)
+  in
+  t.harris <- true;
+  if not (A.phase1 ?limit ~slack:1e-6 t ~bland:false ~first_art) then None
+  else
+    match A.phase2 ?limit t ~bland:false ~first_art (fun j -> c.(j)) with
+    | `Unbounded | `Stopped -> None
+    | `Optimal -> (
+        let near = primal t ~vars (Array.map Rat.to_float d) in
+        A.restore t original;
+        match A.dual ?limit ~slack:1e-7 t ~allowed:first_art with
+        | `Optimal -> Some (A.rhs t t.obj, primal t ~vars (Array.make vars 0.))
+        | `Infeasible | `Stopped -> Some (A.rhs t t.obj, near))

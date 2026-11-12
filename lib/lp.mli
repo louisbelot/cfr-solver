@@ -11,6 +11,7 @@ module type FIELD = sig
 
   val zero : t
   val one : t
+  val tol : t
   val of_rat : Rat.t -> t
   val add : t -> t -> t
   val sub : t -> t -> t
@@ -33,6 +34,14 @@ val maximize :
 
 val maximize_float :
   ?bland:bool ->
+  ?limit:int ->
+  vars:int ->
+  (int * Rat.t) list ->
+  row list ->
+  (float * float array) option
+
+val bound_float :
+  ?limit:int ->
   vars:int ->
   (int * Rat.t) list ->
   row list ->
