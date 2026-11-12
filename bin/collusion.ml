@@ -109,6 +109,69 @@ let run ranks iterations budget csv svg =
            ~xlabel:"columns" ~ylabel:"best upper bound minus lower bound" series))
     svg
 
+let uncorrelated ranks iterations gap csv svg =
+  let game = Kuhn_n.game ~ranks 3 in
+  let (module G) = game in
+  let tree = Multi_tree.build (module G) in
+  let sigma, conv = nash tree (module G) iterations in
+  Format.printf "%s: dcfr %d iterations, nash conv %s, gap %s@.@." G.name
+    iterations (sci conv) (sci gap);
+  Format.printf "%-4s %9s %9s %9s %9s %9s %9s %7s %8s@." "adv" "nash-br" "tme"
+    "tme-up" "tmecor" "price" "root" "nodes" "secs";
+  let runs =
+    List.map
+      (fun o ->
+        let t = Team.build tree ~adversary:o in
+        let s, secs = timed (fun () -> Tme.solve ~gap t) in
+        let cor = Rat.to_float (Team.solve t).value in
+        let br, _ = Multi_br.best tree o (without tree o sigma) in
+        let lo = Rat.to_float s.lower in
+        Format.printf
+          "%-4d %+9.5f %+9.5f %+9.5f %+9.5f %9.5f %+9.5f %7d %8.2f@." (o + 1)
+          (-.br) lo s.upper cor (cor -. lo) s.root s.nodes secs;
+        (o, s))
+      [ 0; 1; 2 ]
+  in
+  Format.printf "@.";
+  List.iter
+    (fun (o, (s : Tme.result)) ->
+      Format.printf "adversary %d: tme >= %s@." (o + 1) (Rat.to_string s.lower))
+    runs;
+  Option.iter
+    (fun path ->
+      let b = Buffer.create 4096 in
+      Buffer.add_string b "adversary,node,lower,upper\n";
+      List.iter
+        (fun (o, (s : Tme.result)) ->
+          List.iter
+            (fun (i, lo, up) ->
+              Printf.bprintf b "%d,%d,%.12g,%.12g\n" (o + 1) i lo up)
+            s.trace)
+        runs;
+      write_file path (Buffer.contents b))
+    csv;
+  Option.iter
+    (fun path ->
+      let series =
+        List.map
+          (fun (o, (s : Tme.result)) ->
+            {
+              Plot.label = Printf.sprintf "adversary %d" (o + 1);
+              dashed = false;
+              points =
+                List.filter_map
+                  (fun (i, lo, up) ->
+                    if up -. lo > 1e-9 then Some (i, up -. lo) else None)
+                  s.trace;
+            })
+          runs
+      in
+      write_file path
+        (Plot.loglog
+           ~title:(Printf.sprintf "TME branch and bound, %s" G.name)
+           ~xlabel:"nodes" ~ylabel:"upper bound minus lower bound" series))
+    svg
+
 let cmds =
   let ranks =
     Arg.(
@@ -128,9 +191,19 @@ let cmds =
   and file names doc =
     Arg.(value & opt (some string) None & info names ~docv:"FILE" ~doc)
   in
+  let gap =
+    Arg.(
+      value & opt float 1e-6
+      & info [ "gap" ] ~docv:"G"
+          ~doc:"Stop when the upper and lower bounds are within $(docv).")
+  in
   let check ranks n budget csv svg =
     if ranks < 3 || ranks > 12 then Error (`Msg "ranks must be in [3, 12]")
     else Ok (run ranks n budget csv svg)
+  in
+  let small ranks n gap csv svg =
+    if ranks < 3 || ranks > 5 then Error (`Msg "ranks must be in [3, 5]")
+    else Ok (uncorrelated ranks n gap csv svg)
   in
   [
     Cmd.v
@@ -145,4 +218,17 @@ let cmds =
           (const check $ ranks $ iterations $ budget
           $ file [ "csv" ] "Write both bounds per column to $(docv)."
           $ file [ "svg" ] "Plot the bound gap against columns to $(docv)."));
+    Cmd.v
+      (Cmd.info "tme"
+         ~doc:
+           "The same team game without the coordination device: the \
+            members             mix independently, which makes the team's \
+            problem a nonconvex             bilinear program. Solve it by \
+            spatial branch and bound on an RLT             relaxation and \
+            compare it with TMECor and the Nash family.")
+      Term.(
+        term_result
+          (const small $ ranks $ iterations $ gap
+          $ file [ "csv" ] "Write both bounds per node to $(docv)."
+          $ file [ "svg" ] "Plot the bound gap against nodes to $(docv)."));
   ]
