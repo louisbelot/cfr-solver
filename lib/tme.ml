@@ -18,6 +18,8 @@ type result = {
   x : Rat.t array;
   z : Rat.t array;
   trace : (int * float * float) list;
+  warm : int;
+  pivots : int;
 }
 
 let blocks (p : Team.plex) =
@@ -120,7 +122,17 @@ let robust ~vars obj rows =
   in
   go 0
 
-let relax t box =
+type rlt = {
+  vars : int;
+  obj : (int * Rat.t) list;
+  base : Lp.row list;
+  xv : int -> int option;
+  zv : int -> int option;
+  w : int -> int -> int option;
+  live_ij : int -> int -> bool;
+}
+
+let rlt t =
   let na = t.pa.size and nb = t.pb.size in
   let xv i = if i = 0 then None else Some (i - 1)
   and zv j = if j = 0 then None else Some (na - 1 + j - 1) in
@@ -141,73 +153,95 @@ let relax t box =
     | i, j -> Hashtbl.find_opt idx (i, j)
   in
   let live_ij i j = i = 0 || j = 0 || t.live.(t.block_a.(i)).(t.block_b.(j)) in
+  let restrict (p : Team.plex) keep =
+    Team.
+      {
+        p with
+        infos =
+          Array.of_list
+            (List.filter (fun (_, f, _) -> keep f) (Array.to_list p.infos));
+      }
+  in
   let rows_b =
     List.concat
       (List.init (na - 1) (fun i ->
            let i = i + 1 in
-           Team.
-             {
-               t.pb with
-               infos =
-                 Array.of_list
-                   (List.filter
-                      (fun (_, f, _) -> live_ij i f)
-                      (Array.to_list t.pb.infos));
-             }
-           |> fun p -> flows p (w i)))
+           flows (restrict t.pb (live_ij i)) (w i)))
   in
   let rows_a =
     List.concat
       (List.init (nb - 1) (fun j ->
            let j = j + 1 in
-           Team.
-             {
-               t.pa with
-               infos =
-                 Array.of_list
-                   (List.filter
-                      (fun (_, f, _) -> live_ij f j)
-                      (Array.to_list t.pa.infos));
-             }
-           |> fun p -> flows p (fun i -> w i j)))
+           flows (restrict t.pa (fun i -> live_ij i j)) (fun i -> w i j)))
   in
   let g =
     by_adversary t (fun i j ->
         match w i j with Some v -> `Var (v, Rat.one) | None -> `Const Rat.one)
   in
   let adv, vars, obj = dual t !next g in
-  let bounds =
-    Box.fold
-      (fun i (l, u) acc ->
-        let l = Rat.of_float l and u = Rat.of_float u in
-        List.concat_map
-          (fun j ->
-            if not (live_ij i j) then []
-            else
-              let wij = Option.get (w i j) in
-              let below, above =
-                match zv j with
-                | None ->
-                    ( row [ (wij, Rat.one) ] Lp.Ge l,
-                      row [ (wij, Rat.one) ] Lp.Le u )
-                | Some z ->
-                    ( row [ (wij, minus_one); (z, l) ] Lp.Le Rat.zero,
-                      row [ (wij, Rat.one); (z, neg u) ] Lp.Le Rat.zero )
-              in
-              (if Rat.is_zero l then [] else [ below ])
-              @ if Rat.equal u Rat.one then [] else [ above ])
-          (List.init nb Fun.id)
-        @ acc)
-      box []
+  let base = flows t.pa xv @ flows t.pb zv @ rows_a @ rows_b @ adv in
+  { vars; obj; base; xv; zv; w; live_ij }
+
+let bound_rows t r i ?lo ?hi () =
+  List.concat_map
+    (fun j ->
+      if not (r.live_ij i j) then []
+      else
+        let wij = Option.get (r.w i j) in
+        let below l =
+          match r.zv j with
+          | None -> row [ (wij, Rat.one) ] Lp.Ge l
+          | Some z -> row [ (wij, minus_one); (z, l) ] Lp.Le Rat.zero
+        and above u =
+          match r.zv j with
+          | None -> row [ (wij, Rat.one) ] Lp.Le u
+          | Some z -> row [ (wij, Rat.one); (z, neg u) ] Lp.Le Rat.zero
+        in
+        Option.to_list (Option.map below lo)
+        @ Option.to_list (Option.map above hi))
+    (List.init t.pb.size Fun.id)
+
+let box_rows t r box =
+  Box.fold
+    (fun i (l, u) acc ->
+      let lo = if l = 0. then None else Some (Rat.of_float l)
+      and hi = if u = 1. then None else Some (Rat.of_float u) in
+      bound_rows t r i ?lo ?hi () @ acc)
+    box []
+
+let trusted lp = Flp.violation lp < 1e-7
+
+let point t r sol =
+  let get = function None -> 1. | Some v -> sol.(v) in
+  let x = Array.init t.pa.size (fun i -> get (r.xv i))
+  and z = Array.init t.pb.size (fun j -> get (r.zv j)) in
+  (x, z, fun i j -> get (r.w i j))
+
+let warm parent rows =
+  let lp = Flp.thaw parent in
+  let before = Flp.pivots lp in
+  match Flp.add ~limit:(20 * (Flp.rows lp + List.length rows)) lp rows with
+  | Flp.Optimal when trusted lp ->
+      `Solved (Flp.value lp, Flp.x lp, Some lp, Flp.pivots lp - before)
+  | Infeasible -> `Empty
+  | Optimal | Bound | Failed -> `Unknown
+
+let cold t r root box =
+  let extra = box_rows t r box in
+  let restart =
+    match root with Some root -> warm root extra | None -> `Unknown
   in
-  let rows = flows t.pa xv @ flows t.pb zv @ rows_a @ rows_b @ adv @ bounds in
-  match robust ~vars obj rows with
-  | None -> None
-  | Some (value, sol) ->
-      let get = function None -> 1. | Some v -> sol.(v) in
-      let x = Array.init na (fun i -> get (xv i))
-      and z = Array.init nb (fun j -> get (zv j)) in
-      Some (value, x, z, fun i j -> get (w i j))
+  match restart with
+  | (`Solved _ | `Empty) as s -> s
+  | `Unknown -> (
+      let rows = r.base @ extra in
+      match Flp.solve ~vars:r.vars r.obj rows with
+      | lp, Flp.Optimal when trusted lp ->
+          `Solved (Flp.value lp, Flp.x lp, Some lp, Flp.pivots lp)
+      | lp, _ -> (
+          match robust ~vars:r.vars r.obj rows with
+          | Some (v, sol) -> `Solved (v, sol, None, Flp.pivots lp)
+          | None -> `Unknown))
 
 let reply_rows t (free : Team.plex) coef =
   let fv j = if j = 0 then None else Some (j - 1) in
@@ -241,12 +275,15 @@ let reply t (free : Team.plex) coef =
     project free
       (Array.init free.size (fun j -> if j = 0 then 1. else x.(j - 1)))
   in
-  match robust ~vars obj rows with
-  | Some (_, x) -> plan x
-  | None -> (
-      match Lp.maximize ~vars obj rows with
-      | Lp.Optimal { x; _ } -> plan (Array.map Rat.to_float x)
-      | Infeasible | Unbounded -> invalid_arg "Tme: reply LP")
+  match Flp.solve ~vars obj rows with
+  | lp, Flp.Optimal when trusted lp -> plan (Flp.x lp)
+  | _ -> (
+      match robust ~vars obj rows with
+      | Some (_, x) -> plan x
+      | None -> (
+          match Lp.maximize ~vars obj rows with
+          | Lp.Optimal { x; _ } -> plan (Array.map Rat.to_float x)
+          | Infeasible | Unbounded -> invalid_arg "Tme: reply LP"))
 
 let reply_b t x = reply t t.pb (fun i j -> (j, Rat.of_float x.(i)))
 let reply_a t z = reply t t.pa (fun i j -> (i, Rat.of_float z.(j)))
@@ -343,28 +380,29 @@ let error t x z w =
 
 let range box i = Option.value ~default:(0., 1.) (Box.find_opt i box)
 
-let pick box x e =
+let candidates k box x e =
   let inside i =
     let l, u = range box i in
     let d = 1e-3 *. (u -. l) in
     x.(i) > l +. d && x.(i) < u -. d
   in
-  let arg ok =
-    let best = ref (-1) in
-    Array.iteri
-      (fun i ei ->
-        if ei > 1e-9 && ok i && (!best < 0 || ei > e.(!best)) then best := i)
-      e;
-    !best
+  let ranked ok =
+    List.init (Array.length e) Fun.id
+    |> List.filter (fun i -> e.(i) > 1e-9 && ok i)
+    |> List.stable_sort (fun i j -> Float.compare e.(j) e.(i))
   in
-  match arg inside with
-  | -1 -> (
-      match arg (fun _ -> true) with
-      | -1 -> None
-      | i ->
+  match ranked inside with
+  | [] -> (
+      match ranked (fun _ -> true) with
+      | [] -> []
+      | i :: _ ->
           let l, u = range box i in
-          Some (i, (l +. u) /. 2.))
-  | i -> Some (i, x.(i))
+          [ (i, (l +. u) /. 2.) ])
+  | is ->
+      List.filteri (fun n _ -> n < k) is
+      |> List.map (fun i ->
+          let l, u = range box i in
+          (i, (0.75 *. x.(i)) +. (0.125 *. (l +. u))))
 
 let split box i m =
   let l, u = range box i in
@@ -377,31 +415,69 @@ module Frontier = Set.Make (struct
     match Float.compare b a with 0 -> compare i j | c -> c
 end)
 
-let solve ?(gap = 1e-6) ?(limit = 20_000) team =
+let keep = 48
+
+let solve ?(gap = 1e-6) ?(limit = 20_000) ?(strong = 1) team =
   let t = make team in
+  let r = rlt t in
   let boxes = Hashtbl.create 1024 in
   let best = ref (neg_infinity, [||], [||]) and held = ref neg_infinity in
+  let stored = ref Frontier.empty in
+  let warmed = ref 0 and pivots = ref 0 and root_lp = ref None in
   let lower () =
     let b, _, _ = !best in
     b
   in
   let offer ((v, _, _) as c) = if v > lower () then best := c in
   let hold v = held := Float.max !held v in
+  let remember key =
+    stored := Frontier.add key !stored;
+    if Frontier.cardinal !stored > keep then begin
+      let ((_, id) as last) = Frontier.max_elt !stored in
+      stored := Frontier.remove last !stored;
+      let box, _ = Hashtbl.find boxes id in
+      Hashtbl.replace boxes id (box, None)
+    end
+  in
+  let relax box start =
+    let attempt =
+      match start with
+      | Some (parent, rows) -> warm parent rows
+      | None -> `Unknown
+    in
+    (match attempt with `Solved _ -> incr warmed | `Empty | `Unknown -> ());
+    let s =
+      match attempt with
+      | (`Solved _ | `Empty) as s -> s
+      | `Unknown -> cold t r !root_lp box
+    in
+    match s with
+    | `Solved (v, sol, lp, n) ->
+        pivots := !pivots + n;
+        let x, z, w = point t r sol in
+        `Solved (v, x, z, w, lp)
+    | (`Empty | `Unknown) as s -> s
+  in
   let rec loop q id nodes root trace =
     match Frontier.min_elt_opt q with
     | Some ((ub, k) as top) when ub > lower () +. gap && nodes < limit -> (
         let q = Frontier.remove top q in
-        let box = Hashtbl.find boxes k in
+        let box, start = Hashtbl.find boxes k in
+        stored := Frontier.remove top !stored;
         Hashtbl.remove boxes k;
         let nodes = nodes + 1 in
-        match relax t box with
-        | None ->
+        match relax box start with
+        | `Empty -> loop q id nodes root trace
+        | `Unknown ->
             hold ub;
             loop q id nodes root trace
-        | Some (v, x, z, w) ->
+        | `Solved (v, x, z, w, lp) ->
             let root = if nodes = 1 then v else root in
             let v = Float.min v ub in
-            if v <= lower () +. gap then loop q id nodes root trace
+            if v <= lower () +. gap then begin
+              hold v;
+              loop q id nodes root trace
+            end
             else (
               offer (climb t x);
               let top =
@@ -411,23 +487,68 @@ let solve ?(gap = 1e-6) ?(limit = 20_000) team =
                 (nodes, lower (), Float.max !held (top (Frontier.min_elt_opt q)))
                 :: trace
               in
-              match pick box x (error t x z w) with
-              | None ->
+              match candidates strong box x (error t x z w) with
+              | [] ->
                   hold v;
                   loop q id nodes root trace
-              | Some (i, m) ->
+              | first :: _ as cands ->
+                  let frozen = Option.map Flp.freeze lp in
+                  if nodes = 1 then root_lp := frozen;
+                  let sides (i, m) =
+                    let m = Rat.of_float m in
+                    (bound_rows t r i ~hi:m (), bound_rows t r i ~lo:m ())
+                  in
+                  let probe f rows =
+                    match warm f rows with
+                    | `Solved (u, _, _, n) ->
+                        pivots := !pivots + n;
+                        Float.min u v
+                    | `Empty -> neg_infinity
+                    | `Unknown -> v
+                  in
+                  let gain u = Float.max (v -. u) 1e-9 in
+                  let (i, m), (below, above), (vl, vr) =
+                    match frozen with
+                    | Some f when List.length cands > 1 ->
+                        List.map
+                          (fun c ->
+                            let ((lo, hi) as rows) = sides c in
+                            (c, rows, (probe f lo, probe f hi)))
+                          cands
+                        |> List.fold_left
+                             (fun best ((_, _, (a, b)) as c) ->
+                               match best with
+                               | Some (_, _, (a', b'))
+                                 when gain a' *. gain b' >= gain a *. gain b ->
+                                   best
+                               | _ -> Some c)
+                             None
+                        |> Option.get
+                    | _ -> (first, sides first, (v, v))
+                  in
                   let left, right = split box i m in
-                  Hashtbl.add boxes id left;
-                  Hashtbl.add boxes (id + 1) right;
-                  let q = Frontier.add (v, id) (Frontier.add (v, id + 1) q) in
-                  loop q (id + 2) nodes root trace))
+                  let push (q, id) box rows u =
+                    if u <= lower () +. gap then begin
+                      hold u;
+                      (q, id + 1)
+                    end
+                    else begin
+                      Hashtbl.add boxes id
+                        (box, Option.map (fun f -> (f, rows)) frozen);
+                      if Option.is_some frozen then remember (u, id);
+                      (Frontier.add (u, id) q, id + 1)
+                    end
+                  in
+                  let q, id = push (q, id) left below vl in
+                  let q, id = push (q, id) right above vr in
+                  loop q id nodes root trace))
     | top ->
         let open_ub =
           match top with Some (ub, _) -> ub | None -> neg_infinity
         in
         (nodes, root, Float.max open_ub !held, List.rev trace)
   in
-  Hashtbl.add boxes 0 Box.empty;
+  Hashtbl.add boxes 0 (Box.empty, None);
   let nodes, root, upper, trace =
     loop (Frontier.singleton (infinity, 0)) 1 0 neg_infinity []
   in
@@ -441,4 +562,6 @@ let solve ?(gap = 1e-6) ?(limit = 20_000) team =
     x;
     z;
     trace;
+    warm = !warmed;
+    pivots = !pivots;
   }

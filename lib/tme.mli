@@ -6,6 +6,8 @@ type result = {
   x : Rat.t array;
   z : Rat.t array;
   trace : (int * float * float) list;
+  warm : int;
+  pivots : int;
 }
 
-val solve : ?gap:float -> ?limit:int -> Team.t -> result
+val solve : ?gap:float -> ?limit:int -> ?strong:int -> Team.t -> result
