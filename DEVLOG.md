@@ -2392,3 +2392,112 @@ scratch; keeping the parent's basis and running the dual simplex after the
 new bound rows should cut most of the 0.8 s per node, and reliability
 branching should cut the node count. Then five and six ranks to compare with
 Zhang and An's runtimes.
+
+## 2026-11-12: warm-started TME nodes
+
+Built: `Flp`, a float-only tableau simplex that can add rows to a solved
+tableau and repair it with the dual simplex, and a TME branch and bound that
+uses it, so each child node starts from its parent instead of from scratch.
+Along the way the middle-seat TME from the last entry turned out to be wrong.
+
+Profile first. On the middle seat, 60 nodes took 17 s, 16.2 of them in the
+relaxation LPs (866 variables, about 850 rows, 2,800 nonzeros, 1,200 to 1,400
+pivots per solve) and 0.6 in the alternating best responses. The generic
+`Simplex (F)` functor keeps its entries as a polymorphic `F.t array`, so every
+float is boxed and every pivot allocates a list of nonzero positions. The
+final tableau is about 8% dense (120,000 nonzeros).
+
+Design. `Flp` has unboxed rows, a pivot that only touches the nonzeros of the
+pivot row, Harris ratio tests in the primal and the dual, the same
+perturb-then-restore cold start as `Lp.bound_float`, and `add`: each new row
+is reduced against the basis (subtract its coefficient times the row of every
+basic column it touches), its slack becomes basic, and the dual simplex
+fixes the negative right-hand sides. `freeze` and `thaw` keep a sparse copy
+of a tableau for later. In `Tme`, a branch on x_i at m adds the rows
+W_ij <= m z_j (left child) or m z_j <= W_ij (right child) for every live j,
+nothing else, so a child is its parent plus about 25 rows.
+
+What made it correct and fast, in the order I found the problems:
+
+1. Dual feasibility. After the dual simplex, a primal pass runs; if any
+   reduced cost had gone negative it pivots until it is optimal again.
+   Without this a "solved" node can report a value below its true bound.
+2. Deep boxes solved from scratch blew up in floats (false infeasibility,
+   violations up to 1e25), and the old solver then took 4 s or more per node.
+   A node without a parent snapshot now restarts from the root's tableau with
+   all of its box rows added at once: about 100 pivots, 0.05 s.
+3. Memory. A frozen tableau deep in the tree is several MB; keeping 1,024
+   reached 3.8 GB. Now at most 48 are kept, and when the cache is full the
+   snapshot of the open node with the lowest bound goes first, since
+   best-first search reaches it last. With that, 799 of 800 middle-seat nodes
+   started from their parent.
+4. Refinement. When the point violates an original row by more than 1e-7,
+   the basic values are recomputed as B^-1 b from the original right-hand
+   sides (the starting unit columns hold B^-1) and the dual simplex runs
+   again, up to three times.
+5. Empty boxes. With the split point moved off x_i (below), a child box can
+   contain no point of the treeplex. Before, the dual simplex's "no entering
+   column" went to the fallbacks, which spent 476 s on 13 such nodes and then
+   held a meaningless bound (gap stuck at 2.8e-4). Now the row's multipliers
+   are checked against the original rows as a Farkas certificate (sign
+   conditions per row type, y^T A >= 0, y^T b < 0) and the node is dropped
+   only if that holds.
+6. Upper bound bookkeeping. Nodes pruned at v <= lower + gap now enter the
+   final upper bound.
+7. Thawing. Rebuilding the dense tableau from a snapshot takes about 36 ms
+   per node, the dual simplex after it 2 ms. The node that just branched
+   keeps its dense tableau for whichever child is popped first, and ties in
+   the queue go to the newest node so that happens more often. Only 43 of
+   300 pops hit it with oldest-first ties; middle seat 41.4 s to 34.5 s on
+   the same tree (32.7 s in the final run).
+
+Branching. Splitting at 0.75 x_i plus a quarter of the box midpoint (the
+balanced rule in Couenne) instead of exactly at x_i: middle seat closed at
+679 nodes, against a 4.6e-6 gap still open after 800 with the old rule.
+Strong branching (`--strong K`, product score of the two bound drops,
+Achterberg, Koch and Martin 2005) with K = 4: 167 nodes but 160 s and 255 s
+in two runs against 33 s, so K = 1 stays the default.
+
+Results (four ranks, gap 1e-6, `tme`):
+
+| adversary | TME | nodes | warm | pivots | time | before |
+|---|---|---|---|---|---|---|
+| 1 | 7/192 | 17 | 16 | 699 | 0.09 s | 15 nodes, 0.6 s |
+| 2 | 0.0236827 | 679 | 665 | 7,334 | 32.7 s | 1,389 nodes, 1,079 s |
+| 3 | -1/24 | 3 | 2 | 1,233 | 0.10 s | 2 nodes, 0.2 s |
+
+The wrong answer. The last entry reported the middle seat at 0.0236763 with an
+upper bound within 1e-6. The new certificate guarantees
+1897794158031362601219479/80134213299811439534407680 = 0.023682695, and
+`Team.guard` (a backward pass over the adversary's tree, separate from the
+LPs) agrees, so the old upper bound was at least 5e-6 too low. The old run
+didn't log enough to name the node. The likely cause is item 1: its dual
+simplex never checked reduced costs. Plain branching proves
+[0.023682695, 0.023683616] and strong branching [0.023682122, 0.023682973],
+so TME is in [0.023682695, 0.023682973]. The price of the device at that seat
+stays 0.0028.
+
+Checks: 9 new tests (suite at 427, 238 s). `Flp` against the exact rational
+simplex on 400 random mixed LPs, 200 degenerate ones with duplicated
+equalities and Beale's example; warm rows after a freeze and thaw against an
+exact solve of the whole system on 400 random cases (value or infeasibility);
+a chain of cuts; a dual stopped at zero pivots still bounds the optimum. In
+`Tme`, the truncated middle seat keeps its upper bound above the best
+certified pair and nearly every child starts warm, and strong branching at
+2 and 8 candidates gets within 1e-6 of 7/192 with a certificate that
+`Team.guard` confirms. The old test that called 0.0236763 "known" is gone.
+
+Five ranks, adversary last, against Zhang and An (2020), who report 3K5 in
+19 s, 319 s, 649 s and 2,460 s for gaps of 1e-3 to 1e-6 times the payoff
+range of 6. `tme -r 5 --adversary 3 --gap 6e-6 --limit 6000`: below 0.006 at
+node 13, then 7.3e-4 after 6,000 nodes and 1,291 s, TME in
+[-0.03191, -0.03118]. Their MILP is far ahead here. Half the nodes (3,332
+warm) had lost their snapshot and restarted from the root, and the process
+used over 2 GB for 48 snapshots of a larger tableau. A side result: TMECor at
+this seat is -0.02519, so the device is worth at least 0.006 with the
+adversary last, where at four ranks it was worth exactly nothing.
+
+Next: a basis that is cheap to store. With a sparse LU (or a product-form
+inverse) a node's snapshot is its list of basic columns plus its rows, a few
+KB instead of several MB, so every open node can keep one and five ranks
+stops restarting from the root. Then 3K5 to the end and 3K6.
