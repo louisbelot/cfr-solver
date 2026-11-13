@@ -217,8 +217,8 @@ let point t r sol =
   and z = Array.init t.pb.size (fun j -> get (r.zv j)) in
   (x, z, fun i j -> get (r.w i j))
 
-let warm parent rows =
-  let lp = Flp.thaw parent in
+let warm ?dense parent rows =
+  let lp = match dense with Some lp -> lp | None -> Flp.thaw parent in
   let before = Flp.pivots lp in
   match Flp.add ~limit:(20 * (Flp.rows lp + List.length rows)) lp rows with
   | Flp.Optimal when trusted lp ->
@@ -412,7 +412,7 @@ module Frontier = Set.Make (struct
   type t = float * int
 
   let compare (a, i) (b, j) =
-    match Float.compare b a with 0 -> compare i j | c -> c
+    match Float.compare b a with 0 -> compare j i | c -> c
 end)
 
 let keep = 48
@@ -424,6 +424,7 @@ let solve ?(gap = 1e-6) ?(limit = 20_000) ?(strong = 1) team =
   let best = ref (neg_infinity, [||], [||]) and held = ref neg_infinity in
   let stored = ref Frontier.empty in
   let warmed = ref 0 and pivots = ref 0 and root_lp = ref None in
+  let spare = ref None in
   let lower () =
     let b, _, _ = !best in
     b
@@ -442,7 +443,15 @@ let solve ?(gap = 1e-6) ?(limit = 20_000) ?(strong = 1) team =
   let relax box start =
     let attempt =
       match start with
-      | Some (parent, rows) -> warm parent rows
+      | Some (parent, rows) ->
+          let dense =
+            match !spare with
+            | Some (f, lp) when f == parent ->
+                spare := None;
+                Some lp
+            | _ -> None
+          in
+          warm ?dense parent rows
       | None -> `Unknown
     in
     (match attempt with `Solved _ -> incr warmed | `Empty | `Unknown -> ());
@@ -494,6 +503,9 @@ let solve ?(gap = 1e-6) ?(limit = 20_000) ?(strong = 1) team =
               | first :: _ as cands ->
                   let frozen = Option.map Flp.freeze lp in
                   if nodes = 1 then root_lp := frozen;
+                  spare :=
+                    Option.bind frozen (fun f ->
+                        Option.map (fun lp -> (f, lp)) lp);
                   let sides (i, m) =
                     let m = Rat.of_float m in
                     (bound_rows t r i ~hi:m (), bound_rows t r i ~lo:m ())
