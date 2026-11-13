@@ -764,23 +764,79 @@ equalities consistent. It runs the primal simplex with a Harris ratio test,
 which prefers large pivots among near ties. Then it puts the true b back
 through the basis inverse (the columns of the starting basis) and finishes
 with a dual simplex. If that last pass gives up, the basis is still dual
-feasible, so b^T y is still a valid upper bound. With it every node solves.
+feasible, so b^T y is still a valid upper bound. That was enough to make
+every node solve, but each one still started from scratch.
+
+Nodes now start from their parent. `Flp` is a float-only copy of the tableau
+simplex: unboxed `float array` rows, a sparse pivot over the nonzeros of the
+pivot row, Harris ratio tests in both the primal and the dual, and an `add`
+that appends rows to an optimal tableau. A child differs from its parent by
+one side of a box, which is new rows l z_j <= W_ij (or W_ij <= u z_j) for one
+x_i. Each new row is reduced against the current basis, its slack enters the
+basis with a possibly negative value, the old basis is still dual feasible,
+and the dual simplex repairs it, in about 10 pivots on average where a cold
+solve takes about 1,200. Open nodes keep their parent's tableau frozen in
+sparse form; a node whose snapshot was dropped restarts from the root's
+tableau with all of its box rows added at once. At most 48 snapshots are kept
+and the one dropped first belongs to the open node with the lowest bound,
+which best-first search would reach last. Thawing a snapshot means
+rebuilding a dense 1,100 by 2,300 array, about 36 ms, while the dual simplex
+itself takes 2 ms, so the node that just branched keeps its dense tableau,
+and if the next node popped is one of its children it is used directly. Ties
+in the best-first queue go to the newest node, which makes that happen more
+often: 41 s to 33 s on the middle seat.
+
+Before a node's answer is used it gets checked. After the dual
+simplex says optimal, a primal pass makes sure no reduced cost has drifted
+negative (the bound is only valid if the final basis is dual feasible), and
+the point is checked against every original row. If a row is off by more
+than 1e-7, the basic values are recomputed as B^-1 b from the original right
+hand sides (the starting slack columns of the tableau hold B^-1) and the dual
+simplex runs again. When the dual simplex finds a row with no entering
+column, the multipliers in that row are replayed against the original rows
+as a Farkas certificate before the node is called empty. Anything that fails
+these checks falls back to the old solver.
+
+Two changes to the search itself. The split point is 0.75 x_i plus 0.25 of
+the box midpoint instead of x_i, as in Couenne's balanced rule: splitting
+exactly at the relaxed value made some boxes very thin on one side. On the
+middle seat that is the difference between a gap of 4.6e-6 after 800 nodes
+and a closed gap at 679. Strong branching (`--strong K`) solves both children
+of the K largest-error candidates and keeps the one with the largest product
+of bound drops (Achterberg, Koch and Martin 2005). With K = 4 the middle seat
+closes in 167 nodes instead of 679 but took 160 s and 255 s in two runs
+against 33 s: eight child solves per node cost more than the nodes they
+save, so the default is K = 1.
 
 ```
 $ dune exec cfr-solver -- tme --svg docs/tme-kuhn.svg
 kuhn3: dcfr 20000 iterations, nash conv 1.170e-08, gap 1.000e-06
 
-adv    nash-br       tme    tme-up    tmecor     price      root   nodes     secs
-1     +0.02612  +0.03646  +0.03646  +0.03788   0.00142  +0.03788      15     0.61
-2     +0.02083  +0.02368  +0.02368  +0.02652   0.00284  +0.02652    1389  1078.77
-3     -0.04696  -0.04167  -0.04167  -0.04167   0.00000  -0.04167       2     0.22
+adv    nash-br       tme    tme-up    tmecor     price      root   nodes    warm   pivots     secs
+1     +0.02612  +0.03646  +0.03646  +0.03788   0.00142  +0.03788      17      16      699     0.09
+2     +0.02083  +0.02368  +0.02368  +0.02652   0.00283  +0.02652     679     665     7334    32.69
+3     -0.04696  -0.04167  -0.04167  -0.04167   0.00000  -0.04167       3       2     1233     0.10
 
 adversary 1: tme >= 7/192
-adversary 2: tme >= 356448315271/15055072223808
+adversary 2: tme >= 1897794158031362601219479/80134213299811439534407680
 adversary 3: tme >= -1/24
 ```
 
 ![Gap between the bounds of the TME branch and bound on four-rank Kuhn](docs/tme-kuhn.svg)
+
+The middle seat went from 1,389 nodes and 1,079 s to 679 nodes and 33 s, and
+the answer changed. The old run reported TME 0.0236763 with an upper bound
+within 1e-6 of it, but the new certificate guarantees 0.0236827 (checked by
+`Team.guard`, an exact backward pass over the adversary's tree), 5e-6 higher.
+So the old upper bound was wrong. The old run didn't record which node went
+wrong. The likely culprit is its dual simplex, which stopped as soon as no row
+was infeasible and never checked the reduced costs: if some had drifted
+negative in floats, the basis was feasible but not optimal and its value sat
+below the true node bound. The old search also left pruned nodes out of the
+final upper bound, which can only cost up to the gap. Two runs now bracket
+the value: plain branching proves TME in [0.0236827, 0.0236836] and strong
+branching [0.0236821, 0.0236830], so TME is between 0.023682695 and
+0.023682973.
 
 `price` is TMECor minus TME, what the device is worth (Basilico et al. 2017
 call the ratio the price of uncorrelation; with values near zero and of either
@@ -791,14 +847,24 @@ middle 0.0028. Measured against the Nash family, independent play keeps 88%,
 50% and 100% of what correlation gains at the three seats, so a pair of
 colluders without any shared randomness still takes most of it.
 
-The three seats behave very differently. With the adversary last, the
-relaxation is tight at the root and the members' plans from it are already
-optimal, so the solve takes two nodes. With the adversary first, 15 nodes.
-With the adversary in the middle it takes 1,389 nodes and 18 minutes. Both
-bounds move slowly: the best pair kept improving until node 1,249, and the
-gap fell below 1e-3 at node 153, 1e-4 at node 988 and 1e-5 at node 1,374. Each node is a 600-row LP
-solved from scratch in the dense tableau, 0.4 to 1 s. The chart stops each
-curve at the last node that branched.
+With the adversary last, the relaxation is tight at the root and the
+members' plans from it are already optimal, so the solve takes three nodes.
+With the adversary first, 17. The middle seat is the hard one: the gap falls
+below 1e-3 at node 37, 1e-4 at node 202 and 1e-5 at node 448. The chart
+stops each curve at the last node that branched.
+
+Five ranks is where it stops being cheap. Zhang and An (2020) solve TME
+exactly this way round (adversary last) with a MILP over a digit-by-digit
+discretization (IARAMDT, CPLEX), and report 3K5 within 1e-3, 1e-4, 1e-5 and
+1e-6 of the payoff range (6, so 0.006 to 0.000006 absolute) in 19 s, 319 s,
+649 s and 2,460 s. Here, `tme -r 5 --adversary 3 --gap 6e-6 --limit 6000`
+gets under 0.006 at node 13 but after 6,000 nodes and 1,291 s the gap is
+still 7.3e-4: TME is in [-0.03191, -0.03118]. Only 3,332 nodes started from
+their parent. The tree is wide, the cache holds 48 snapshots, and a node
+that lost its snapshot restarts from the root. The relaxation is also weaker: unlike four
+ranks, the root bound (-0.02477) is above TMECor (-0.02519) and TME is well
+below it, so the device is worth at least 0.006 with the adversary last at
+five ranks, where at four it was worth nothing.
 
 ## Convergence
 
@@ -2616,10 +2682,20 @@ The tests check against numbers that come from outside this code:
   come out as fractions, the certificate plans satisfy the treeplex equations
   exactly and their exact guarantee equals the reported value, 25 random
   independent pairs never beat the upper bound, the TME beats the guarantee of
-  DCFR's Nash strategies, and three ranks gives 0 at every seat.
+  DCFR's Nash strategies, and three ranks gives 0 at every seat. A truncated
+  middle-seat run keeps its upper bound above the best certified pair found
+  so far, and strong branching with 2 and 8 candidates lands within 1e-6 of
+  7/192 with a certificate that `Team.guard` confirms.
 - Perturbed LP bound: on Beale's cycling example and on 200 random degenerate
   LPs with duplicated equality rows, `Lp.bound_float` matches the exact
   rational optimum to 1e-7.
+- Float LP with warm starts: `Flp` against the exact rational simplex on 400
+  random LPs with mixed row types (including infeasible ones), on 200 LPs
+  with duplicated equality rows and on Beale's example; adding one to four
+  random rows to a solved tableau (after a freeze and thaw) gives the same
+  value or the same infeasibility as solving everything in exact rationals,
+  on 400 random cases; a chain of six cuts, each warm-started from the last;
+  and a dual simplex stopped at zero pivots still reports a valid bound.
 - External sampling for n players: on two-player Kuhn and Leduc it matches
   `Mccfr` exactly (nodes touched and every probability) under three
   weightings and both sampled averaging rules; with frozen regrets and two
