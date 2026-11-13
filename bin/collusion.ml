@@ -109,28 +109,29 @@ let run ranks iterations budget csv svg =
            ~xlabel:"columns" ~ylabel:"best upper bound minus lower bound" series))
     svg
 
-let uncorrelated ranks iterations gap csv svg =
+let uncorrelated ranks iterations gap strong limit seats csv svg =
   let game = Kuhn_n.game ~ranks 3 in
   let (module G) = game in
   let tree = Multi_tree.build (module G) in
   let sigma, conv = nash tree (module G) iterations in
   Format.printf "%s: dcfr %d iterations, nash conv %s, gap %s@.@." G.name
     iterations (sci conv) (sci gap);
-  Format.printf "%-4s %9s %9s %9s %9s %9s %9s %7s %8s@." "adv" "nash-br" "tme"
-    "tme-up" "tmecor" "price" "root" "nodes" "secs";
+  Format.printf "%-4s %9s %9s %9s %9s %9s %9s %7s %7s %8s %8s@." "adv" "nash-br"
+    "tme" "tme-up" "tmecor" "price" "root" "nodes" "warm" "pivots" "secs";
   let runs =
     List.map
       (fun o ->
         let t = Team.build tree ~adversary:o in
-        let s, secs = timed (fun () -> Tme.solve ~gap t) in
+        let s, secs = timed (fun () -> Tme.solve ~gap ~strong ~limit t) in
         let cor = Rat.to_float (Team.solve t).value in
         let br, _ = Multi_br.best tree o (without tree o sigma) in
         let lo = Rat.to_float s.lower in
         Format.printf
-          "%-4d %+9.5f %+9.5f %+9.5f %+9.5f %9.5f %+9.5f %7d %8.2f@." (o + 1)
-          (-.br) lo s.upper cor (cor -. lo) s.root s.nodes secs;
+          "%-4d %+9.5f %+9.5f %+9.5f %+9.5f %9.5f %+9.5f %7d %7d %8d %8.2f@."
+          (o + 1) (-.br) lo s.upper cor (cor -. lo) s.root s.nodes s.warm
+          s.pivots secs;
         (o, s))
-      [ 0; 1; 2 ]
+      (List.map pred seats)
   in
   Format.printf "@.";
   List.iter
@@ -191,6 +192,25 @@ let cmds =
   and file names doc =
     Arg.(value & opt (some string) None & info names ~docv:"FILE" ~doc)
   in
+  let strong =
+    Arg.(
+      value & opt positive 1
+      & info [ "strong" ] ~docv:"K"
+          ~doc:
+            "Strong branching over the $(docv) sequences with the \
+             largest              product error (1 branches on the largest one \
+             directly).")
+  and limit =
+    Arg.(
+      value & opt positive 20_000
+      & info [ "limit" ] ~docv:"N" ~doc:"Stop after $(docv) nodes per seat.")
+  and seats =
+    Arg.(
+      value
+      & opt (list int) [ 1; 2; 3 ]
+      & info [ "adversary" ] ~docv:"SEATS"
+          ~doc:"Comma-separated adversary seats to solve.")
+  in
   let gap =
     Arg.(
       value & opt float 1e-6
@@ -201,9 +221,11 @@ let cmds =
     if ranks < 3 || ranks > 12 then Error (`Msg "ranks must be in [3, 12]")
     else Ok (run ranks n budget csv svg)
   in
-  let small ranks n gap csv svg =
-    if ranks < 3 || ranks > 5 then Error (`Msg "ranks must be in [3, 5]")
-    else Ok (uncorrelated ranks n gap csv svg)
+  let small ranks n gap strong limit seats csv svg =
+    if ranks < 3 || ranks > 7 then Error (`Msg "ranks must be in [3, 7]")
+    else if List.exists (fun o -> o < 1 || o > 3) seats then
+      Error (`Msg "adversary seats are 1, 2 and 3")
+    else Ok (uncorrelated ranks n gap strong limit seats csv svg)
   in
   [
     Cmd.v
@@ -228,7 +250,7 @@ let cmds =
             compare it with TMECor and the Nash family.")
       Term.(
         term_result
-          (const small $ ranks $ iterations $ gap
+          (const small $ ranks $ iterations $ gap $ strong $ limit $ seats
           $ file [ "csv" ] "Write both bounds per node to $(docv)."
           $ file [ "svg" ] "Plot the bound gap against nodes to $(docv)."));
   ]
