@@ -125,14 +125,29 @@ let nash () =
 let middle_seat () =
   let t = Team.build (kuhn 4) ~adversary:1 in
   let s = Tme.solve ~limit:25 t in
-  let known = 356448315271. /. 15055072223808. in
-  Alcotest.(check bool) "upper stays valid" true (s.upper >= known -. 1e-9);
-  List.iter
-    (fun (_, lo, _) ->
-      Alcotest.(check bool) "incumbent is attainable" true (lo <= known +. 1e-7))
-    s.trace;
+  let attained =
+    Rat.make
+      (Bigint.of_string "144281031973174991")
+      (Bigint.of_string "6092627077201133568")
+  in
+  Alcotest.check rat "guarantee" s.lower (Team.guard t s.x s.z);
+  Alcotest.(check bool)
+    "upper stays valid" true
+    (s.upper >= Rat.to_float attained -. 1e-12);
   Alcotest.(check bool) "ordered" true (Rat.to_float s.lower <= s.upper);
-  Alcotest.(check bool) "below tmecor" true (s.upper <= (7. /. 264.) +. 1e-9)
+  Alcotest.(check bool) "below tmecor" true (s.upper <= (7. /. 264.) +. 1e-9);
+  Alcotest.(check bool) "children warm" true (s.warm >= s.nodes - 2)
+
+let branching () =
+  let t = Team.build (kuhn 4) ~adversary:0 in
+  List.iter
+    (fun strong ->
+      let s = Tme.solve ~strong t in
+      let lo = Rat.to_float s.lower in
+      Alcotest.(check bool) "tme" true (Float.abs (lo -. (7. /. 192.)) <= 1e-6);
+      Alcotest.(check bool) "upper" true (s.upper >= (7. /. 192.) -. 1e-12);
+      Alcotest.check rat "guarantee" s.lower (Team.guard t s.x s.z))
+    [ 1; 2; 8 ]
 
 let three_ranks () =
   List.iter
@@ -149,5 +164,6 @@ let tests =
     Alcotest.test_case "kuhn values" `Quick values;
     Alcotest.test_case "above nash" `Quick nash;
     Alcotest.test_case "middle seat, truncated" `Quick middle_seat;
+    Alcotest.test_case "strong branching" `Quick branching;
     Alcotest.test_case "three ranks" `Quick three_ranks;
   ]
