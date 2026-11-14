@@ -86,6 +86,106 @@ let hand s players =
           F.suits;
         Ok ())
 
+let mean_stderr xs =
+  let n = float_of_int (Array.length xs) in
+  let m = Array.fold_left ( +. ) 0. xs /. n in
+  let v =
+    Array.fold_left (fun a x -> a +. ((x -. m) ** 2.)) 0. xs /. (n -. 1.)
+  in
+  (m, sqrt (v /. n))
+
+let uniform _ n = Array.make n (1. /. float_of_int n)
+
+let solve_figgie players rounds iterations br playouts games ticks seed top =
+  if players < 4 || players > 5 then Error (`Msg "figgie takes 4 or 5 players")
+  else if rounds < 1 then Error (`Msg "rounds must be positive")
+  else
+    let module A = Figgie_abs.Make (struct
+      let players = players
+      let rounds = rounds
+    end) in
+    let module Z = Lazy_mccfr.Make (A) in
+    let z = Z.create ~seed () in
+    let start = Unix.gettimeofday () in
+    Format.printf "%s: external-sampling MCCFR, %d iterations@.@." A.name
+      iterations;
+    Format.printf "%10s %9s %12s %9s@." "iteration" "infosets" "nodes" "seconds";
+    List.iter
+      (fun k ->
+        Z.run z (k - Z.iterations z);
+        Format.printf "%10d %9d %12d %9.1f@." k (Z.infosets z) (Z.touched z)
+          (Unix.gettimeofday () -. start))
+      (Report.checkpoints iterations);
+    let blueprint = Z.average z in
+    let score learner field k =
+      (Z.playout
+         (Rng.make ((1_000_000 * seed) + k))
+         (fun p -> if p = 0 then learner else field)).(0)
+    in
+    Format.printf
+      "@.seat 0 against %d copies of a fixed profile, %d paired deals@."
+      (players - 1) playouts;
+    Format.printf "%-10s %16s %16s %16s@." "profile" "itself" "best response"
+      "gain";
+    List.iter
+      (fun (name, field) ->
+        let r =
+          Z.create ~seed:(seed + 1)
+            ~fixed:(fun p -> if p = 0 then None else Some field)
+            ()
+        in
+        Z.run r br;
+        let u0 = Array.init playouts (score field field)
+        and u1 = Array.init playouts (score (Z.average r) field) in
+        let m0, s0 = mean_stderr u0
+        and m1, s1 = mean_stderr u1
+        and g, sg = mean_stderr (Array.map2 ( -. ) u1 u0) in
+        Format.printf "%-10s %+9.2f +- %4.2f %+9.2f +- %4.2f %+9.2f +- %4.2f@."
+          name m0 s0 m1 s1 g sg)
+      [ ("uniform", uniform); ("mccfr", blueprint) ];
+    let field =
+      [| B.fundamentalist (); B.counter (); B.bottom_feeder; B.noise |]
+    in
+    let fill =
+      Array.init (players - 1) (fun i -> field.(i mod Array.length field))
+    in
+    Format.printf "@.one seat in a field of %s, %d games of %d ticks@."
+      (String.concat ", "
+         (Array.to_list (Array.map (fun (b : F.bot) -> b.name) fill)))
+      games ticks;
+    Format.printf "%-16s %10s %8s@." "bot" "mean pnl" "stderr";
+    List.iter
+      (fun (b : F.bot) ->
+        let r =
+          B.tournament (Rng.make seed) ~games ~ticks (Array.append [| b |] fill)
+        in
+        Format.printf "%-16s %+10.2f %8.2f@." b.name r.(0).mean r.(0).stderr)
+      [
+        Figgie_abs.bot ~name:"mccfr" ~rounds blueprint;
+        Figgie_abs.bot ~name:"abstract-uniform" ~rounds uniform;
+        B.fundamentalist ();
+        B.counter ();
+        B.passive;
+      ];
+    let keys =
+      Strategy.bindings (Z.average_strategy z)
+      |> List.map (fun (key, e) -> (Z.mass z key, key, e))
+      |> List.sort (fun (a, _, _) (b, _, _) -> compare b a)
+      |> List.filteri (fun i _ -> i < top)
+    in
+    Format.printf
+      "@.most visited infosets (round, confidence, held, bid, offer, junk)@.";
+    List.iter
+      (fun (_, key, (e : Strategy.entry)) ->
+        Format.printf "%s  %s@." key
+          (String.concat " "
+             (Array.to_list
+                (Array.mapi
+                   (fun a l -> Printf.sprintf "%s %.2f" l e.probs.(a))
+                   e.actions))))
+      keys;
+    Ok ()
+
 let figgie_cmd =
   let lineup =
     Arg.(
@@ -185,4 +285,25 @@ let edge_cmd =
           fundamentalist, a bottom-feeder and a noise trader.")
     Term.(const edge_sweep $ edges $ games $ ticks $ seed $ svg)
 
-let cmds = [ figgie_cmd; hand_cmd; edge_cmd ]
+let solve_cmd =
+  let opt_int names v doc = Arg.(value & opt int v & info names ~doc) in
+  Cmd.v
+    (Cmd.info "figgie-cfr"
+       ~doc:
+         "Train external-sampling MCCFR on abstracted Figgie, measure how much \
+          a best response gains against it, and play it against the bots.")
+    Term.(
+      term_result
+        (const solve_figgie
+        $ opt_int [ "players" ] 4 "Players, 4 or 5."
+        $ opt_int [ "rounds" ] 3
+            "Rounds in the training game; every player acts once per round."
+        $ opt_int [ "n"; "iterations" ] 2000 "MCCFR iterations."
+        $ opt_int [ "br" ] 2000 "Iterations of the best-response learner."
+        $ opt_int [ "playouts" ] 20000 "Playouts per best-response score."
+        $ opt_int [ "games" ] 2000 "Games per tournament."
+        $ opt_int [ "ticks" ] 3 "Ticks per tournament game."
+        $ opt_int [ "seed" ] 1 "Seed."
+        $ opt_int [ "top" ] 12 "Infosets to print."))
+
+let cmds = [ figgie_cmd; hand_cmd; edge_cmd; solve_cmd ]
