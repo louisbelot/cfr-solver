@@ -234,6 +234,15 @@ let create deck hands =
     tick = 0;
   }
 
+let copy t =
+  {
+    t with
+    hands = Array.map Array.copy t.hands;
+    cash = Array.copy t.cash;
+    bids = Array.copy t.bids;
+    offers = Array.copy t.offers;
+  }
+
 let execute t suit px ~buyer ~seller =
   let i = index suit in
   t.hands.(seller).(i) <- t.hands.(seller).(i) - 1;

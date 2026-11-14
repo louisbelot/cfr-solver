@@ -43,6 +43,7 @@ type t = {
 }
 
 val create : deck -> int array array -> t
+val copy : t -> t
 val act : t -> int -> action -> outcome
 val pnl : t -> float array
 
