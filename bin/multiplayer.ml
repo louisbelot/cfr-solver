@@ -301,6 +301,54 @@ let select game iterations budget seeds =
         (vector (Printf.sprintf "%+.4f") (Multi_br.values tree m)))
     sampled
 
+let megabytes words = float_of_int (words * (Sys.word_size / 8)) /. 1048576.
+
+let lazy_es game budget tree exact =
+  let (module G : Multi.S) = List.assoc game games in
+  let module Z = Lazy_mccfr.Make (Lazy_mccfr.Of_multi (G)) in
+  let module M = Multi_mccfr.Make (G) in
+  let start = Unix.gettimeofday () in
+  let live () =
+    Gc.compact ();
+    (Gc.stat ()).live_words
+  in
+  let touched, infosets, slots, words, profile =
+    if tree then begin
+      let t = M.create () in
+      while M.touched t < budget do
+        M.iterate t
+      done;
+      let words = live () in
+      ( M.touched t,
+        M.infosets t,
+        Multi_tree.slots (M.tree t),
+        words,
+        M.average_strategy t )
+    end
+    else begin
+      let t = Z.create () in
+      while Z.touched t < budget do
+        Z.iterate t
+      done;
+      let words = live () in
+      (Z.touched t, Z.infosets t, Z.slots t, words, Z.average_strategy t)
+    end
+  in
+  let wall = Unix.gettimeofday () -. start in
+  let gc = Gc.quick_stat () in
+  Format.printf "%s, %s sampler: %d infosets, %d slots@." G.name
+    (if tree then "tree" else "lazy")
+    infosets slots;
+  Format.printf "%s nodes in %.1f s, %s nodes/s@."
+    (sci (float_of_int touched))
+    wall
+    (sci (float_of_int touched /. wall));
+  Format.printf "live heap %.0f MB, peak heap %.0f MB@." (megabytes words)
+    (megabytes gc.top_heap_words);
+  if exact then
+    let module B = Multi_br.Make (G) in
+    Format.printf "nash conv %s@." (sci (B.nash_conv profile))
+
 let cmds =
   let game =
     Arg.(
@@ -353,6 +401,19 @@ let cmds =
       & info [ "seeds" ] ~docv:"K" ~doc:"Seeds averaged for each sampled run.")
   in
   [
+    Cmd.v
+      (Cmd.info "multi-lazy"
+         ~doc:
+           "External-sampling MCCFR on a hash table filled as infosets are \
+            reached, with time and heap measured. --tree runs the sampler over \
+            the fully built tree instead.")
+      Term.(
+        const lazy_es $ game $ budget
+        $ Arg.(
+            value & flag & info [ "tree" ] ~doc:"Build the whole tree first.")
+        $ Arg.(
+            value & flag
+            & info [ "nash-conv" ] ~doc:"Report nash conv (builds the tree)."));
     Cmd.v
       (Cmd.info "multi-select"
          ~doc:
