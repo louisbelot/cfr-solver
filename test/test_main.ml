@@ -25,6 +25,7 @@ let () =
       ("multi", Test_multi.tests);
       ("multi br", Test_multi_br.tests);
       ("multi mccfr", Test_multi_mccfr.tests);
+      ("lazy mccfr", Test_lazy_mccfr.tests);
       ("multi profile", Test_multi_profile.tests);
       ("leduc n", Test_leduc_n.tests);
       ("play", Test_play.tests);
