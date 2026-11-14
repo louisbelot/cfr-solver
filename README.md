@@ -19,7 +19,8 @@ generation. The same machinery covers sealed-bid auctions (first
 price, second price and all-pay, with reserves, checked against the Bayes-Nash
 bid functions and the discrete theorems in exact arithmetic) and an
 interview-style market-making card game solved exactly, and Figgie gets a full
-rules engine with exact Bayesian hand values and a field of bots. Against a
+rules engine with exact Bayesian hand values, a field of bots and an MCCFR
+agent trained on an abstraction of it. Against a
 known or observed opponent it computes restricted Nash and data-biased
 responses, which trade exploitation for worst-case loss, and plays repeated
 sessions that only risk what they have already won. PSRO grows populations of
@@ -597,6 +598,43 @@ what makes that order well defined. Same NashConv to twelve digits; eight-card
 three-player Leduc went from 1.17 s to 0.028 s and four-player Leduc from
 204 s to 12.4 s. The old version is kept in the tests as a reference and the
 two are compared on random profiles.
+
+### Without the tree
+
+Building the whole tree is what costs the 4.8 GB. `Lazy_mccfr` runs the same
+external sampling with no tree at all: the game is a state with a `node`
+function, a chance node is a function that draws from an RNG instead of a list
+of outcomes, and regrets live in a hash table whose rows are created the first
+time a pass reaches that infoset. `Lazy_mccfr.Of_multi` wraps any `Multi.S`
+game, and on that wrapper the sampler matches `Multi_mccfr` bit for bit (same
+nodes touched, regrets and average strategy under vanilla, DCFR and linear
+weighting on three-player Kuhn and Leduc), so the table changes nothing but
+memory and speed.
+
+```
+$ cfr-solver multi-lazy -g leduc3 -b 100000000 --nash-conv
+leduc-3p, lazy sampler: 7354 infosets, 16851 slots
+1.000e+08 nodes in 81.1 s, 1.234e+06 nodes/s
+live heap 2 MB, peak heap 8 MB
+nash conv 8.369e-02
+$ cfr-solver multi-lazy -g leduc3 -b 100000000 --tree --nash-conv
+leduc-3p, tree sampler: 7428 infosets, 17004 slots
+1.000e+08 nodes in 2.9 s, 3.424e+07 nodes/s
+live heap 12 MB, peak heap 14 MB
+nash conv 8.369e-02
+$ cfr-solver multi-lazy -g leduc4 -b 300000000
+leduc-4p, lazy sampler: 96420 infosets, 218229 slots
+3.000e+08 nodes in 275.3 s, 1.090e+06 nodes/s
+live heap 20 MB, peak heap 68 MB
+```
+
+Four-player Leduc now fits in 20 MB of live heap instead of 4.8 GB, and at
+3e8 nodes the sampler has met 96,420 of the 127,980 infosets. The price is
+speed: 1.1 million nodes a second against 14 million on the tree. Walking
+random paths through `Leduc_n.node` alone runs at 2.2 million nodes a second,
+so about half the time goes to the game replaying the round's betting and
+building the key string on every call, which the compiled tree does once. The
+other half is hashing the key and allocating each node's value array.
 
 ### Which equilibrium
 
@@ -1426,6 +1464,95 @@ the fundamentalist still quotes $2 from a value computed without counting.
 ```
 $ cfr-solver figgie-edge --edges 20 --games 1500 --svg docs/figgie-edge.svg
 ```
+
+### Solving an abstracted Figgie
+
+The full game is far too big for a tree: 40 cards dealt four ways, then
+hundreds of actions per player with prices from 1 to whatever a player can
+pay. `Figgie_abs` makes a game the solver can handle while keeping the real
+engine underneath, so payoffs, quotes, trades and the book clearing after
+every trade are the actual rules. The training game is a few rounds; in each
+round every player acts once in a random order (a chance node), and at the end
+everyone is paid by `Figgie.pnl`.
+
+What a player sees is cut down to a short key. Its beliefs come from the
+counter's card counting: the posterior over the 12 decks given the dealt hand
+and the cards other players have been seen to sell. From that it takes the
+most likely goal suit and keeps only the round, how sure it is (goal
+probability under 0.5, 0.75, 0.95 or above), how many of that suit it holds
+(capped at 5), the best bid in that suit (none, its own, someone else's under
+what its card is worth, or at or above it), the best offer the same way
+against what one more card is worth, and whether some other suit it holds has
+a bid above that card's value. Which suit it is and which seat it sits in are
+dropped, since the game is symmetric in both. The actions are pass, bid at 0.6
+or 0.9 of the value of one more card, offer at 1.1 or 1.4 of the value of one
+card less, lift the offer, hit the bid, and dump a card of another suit into
+the richest such bid. Values are the exact ones from `Figgie`, and a test
+checks that the key alone fixes which actions exist.
+
+The solver is external sampling on `Lazy_mccfr`, the hash-table sampler from
+the multiplayer section, since there is no tree to build. Two things measure
+the result. First an abstract best response: seat 0 learns alone (same
+sampler, the other three seats fixed to the profile) and its gain is measured
+on 40,000 deals played both ways, the same deal for each side, which takes out
+most of the luck of the cards. Then the trained profile plays the bots from
+the section above, from the same seat and on the same deals as the other
+candidates.
+
+```
+$ cfr-solver figgie-cfr -n 20000 --br 20000 --playouts 40000 --games 4000 --top 8
+figgie-4p-3r: external-sampling MCCFR, 20000 iterations
+
+ iteration  infosets        nodes   seconds
+         1       121         2065       0.0
+       100       474       218782       1.0
+      1000       630      2222955      10.9
+     10000       735     22150930      70.1
+     20000       765     44308959     125.8
+
+seat 0 against 3 copies of a fixed profile, 40000 paired deals
+profile              itself    best response             gain
+uniform        +0.09 +- 0.25     +8.24 +- 0.26     +8.15 +- 0.15
+mccfr          +0.07 +- 0.25     -0.36 +- 0.25     -0.42 +- 0.05
+
+one seat in a field of fundamentalist, counter, bottom-feeder, 4000 games of 3 ticks
+bot                mean pnl   stderr
+mccfr                 +5.44     0.88
+abstract-uniform      -0.98     0.83
+fundamentalist        +3.37     0.84
+counter               +3.37     0.84
+passive               -3.39     0.76
+
+most visited infosets (round, confidence, held, bid, offer, junk)
+204000  pass 0.00 bid-lo 1.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00
+202000  pass 0.01 bid-lo 0.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.99
+203000  pass 0.00 bid-lo 1.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00
+201000  pass 0.01 bid-lo 0.99 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00
+202001  pass 0.00 bid-lo 0.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00 dump 1.00
+204001  pass 0.00 bid-lo 0.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00 dump 1.00
+203001  pass 0.00 bid-lo 0.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00 dump 1.00
+201001  pass 0.00 bid-lo 0.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00 dump 0.99
+```
+
+(The checkpoint table above is cut to five rows.) Against a uniform profile
+over the same abstract actions a best response finds $8.15 a game. Against
+the MCCFR profile, 20,000 iterations of the same learner find nothing: its
+average does $0.42 worse than the profile itself. That is a lower bound on the
+abstract exploitability, not the exploitability, but it is the number that
+went from clearly positive to zero. The strategy it settled on in the last
+round is easy to read: bid low (60% of value) with three or more of the
+suspected goal suit, offer high with exactly two, and always dump junk into a
+rich bid. In three-tick games against the bots it makes $5.44 a game where the
+fundamentalist makes $3.37 from the same seat on the same deals.
+
+Real Figgie is long, and that is where the abstraction breaks. In 200-tick
+games the first version acted at every tick with the round taken from the
+clock, and it lost $59.70 a game: a strategy trained for three decisions was
+making two hundred. Acting once
+per round, at evenly spaced ticks, it loses $7.77, ahead of passive (-$16.18)
+and the uniform abstract bot (-$15.26) but behind the fundamentalist (+$2.38),
+which trades every tick. Closing that gap needs a training game whose rounds
+are triggered by events (a trade, a new quote) rather than a fixed count.
 
 ## Exploiting an opponent
 
@@ -2914,6 +3041,16 @@ random games and check that cards and cash are conserved and profits sum to
 zero, and that card counting never claims more cards than the deck has.
 Splitting tied bonuses three ways instead of two, or counting every sale as a
 new card, each fail a test.
+
+The hash-table sampler is checked against the tree sampler on three-player Kuhn
+and Leduc (exact equality of nodes touched, average and current strategies,
+under three weightings), against -1/18 on two-player Kuhn, against the exact
+best response when every seat but one is fixed, and its playouts against exact
+expected values. For abstracted Figgie, 400 random games check that the key
+alone fixes the action set and that payoffs sum to zero, 40 bot games check
+that card counting never rules out the true deck, and a short training run
+has to beat the uniform profile by four standard errors on paired deals.
+Leaving the junk flag out of the key fails three of those tests.
 
 Opponent exploitation: the value of the restricted game from CFR+ is checked
 against the exact sequence-form LP of the same game for four (model, p) pairs
