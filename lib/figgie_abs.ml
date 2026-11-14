@@ -189,12 +189,14 @@ let bot ~name ~rounds policy =
         |> List.iter (observe c);
         processed := n
       end;
-      let sp =
-        spot ~dealt ~seen:(seen c) ~hand:v.hand ~others:(others v.sizes v.me)
-          ~bids:v.bids ~offers:v.offers ~me:v.me
-          ~phase:(min (rounds - 1) (v.tick * rounds / v.ticks))
-      in
-      let k = Array.length sp.labels in
-      sp.moves.(Rng.pick rng (policy sp.key k) 0 k)
+      let phase = v.tick * rounds / v.ticks in
+      if v.tick > 0 && (v.tick - 1) * rounds / v.ticks = phase then Pass
+      else
+        let sp =
+          spot ~dealt ~seen:(seen c) ~hand:v.hand ~others:(others v.sizes v.me)
+            ~bids:v.bids ~offers:v.offers ~me:v.me ~phase
+        in
+        let k = Array.length sp.labels in
+        sp.moves.(Rng.pick rng (policy sp.key k) 0 k)
   in
   { name; make }
