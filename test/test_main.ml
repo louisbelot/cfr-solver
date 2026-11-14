@@ -18,6 +18,7 @@ let () =
       ("cfr br", Test_cfr_br.tests);
       ("bidding", Test_bidding.tests);
       ("figgie", Test_figgie.tests);
+      ("figgie abs", Test_figgie_abs.tests);
       ("leduc", Test_leduc.tests);
       ("liars dice", Test_liars_dice.tests);
       ("goofspiel", Test_goofspiel.tests);
