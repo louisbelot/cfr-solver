@@ -2501,3 +2501,89 @@ Next: a basis that is cheap to store. With a sparse LU (or a product-form
 inverse) a node's snapshot is its list of basic columns plus its rows, a few
 KB instead of several MB, so every open node can keep one and five ranks
 stops restarting from the root. Then 3K5 to the end and 3K6.
+
+## 2026-11-13: sampling without a tree, abstracted Figgie
+
+Built:
+
+- `Lazy_mccfr`: external-sampling MCCFR for n players with no tree. A game is
+  a state and a `node` function whose chance nodes draw from an RNG and whose
+  decisions carry their labels and a `next` function. Regrets, current
+  strategy and strategy sums live in a hash table keyed by infoset, with rows
+  created on first visit. `Of_multi` wraps any `Multi.S` game. `fixed` pins
+  some seats to a given policy so the others learn against it, and `playout`
+  samples one game under any profile.
+- `multi-lazy`: runs it (or, with `--tree`, the tree sampler) to a node
+  budget and reports time, live heap with the sampler still alive, peak heap
+  and optionally NashConv.
+- `Figgie_abs`: a training game on the real Figgie engine. A few rounds, each
+  a random order in which every player acts once, payoffs from `Figgie.pnl`.
+  The infoset key is round, confidence in the most likely goal suit, cards held
+  of it, the state of its best bid and offer against the player's exact values,
+  and a flag for a junk bid worth hitting in another suit. Seven actions:
+  pass, two bids, two offers at fractions of the exact values, lift, hit,
+  dump. `bot` turns any policy into a `Figgie.bot` that acts once per round at
+  evenly spaced ticks.
+- `figgie-cfr`: trains it, measures an abstract best response against the
+  result and against uniform on paired deals, plays it against the bots, and
+  prints the most visited infosets.
+
+Design notes:
+
+- Bit-exact against `Multi_mccfr` took the same stamp scheme (the current
+  strategy is computed once per pass, even if a later visit in the same pass
+  sees new regrets), the same RNG draws in the same order, and chance drawn
+  with `Rng.pick` over the outcome list in its original order.
+- With one learner and everyone else fixed, the usual rule of adding the
+  current strategy at opponent nodes never touches the learner's sums, so its
+  average stayed uniform (the first version of the fixed-seat test caught it).
+  In that case the learner's own nodes add their current strategy times the
+  learner's own reach. The visit rate of an infoset is then constant across
+  iterations because the opponents are, so it divides out.
+- The Figgie values (posterior, buy and sell value per suit) depend only on
+  the dealt hand, the cards seen, the current hand and the other hand sizes,
+  not on the book, and the traversal asks for the same ones over and over. A
+  per-domain table keyed by those 15 or 16 small integers packed into a string
+  cut 5,000 iterations from 282 s to 40 s with identical infoset and node
+  counts.
+- The abstract best response is a lower bound on exploitability inside the
+  abstraction: the learner sees the same coarse key and plays the same seven
+  actions.
+- Scoring pairs deals: playout k uses seed k for both profiles, so the card
+  luck cancels. Unpaired, the test could not tell a gain of 1.7 from noise at
+  four standard errors on 20,000 games; paired, it can.
+
+Results:
+
+- Three-player Leduc, 1e8 nodes: NashConv 8.369e-02 from both samplers.
+  Lazy 1.23M nodes/s, 2 MB live; tree 34M nodes/s, 12 MB live.
+- Four-player Leduc, 3e8 nodes: 96,420 of 127,980 infosets
+  met, 20 MB live and 68 MB peak heap, 1.09M nodes/s against 14M on the tree.
+  The tree run in the README sat at about
+  4.8 GB. Walking random paths through `Leduc_n.node` alone does 2.2M
+  nodes/s, so half of the slowdown is the game rebuilding history and key on
+  every call.
+- Abstracted Figgie, four players, three rounds, 20,000 iterations: 765
+  infosets, 44.3M nodes, 126 s. Best response gain against uniform +8.15 +-
+  0.15 a game, against the MCCFR profile -0.42 +- 0.05 (found nothing).
+- Against fundamentalist, counter and bottom-feeder from the same seat on the
+  same deals, 4,000 games. Three ticks: MCCFR +5.44, uniform abstract -0.98,
+  fundamentalist +3.37, counter +3.37, passive -3.39 (stderr about 0.85).
+  200 ticks: acting every tick -59.70, once per round -7.77, uniform abstract
+  -15.26, fundamentalist +2.38, counter +2.67, passive -16.18.
+
+Checks: 11 new tests (suite at 438, 437 s with a training run beside it).
+The sampler against the tree sampler, exact, on kuhn3 and leduc3 under three
+weightings; two-player Kuhn NashConv under 5e-3 and value -1/18; a fixed-seat
+learner within 0.01 of the exact best response on kuhn3; playout means
+against exact values. Figgie: spot labels and key digits on a hand-built
+book, the key fixing the action set over 400 random games, zero-sum payoffs,
+the true deck never ruled out by card counting in 40 bot games, the bot
+trading, and training beating uniform by four standard errors. Dropping the
+junk flag from the key fails three of them.
+
+Next: Figgie games long enough to matter. Rounds that end on events (a trade
+or a new best quote) instead of a fixed count, more rounds now that the value
+cache made traversals cheap, and five players. Then variance-reduced
+averaging for the n-player sampler, which the hash table makes easy to try
+on leduc4 without the tree.
