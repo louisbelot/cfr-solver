@@ -2702,3 +2702,85 @@ result suggests that is where the noise trader's money goes), checked with an
 LBR-style probe that plays the real engine's full action set against the
 abstract profile. Then deeper horizons: the key has one digit for the round,
 so more than nine event rounds needs a different encoding.
+
+## 2026-11-16: extensive-form correlated equilibrium
+
+Built:
+
+- `Treeplex`: per-player sequence structure over `Multi_tree` (parent
+  sequence of each infoset, child infosets of each sequence, subtrees in
+  top-down order with a local slot layout), behavior to realization plans,
+  and the sequence-form gradient of every player in one tree pass.
+- `Correlated`: a uniform mixture of product profiles with its exact EFCE
+  gap. One aggregated gradient per trigger sequence plus the follow value;
+  the best continuation is a backward pass over the trigger's subtree.
+- `Efce`: trigger-regret dynamics (Farina, Celli, Marchesi and Gatti 2021).
+  Regret matching (or RM+) over triggers, a laminar regret minimizer per
+  trigger over its subtree, and the fixed point x = phi(x) each iteration.
+- `Markov.stationary`: exact stationary distribution of a small chain through
+  a closed recurrent class, so reducible and periodic chains work.
+- `Efce_lp`: von Stengel and Forges' correlation-plan LP for two players
+  without chance, maximizing welfare or one player's payoff.
+- `Sheriff` (OpenSpiel rules) and `Bimatrix` (chicken, Shapley).
+- `efce` and `efce-welfare` commands, `docs/efce-kuhn3.svg` and
+  `docs/efce-sheriff.svg`.
+
+Design notes:
+
+- The fixed point at an infoset J reads r_b (L + lambda_b) = c_b +
+  sum_b' lambda_b' Y[b', b] r_b' after dividing by the parent's weight.
+  Summing over b shows sum c_b = L when the parent was solved exactly, so a
+  lazy diagonal 1 - (L + lambda_b)/M with M = L + sum lambda turns it into a
+  stochastic matrix with a reset part c/M. When L > 0 the reset makes the
+  chain have one recurrent class; at root infosets L = 0 and the chain can be
+  reducible, where any stationary distribution is a valid fixed point. The
+  code uses sum c instead of L in the diagonal so rows sum to 1 in floating
+  point as well.
+- The contributions c are pushed down from each trigger right after its
+  infoset is solved, which costs the size of its subtree. That needs a
+  top-down order of infosets, and `Multi_tree` ids are not one: OCaml builds
+  the children before calling `id`, so a parent infoset gets a larger id
+  than its children. The first version assumed increasing ids were top-down
+  and crashed on Kuhn; `Treeplex.order` is the first-visit order instead.
+- The LP's v variables are free, split into two non-negative columns. The
+  float `maximize_float` reported the two-round game infeasible (phase 1
+  ending a hair below zero) and cycled with Bland's rule on five items;
+  `bound_float` (phase 1 with a slack, then a dual cleanup) gets every
+  one-round entry right. The exact solver is the reference for two rounds.
+
+Checks:
+
+- Gap against brute force on two-player Kuhn: every pure strategy of the
+  deviator, every pure continuation of every trigger, three random profiles;
+  equal to 1e-12 for all 24 triggers.
+- Fixed point against the definition of phi on Kuhn and three-player Kuhn
+  with random trigger weights (30% zeros) and random continuations.
+- Chicken: trigger gap equals the normal-form swap gain of the joint action
+  distribution to 1e-9, below 0.01 after 20,000 iterations. SW-max EFCE of
+  chicken is exactly 10.5 (5.25 each, the textbook correlated equilibrium).
+- A zero-sum 2x2 game with value 1/5: max player-0 EFCE value 0.2 and max
+  player-1 value -0.2, exact.
+- Sheriff one round, welfare against Farina et al. Table 1 and their n = 3
+  numbers to the two published decimals; two rounds with one item exact.
+- Two-player Kuhn after 3,000 RM+ iterations: gap below 4e-3 and value within
+  5e-3 of -1/18.
+
+Results (100,000 iterations, EFCE gap of the empirical play):
+
+| game | trigger | trigger+ | cfr | cfr+ |
+|------|--------:|---------:|----:|-----:|
+| Kuhn, 2 players | 5.29e-04 | 4.87e-04 | 3.59e-04 | 2.51e-05 |
+| Kuhn, 3 players | 1.58e-04 | 7.53e-05 | 1.91e-04 | 3.77e-06 |
+| Sheriff 3/2/1 | 1.24e-02 | 4.21e-03 | 1.01e-02 | 3.72e-04 |
+
+CFR+ wins all three because its iterates converge to a Nash equilibrium here.
+The trigger dynamics cost 1.3 to 4 times as much per iteration (0.060 ms
+against 0.027 for CFR on three-player Kuhn, 0.013 against 0.003 on Sheriff). On Shapley's game and chicken the expected
+dynamics start at the uniform Nash point and stay there, so they say nothing.
+The welfare gap is the real result: learning ends near 0.8 on Sheriff with
+three items, the best EFCE is 5.32.
+
+Next: a sparse LP for the correlation plan so two- and three-round Sheriff
+(and Battleship) solve in seconds, then sampled play (one pure profile per
+iteration, as in Celli et al.) where CFR's empirical frequency is known to
+stall, and steering learners toward the welfare-optimal EFCE.
