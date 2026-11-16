@@ -483,15 +483,22 @@ very different profiles A and B on three-player Kuhn, so the right answer is
 the own-reach-weighted mix of A and B, computed exactly. The largest error over
 all infosets, by number of rounds:
 
-| rounds  | simple | weighted |
-|--------:|-------:|---------:|
-| 5,000   | 0.053  | 0.035    |
-| 20,000  | 0.052  | 0.010    |
-| 80,000  | 0.046  | 0.0064   |
-| 320,000 | 0.046  | 0.0025   |
+| rounds  | simple | clipped 2 | clipped 4 | clipped 16 | weighted |
+|--------:|-------:|----------:|----------:|-----------:|---------:|
+| 5,000   | 0.053  | 0.048     | 0.067     | 0.030      | 0.035    |
+| 20,000  | 0.052  | 0.049     | 0.038     | 0.010      | 0.010    |
+| 80,000  | 0.046  | 0.043     | 0.050     | 0.0070     | 0.0064   |
+| 320,000 | 0.046  | 0.040     | 0.044     | 0.0047     | 0.0025   |
 
 The weighted error falls like one over the square root of the samples; the
-simple one settles at 0.046 and stays there. `Full` matches to 1e-12.
+simple one settles at 0.046 and stays there. `Full` matches to 1e-12. The
+clipped columns are `Clipped c`, which divides by the sampled reach but never
+multiplies by more than c. At c = 1 it is `Simple` exactly and with no clip
+it is `Weighted` exactly (both checked bit for bit). In between it keeps a
+bias that does not go away: clipping at 2 or 4 barely improves on simple, and
+at 16 it is close to weighted until 80,000 rounds and then stalls at about
+twice its error. Clipping at 64 never binds in this test, since both profiles
+put at least 0.05 on every action.
 
 Then whole runs, at equal nodes touched (every node a traversal visits or a
 full-tree pass walks), with full-tree vanilla CFR and DCFR for reference and
@@ -532,6 +539,28 @@ which shrinks on its own as consecutive strategies get closer together. `Full`
 is hopeless when measured this way: every iteration pays for the whole tree to
 average a strategy that only moved along a few sampled paths. Linear weighting
 helps early and ends slightly behind plain averaging.
+
+If the unbiased average loses because of a few huge weights, clipping them
+should win it back. It does not. Same budget, three seeds each:
+
+```
+$ cfr-solver multi-es -g leduc3 -r es,es-weighted,es-clip4,es-clip16 -b 3000000000 --seeds 3
+ nodes touched           es  es-weighted     es-clip4    es-clip16
+     1.000e+07    3.579e-01    3.782e-01    3.656e-01    3.734e-01
+     1.000e+08    8.048e-02    8.595e-02    8.314e-02    8.477e-02
+     1.000e+09    3.035e-02    3.454e-02    3.330e-02    3.395e-02
+     3.000e+09    2.360e-02    2.693e-02    2.659e-02    2.679e-02
+```
+
+(Rows cut to four; each column was its own run.) Capping every weight at 4
+closes about half the gap to simple averaging at 1e7 and 1e8 nodes, a third at
+1e9 and a tenth at 3e9. Large weights explain the early part. What is left at
+the end is the reweighting itself: `Simple` counts an iteration less when a
+third player was unlikely to let the game reach the node, which the textbook
+average does not do, and in this game that turns out to be the better average.
+The clipped runs also cost what weighted costs, 91 s of CPU for the three
+seeds against 79 s for simple, since they compute the reach product at every
+opponent node.
 
 ![NashConv against nodes touched in eight-card three-player Leduc](docs/es-leduc3.svg)
 
@@ -1500,7 +1529,7 @@ the section above, from the same seat and on the same deals as the other
 candidates.
 
 ```
-$ cfr-solver figgie-cfr -n 20000 --br 20000 --playouts 40000 --games 4000 --top 8
+$ cfr-solver figgie-cfr --pace clock -n 20000 --br 20000 --playouts 40000 --games 4000 --top 8
 figgie-4p-3r: external-sampling MCCFR, 20000 iterations
 
  iteration  infosets        nodes   seconds
@@ -1548,11 +1577,119 @@ fundamentalist makes $3.37 from the same seat on the same deals.
 Real Figgie is long, and that is where the abstraction breaks. In 200-tick
 games the first version acted at every tick with the round taken from the
 clock, and it lost $59.70 a game: a strategy trained for three decisions was
-making two hundred. Acting once
-per round, at evenly spaced ticks, it loses $7.77, ahead of passive (-$16.18)
-and the uniform abstract bot (-$15.26) but behind the fundamentalist (+$2.38),
-which trades every tick. Closing that gap needs a training game whose rounds
-are triggered by events (a trade, a new quote) rather than a fixed count.
+making two hundred. Acting once per round, at evenly spaced ticks, it loses
+$7.77, ahead of passive (-$16.18) and the uniform abstract bot (-$15.26) but
+behind the fundamentalist (+$2.38), which trades every tick.
+
+### Long games
+
+`--pace events` (now the default) changes what a round is. The engine counts
+public events: a trade, or a quote that rests (a quote that does not beat the
+book is rejected, so a resting one is always a new best). In the training game
+a round still deals the seats a random order, but it ends at the first event,
+and a round in which every player passes ends the game, since nothing will
+change after that. After the last counted event every player gets one closing
+turn in which only taking is allowed (pass, lift, hit, dump). Without it a
+quote posted on the last event was worth nothing because the game stopped
+before anyone could take it, the last round's strategy came out uniform over
+the quoting actions, and that is the strategy the bot then used for most of a
+real game. The first event-paced run, before the closing turn existed, lost
+$65.20 a game.
+
+In a real game the bot keeps the event count it last acted at. When the count
+has not moved it passes, and when it has, it acts once with the round set to
+the count (capped at the last trained round). That is the same thing a seat
+sees in the training game: one chance to act between events, and a new chance
+after every event, including its own.
+
+Self-play still loses. Six event rounds with 20,000 iterations give a profile
+an abstract best response cannot beat (-0.89 +- 0.13), and it loses $22.18 a
+game in the 200-tick field. The profile is close to an equilibrium of the
+abstract game against copies of itself, and copies of itself are not what it
+meets: the bots act every tick, price every suit, take anything 0.5 better
+than their own value, and the counter reads trades the same way the
+abstraction does.
+
+`--field` trains against the field instead. `Figgie_abs.Against` puts the rule
+bots in seats 1 to 3 of the training game as chance nodes: at a bot's turn a
+fresh copy of it is built from its dealt hand and the public trades and asked
+for a move. That is the same decision rule as the long-lived bot, whose only
+memory is the card tally. Only seat 0 has decisions, so this is a best
+response inside the abstraction to the actual opponents. Building the bots on
+every visit made the values (posterior, buy and sell value of every suit) the
+cost, and a table keyed by the hand, the seen cards and the other hand sizes
+cut 2 million nodes from 52.2 s to 4.6 s with the same strategy.
+
+With only one learner the tree is narrow, so the cost is the learner's own
+branching: seven actions at up to six decisions. `--sampling average` is
+average strategy sampling (Gibson, Burch, Lanctot and Szafron 2012): the
+traverser tries action a with probability max(epsilon, (beta + tau s(a)) /
+(beta + sum s)), where s is the strategy sum, and divides what it gets back by
+that probability, so the counterfactual values stay unbiased and actions the
+average has given up on are mostly skipped. With epsilon 0.05, tau 100 and
+beta 100 it ran 1.05M iterations of the four-round field game in 1e8 nodes
+against 287,039 trying every action. On two-player Leduc, where infosets have
+two or three actions, it buys almost nothing (247,718 iterations against
+223,146 in 1e7 nodes), which is what the paper predicts.
+
+```
+$ cfr-solver figgie-cfr --field --sampling average --rounds 6 -n 150000 --games 4000 --ticks 200 --top 8
+figgie-4p-6e-field: external-sampling MCCFR with average strategy sampling, 150000 iterations
+
+ iteration  infosets        nodes   seconds
+         1        28          592       0.0
+       100       536       228344       0.6
+      1000       955      2103334       4.5
+     10000      1424     16508189      23.5
+    100000      1623     77592937      87.9
+    150000      1651    101850950     112.1
+
+one seat in a field of fundamentalist, counter, bottom-feeder, 4000 games of 200 ticks
+bot                mean pnl   stderr
+mccfr                 +8.79     0.81
+abstract-uniform     -61.28     1.04
+fundamentalist        +2.38     0.86
+counter               +2.67     0.86
+passive              -16.18     0.56
+
+most visited infosets (round, confidence, held, bid, offer, junk)
+604000  pass 1.00
+002000  pass 0.00 bid-lo 1.00 bid-hi 0.00 offer-lo 0.00 offer-hi 0.00
+003000  pass 0.07 bid-lo 0.90 bid-hi 0.00 offer-lo 0.04 offer-hi 0.00
+601000  pass 1.00
+603000  pass 1.00
+600000  pass 1.00
+001000  pass 0.52 bid-lo 0.00 bid-hi 0.35 offer-lo 0.00 offer-hi 0.12
+605000  pass 1.00
+```
+
+(Checkpoints cut to six rows.) Same deals and seats as the runs above, so the
+baselines repeat to the cent: the bot makes $8.79 a game where the
+fundamentalist makes $2.38. It is an exploiter, trained on these opponents,
+and it says nothing about how it would do against anyone else. What it
+learned is mostly patience: with no read on the goal suit and two or three of
+the favourite it bids at 60% of value and nothing else, and with one it passes
+about half the time.
+
+Five players, with a noise trader added to the field, is a richer market for
+everyone informed:
+
+```
+$ cfr-solver figgie-cfr --players 5 --field --sampling average --rounds 6 -n 100000 --games 4000 --ticks 200
+one seat in a field of fundamentalist, counter, bottom-feeder, noise, 4000 games of 200 ticks
+bot                mean pnl   stderr
+mccfr                 +9.23     0.76
+abstract-uniform     -91.72     0.95
+fundamentalist        +9.42     0.82
+counter              +10.17     0.82
+passive              -15.17     0.45
+```
+
+There the field-trained bot is level with the fundamentalist and behind the
+counter. A likely reason is that the noise trader quotes every suit at random
+prices, while the abstraction only trades the suspected goal suit and dumps
+into bids on the others, so the cheap offers in the other three suits go to
+the bots.
 
 ## Exploiting an opponent
 
