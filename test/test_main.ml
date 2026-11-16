@@ -2,6 +2,7 @@ let () =
   Alcotest.run "cfr-solver"
     [
       ("kuhn", Test_kuhn.tests);
+      ("efce", Test_efce.tests);
       ("team", Test_team.tests);
       ("tme", Test_tme.tests);
       ("flp", Test_flp.tests);
