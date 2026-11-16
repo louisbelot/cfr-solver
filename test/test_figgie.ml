@@ -196,9 +196,12 @@ let book () =
   ok "no card" Rejected (act t 0 (Offer (Clubs, 3)));
   ok "bid again" Rested (act t 1 (Bid (Clubs, 4)));
   ok "sell without card" Rejected (act t 0 (Sell Clubs));
-  match act t 2 (Offer (Clubs, 2)) with
+  (match act t 2 (Offer (Clubs, 2)) with
   | Traded tr -> Alcotest.(check int) "at resting bid" 4 tr.px
-  | _ -> Alcotest.fail "crossing offer should trade"
+  | _ -> Alcotest.fail "crossing offer should trade");
+  Alcotest.(check int) "four quotes and two trades" 6 t.events;
+  ok "pass" Rested (act t 0 Pass);
+  Alcotest.(check int) "pass is quiet" 6 (view t 0 ~ticks:1).events
 
 let lineup = Array.of_list Figgie_bots.all
 

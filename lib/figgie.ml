@@ -220,6 +220,7 @@ type t = {
   offers : quote option array;
   mutable trades : trade list;
   mutable tick : int;
+  mutable events : int;
 }
 
 let create deck hands =
@@ -232,6 +233,7 @@ let create deck hands =
     offers = Array.make 4 None;
     trades = [];
     tick = 0;
+    events = 0;
   }
 
 let copy t =
@@ -253,6 +255,7 @@ let execute t suit px ~buyer ~seller =
   Array.fill t.offers 0 4 None;
   let tr = { suit; px; buyer; seller; tick = t.tick } in
   t.trades <- tr :: t.trades;
+  t.events <- t.events + 1;
   Traded tr
 
 let act t p = function
@@ -270,6 +273,7 @@ let act t p = function
             else execute t s o.px ~buyer:p ~seller:o.who
         | _ ->
             t.bids.(i) <- Some { px; who = p };
+            t.events <- t.events + 1;
             Rested)
   | Offer (s, px) -> (
       let i = index s in
@@ -284,6 +288,7 @@ let act t p = function
             else execute t s b.px ~buyer:b.who ~seller:p
         | _ ->
             t.offers.(i) <- Some { px; who = p };
+            t.events <- t.events + 1;
             Rested)
   | Buy s -> (
       match t.offers.(index s) with
@@ -310,6 +315,7 @@ type view = {
   trades : trade list;
   tick : int;
   ticks : int;
+  events : int;
 }
 
 type tally = { seen : int array; known : int array array }
@@ -344,6 +350,7 @@ let view (t : t) me ~ticks =
     trades = t.trades;
     tick = t.tick;
     ticks;
+    events = t.events;
   }
 
 let play rng ?(ticks = 200) bots =

@@ -19,7 +19,6 @@ val goal_probs : float array -> float array
 val expected_payout : float array -> int array -> int array -> float
 val buy_value : float array -> int array -> int array -> suit -> float
 val sell_value : float array -> int array -> int array -> suit -> float
-
 type quote = { px : int; who : int }
 type trade = { suit : suit; px : int; buyer : int; seller : int; tick : int }
 
@@ -40,6 +39,7 @@ type t = {
   offers : quote option array;
   mutable trades : trade list;
   mutable tick : int;
+  mutable events : int;
 }
 
 val create : deck -> int array array -> t
@@ -57,6 +57,7 @@ type view = {
   trades : trade list;
   tick : int;
   ticks : int;
+  events : int;
 }
 
 type tally
