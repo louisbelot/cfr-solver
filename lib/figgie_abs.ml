@@ -101,6 +101,8 @@ let seen_cards ~players ~seat dealt trades =
 let others sizes me =
   Array.of_list (List.filteri (fun p _ -> p <> me) (Array.to_list sizes))
 
+type pace = Clock | Events
+
 type state =
   | Deal
   | Between of { g : t; dealt : int array array; round : int }
@@ -111,13 +113,21 @@ type state =
       order : int array;
       pos : int;
     }
+  | Quiet of t
 
 module type CONFIG = sig
   val players : int
   val rounds : int
+  val pace : pace
 end
 
-module Make (C : CONFIG) = struct
+module Core
+    (C : CONFIG)
+    (F : sig
+      val tag : string
+      val bot : int -> Figgie.bot option
+    end) =
+struct
   type nonrec state = state
 
   let () =
@@ -125,7 +135,11 @@ module Make (C : CONFIG) = struct
       invalid_arg "Figgie_abs: 4 or 5 players";
     if C.rounds < 1 then invalid_arg "Figgie_abs: rounds must be positive"
 
-  let name = Printf.sprintf "figgie-%dp-%dr" C.players C.rounds
+  let name =
+    Printf.sprintf "figgie-%dp-%d%s%s" C.players C.rounds
+      (match C.pace with Clock -> "r" | Events -> "e")
+      F.tag
+
   let players = C.players
   let root = Deal
 
@@ -139,39 +153,104 @@ module Make (C : CONFIG) = struct
     done;
     order
 
+  let final = match C.pace with Clock -> C.rounds | Events -> C.rounds + 1
+  let quotes = function Bid _ | Offer _ -> true | _ -> false
+
+  let closing sp =
+    let keep =
+      List.filter
+        (fun a -> not (quotes sp.moves.(a)))
+        (List.init (Array.length sp.moves) Fun.id)
+    in
+    {
+      sp with
+      labels = Array.of_list (List.map (Array.get sp.labels) keep);
+      moves = Array.of_list (List.map (Array.get sp.moves) keep);
+    }
+
   let node = function
     | Deal ->
         Lazy_mccfr.Chance
           (fun rng ->
             let deck, hands = deal rng ~players in
             Between { g = create deck hands; dealt = hands; round = 0 })
-    | Between { g; round; _ } when round = C.rounds -> Terminal (pnl g)
+    | Quiet g -> Terminal (pnl g)
+    | Between { g; round; _ } when round = final -> Terminal (pnl g)
     | Between { g; dealt; round } ->
         Chance
           (fun rng -> Turn { g; dealt; round; order = shuffle rng; pos = 0 })
-    | Turn { g; dealt; round; order; pos } ->
+    | Turn { g; dealt; round; order; pos } -> (
         let p = order.(pos) in
-        let sizes = Array.map (Array.fold_left ( + ) 0) g.hands in
-        let sp =
-          spot ~dealt:dealt.(p)
-            ~seen:(seen_cards ~players ~seat:p dealt.(p) g.trades)
-            ~hand:g.hands.(p) ~others:(others sizes p) ~bids:g.bids
-            ~offers:g.offers ~me:p ~phase:round
-        in
-        let next a =
+        let close = C.pace = Events && round = C.rounds in
+        let after move =
           let g = copy g in
           g.tick <- round;
-          ignore (act g p sp.moves.(a));
-          if pos + 1 = players then Between { g; dealt; round = round + 1 }
-          else Turn { g; dealt; round; order; pos = pos + 1 }
+          let before = g.events in
+          ignore (act g p move);
+          let last = pos + 1 = players in
+          match C.pace with
+          | Clock when last -> Between { g; dealt; round = round + 1 }
+          | Events when g.events > before && not close ->
+              Between { g; dealt; round = round + 1 }
+          | Events when last -> Quiet g
+          | Clock | Events -> Turn { g; dealt; round; order; pos = pos + 1 }
         in
-        Decision { player = p; infoset = sp.key; actions = sp.labels; next }
+        match F.bot p with
+        | Some b ->
+            Chance
+              (fun rng ->
+                let move =
+                  b.make rng ~players ~seat:p dealt.(p) (view g p ~ticks:final)
+                in
+                after (if close && quotes move then Pass else move))
+        | None ->
+            let sizes = Array.map (Array.fold_left ( + ) 0) g.hands in
+            let sp =
+              spot ~dealt:dealt.(p)
+                ~seen:(seen_cards ~players ~seat:p dealt.(p) g.trades)
+                ~hand:g.hands.(p) ~others:(others sizes p) ~bids:g.bids
+                ~offers:g.offers ~me:p ~phase:round
+            in
+            let sp = if close then closing sp else sp in
+            Decision
+              {
+                player = p;
+                infoset = sp.key;
+                actions = sp.labels;
+                next = (fun a -> after sp.moves.(a));
+              })
 end
 
-let bot ~name ~rounds policy =
+module Make (C : CONFIG) =
+  Core
+    (C)
+    (struct
+      let tag = ""
+      let bot _ = None
+    end)
+
+module type FIELD = sig
+  include CONFIG
+
+  val field : Figgie.bot array
+end
+
+module Against (C : FIELD) =
+  Core
+    (C)
+    (struct
+      let () =
+        if Array.length C.field <> C.players - 1 then
+          invalid_arg "Figgie_abs.Against: one bot per other seat"
+
+      let tag = "-field"
+      let bot p = if p = 0 then None else Some C.field.(p - 1)
+    end)
+
+let bot ~name ~pace ~rounds policy =
   let make rng ~players ~seat dealt =
     let c = tally ~players ~seat dealt in
-    let processed = ref 0 in
+    let processed = ref 0 and last = ref (-1) in
     fun (v : view) ->
       let n = List.length v.trades in
       if n <> !processed then begin
@@ -180,14 +259,22 @@ let bot ~name ~rounds policy =
         |> List.iter (observe c);
         processed := n
       end;
-      let phase = v.tick * rounds / v.ticks in
-      if v.tick > 0 && (v.tick - 1) * rounds / v.ticks = phase then Pass
-      else
+      let decide phase =
         let sp =
           spot ~dealt ~seen:(seen c) ~hand:v.hand ~others:(others v.sizes v.me)
             ~bids:v.bids ~offers:v.offers ~me:v.me ~phase
         in
         let k = Array.length sp.labels in
         sp.moves.(Rng.pick rng (policy sp.key k) 0 k)
+      in
+      match pace with
+      | Clock ->
+          let phase = v.tick * rounds / v.ticks in
+          if v.tick > 0 && (v.tick - 1) * rounds / v.ticks = phase then Pass
+          else decide phase
+      | Events when v.events = !last -> Pass
+      | Events ->
+          last := v.events;
+          decide (min v.events (rounds - 1))
   in
   { name; make }

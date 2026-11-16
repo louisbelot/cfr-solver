@@ -96,18 +96,40 @@ let mean_stderr xs =
 
 let uniform _ n = Array.make n (1. /. float_of_int n)
 
-let solve_figgie players rounds iterations br playouts games ticks seed top =
+let solve_figgie players pace rounds field sampling iterations br playouts games
+    ticks seed top =
   if players < 4 || players > 5 then Error (`Msg "figgie takes 4 or 5 players")
   else if rounds < 1 then Error (`Msg "rounds must be positive")
   else
-    let module A = Figgie_abs.Make (struct
-      let players = players
-      let rounds = rounds
-    end) in
+    let bots =
+      [| B.fundamentalist (); B.counter (); B.bottom_feeder; B.noise |]
+    in
+    let fill =
+      Array.init (players - 1) (fun i -> bots.(i mod Array.length bots))
+    in
+    let (module A : Lazy_mccfr.GAME) =
+      if field then
+        (module Figgie_abs.Against (struct
+          let players = players
+          let rounds = rounds
+          let pace = pace
+          let field = fill
+        end))
+      else
+        (module Figgie_abs.Make (struct
+          let players = players
+          let rounds = rounds
+          let pace = pace
+        end))
+    in
     let module Z = Lazy_mccfr.Make (A) in
-    let z = Z.create ~seed () in
+    let fixed p = if field && p > 0 then Some uniform else None in
+    let z = Z.create ~seed ~fixed ~sampling () in
     let start = Unix.gettimeofday () in
-    Format.printf "%s: external-sampling MCCFR, %d iterations@.@." A.name
+    Format.printf "%s: external-sampling MCCFR%s, %d iterations@.@." A.name
+      (match sampling with
+      | Every -> ""
+      | Average _ -> " with average strategy sampling")
       iterations;
     Format.printf "%10s %9s %12s %9s@." "iteration" "infosets" "nodes" "seconds";
     List.iter
@@ -117,38 +139,35 @@ let solve_figgie players rounds iterations br playouts games ticks seed top =
           (Unix.gettimeofday () -. start))
       (Report.checkpoints iterations);
     let blueprint = Z.average z in
-    let score learner field k =
+    let score learner others k =
       (Z.playout
          (Rng.make ((1_000_000 * seed) + k))
-         (fun p -> if p = 0 then learner else field)).(0)
+         (fun p -> if p = 0 then learner else others)).(0)
     in
-    Format.printf
-      "@.seat 0 against %d copies of a fixed profile, %d paired deals@."
-      (players - 1) playouts;
-    Format.printf "%-10s %16s %16s %16s@." "profile" "itself" "best response"
-      "gain";
-    List.iter
-      (fun (name, field) ->
-        let r =
-          Z.create ~seed:(seed + 1)
-            ~fixed:(fun p -> if p = 0 then None else Some field)
-            ()
-        in
-        Z.run r br;
-        let u0 = Array.init playouts (score field field)
-        and u1 = Array.init playouts (score (Z.average r) field) in
-        let m0, s0 = mean_stderr u0
-        and m1, s1 = mean_stderr u1
-        and g, sg = mean_stderr (Array.map2 ( -. ) u1 u0) in
-        Format.printf "%-10s %+9.2f +- %4.2f %+9.2f +- %4.2f %+9.2f +- %4.2f@."
-          name m0 s0 m1 s1 g sg)
-      [ ("uniform", uniform); ("mccfr", blueprint) ];
-    let field =
-      [| B.fundamentalist (); B.counter (); B.bottom_feeder; B.noise |]
-    in
-    let fill =
-      Array.init (players - 1) (fun i -> field.(i mod Array.length field))
-    in
+    if not field then begin
+      Format.printf
+        "@.seat 0 against %d copies of a fixed profile, %d paired deals@."
+        (players - 1) playouts;
+      Format.printf "%-10s %16s %16s %16s@." "profile" "itself" "best response"
+        "gain";
+      List.iter
+        (fun (name, others) ->
+          let r =
+            Z.create ~seed:(seed + 1)
+              ~fixed:(fun p -> if p = 0 then None else Some others)
+              ()
+          in
+          Z.run r br;
+          let u0 = Array.init playouts (score others others)
+          and u1 = Array.init playouts (score (Z.average r) others) in
+          let m0, s0 = mean_stderr u0
+          and m1, s1 = mean_stderr u1
+          and g, sg = mean_stderr (Array.map2 ( -. ) u1 u0) in
+          Format.printf
+            "%-10s %+9.2f +- %4.2f %+9.2f +- %4.2f %+9.2f +- %4.2f@." name m0 s0
+            m1 s1 g sg)
+        [ ("uniform", uniform); ("mccfr", blueprint) ]
+    end;
     Format.printf "@.one seat in a field of %s, %d games of %d ticks@."
       (String.concat ", "
          (Array.to_list (Array.map (fun (b : F.bot) -> b.name) fill)))
@@ -161,8 +180,8 @@ let solve_figgie players rounds iterations br playouts games ticks seed top =
         in
         Format.printf "%-16s %+10.2f %8.2f@." b.name r.(0).mean r.(0).stderr)
       [
-        Figgie_abs.bot ~name:"mccfr" ~rounds blueprint;
-        Figgie_abs.bot ~name:"abstract-uniform" ~rounds uniform;
+        Figgie_abs.bot ~name:"mccfr" ~pace ~rounds blueprint;
+        Figgie_abs.bot ~name:"abstract-uniform" ~pace ~rounds uniform;
         B.fundamentalist ();
         B.counter ();
         B.passive;
@@ -296,8 +315,44 @@ let solve_cmd =
       term_result
         (const solve_figgie
         $ opt_int [ "players" ] 4 "Players, 4 or 5."
+        $ Arg.(
+            value
+            & opt
+                (enum
+                   [
+                     ("events", Figgie_abs.Events); ("clock", Figgie_abs.Clock);
+                   ])
+                Figgie_abs.Events
+            & info [ "pace" ]
+                ~doc:
+                  "$(b,clock): every player acts once per round. $(b,events): \
+                   a round ends at the first trade or new best quote, a round \
+                   where everyone passes ends the game, and after the last \
+                   event everyone gets one closing turn to take quotes.")
         $ opt_int [ "rounds" ] 3
-            "Rounds in the training game; every player acts once per round."
+            "Rounds in the training game (events with $(b,--pace events))."
+        $ Arg.(
+            value & flag
+            & info [ "field" ]
+                ~doc:
+                  "Train seat 0 against the tournament field (the rule bots \
+                   play the other seats) instead of in self-play.")
+        $ Arg.(
+            value
+            & opt
+                (enum
+                   [
+                     ("every", Lazy_mccfr.Every);
+                     ( "average",
+                       Lazy_mccfr.Average
+                         { epsilon = 0.05; tau = 100.; beta = 100. } );
+                   ])
+                Lazy_mccfr.Every
+            & info [ "sampling" ]
+                ~doc:
+                  "$(b,every): the traverser tries every action. $(b,average): \
+                   average strategy sampling (Gibson et al. 2012) with epsilon \
+                   0.05, tau 100 and beta 100.")
         $ opt_int [ "n"; "iterations" ] 2000 "MCCFR iterations."
         $ opt_int [ "br" ] 2000 "Iterations of the best-response learner."
         $ opt_int [ "playouts" ] 20000 "Playouts per best-response score."
