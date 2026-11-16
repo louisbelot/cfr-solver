@@ -111,6 +111,8 @@ let samplers =
     ("dcfr", Tree Cfr.dcfr);
     ("es", Sampled (Cfr.Vanilla, 1, Multi_mccfr.Simple));
     ("es-weighted", Sampled (Cfr.Vanilla, 1, Weighted));
+    ("es-clip4", Sampled (Cfr.Vanilla, 1, Clipped 4.));
+    ("es-clip16", Sampled (Cfr.Vanilla, 1, Clipped 16.));
     ("es-full", Sampled (Cfr.Vanilla, 1, Full));
     ("es-linear", Sampled (Cfr.Linear, 1000, Simple));
   ]
@@ -383,7 +385,9 @@ let cmds =
           (list (enum (List.map (fun (n, s) -> (n, (n, s))) samplers)))
           samplers
       & info [ "r"; "runs" ] ~docv:"LIST"
-          ~doc:"Any of cfr, dcfr, es, es-weighted, es-full, es-linear.")
+          ~doc:
+            "Any of cfr, dcfr, es, es-weighted, es-clip4, es-clip16, es-full \
+             or es-linear.")
   in
   let budget =
     Arg.(

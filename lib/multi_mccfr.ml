@@ -1,8 +1,9 @@
-type averaging = Simple | Weighted | Full
+type averaging = Simple | Weighted | Clipped of float | Full
 
 let averaging_name = function
   | Simple -> "simple"
   | Weighted -> "weighted"
+  | Clipped c -> Printf.sprintf "clipped-%g" c
   | Full -> "full"
 
 module Make (G : Multi.S) = struct
@@ -31,6 +32,10 @@ module Make (G : Multi.S) = struct
       invalid_arg "Multi_mccfr.create: predictive weighting";
     if interval < 1 then
       invalid_arg "Multi_mccfr.create: interval must be positive";
+    (match averaging with
+    | Clipped c when not (c >= 1.) ->
+        invalid_arg "Multi_mccfr.create: clip must be at least 1"
+    | _ -> ());
     let tree = Multi_tree.build (module G) in
     let slots = Multi_tree.slots tree in
     {
@@ -80,6 +85,12 @@ module Make (G : Multi.S) = struct
     done;
     !w
 
+  let weight t i p =
+    match t.averaging with
+    | Simple | Full -> 1.
+    | Weighted -> 1. /. others t i p
+    | Clipped c -> Float.min c (1. /. others t i p)
+
   let rec walk t i learn node d =
     t.touched <- t.touched + 1;
     match node with
@@ -95,12 +106,8 @@ module Make (G : Multi.S) = struct
         if p <> i then begin
           (match t.averaging with
           | Full -> ()
-          | Simple ->
-              for a = base to base + n - 1 do
-                t.sum.(a) <- t.sum.(a) +. t.current.(a)
-              done
-          | Weighted ->
-              let w = 1. /. others t i p in
+          | Simple | Weighted | Clipped _ ->
+              let w = weight t i p in
               for a = base to base + n - 1 do
                 t.sum.(a) <- t.sum.(a) +. (w *. t.current.(a))
               done);

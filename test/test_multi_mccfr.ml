@@ -33,7 +33,7 @@ let matches_two_player (module G : Game.S) n () =
           Alcotest.(check (float 0.))
             "current" 0.
             (gap (S.current_strategy s) (N.current_strategy m)))
-        [ Multi_mccfr.Simple; Weighted ])
+        [ Multi_mccfr.Simple; Weighted; Clipped 5. ])
     [ (Cfr.Vanilla, 1); (Cfr.dcfr, 10); (Linear, 1) ]
 
 let profile seed =
@@ -103,6 +103,27 @@ let averaging () =
     Alcotest.failf "weighted: %g" (gap weighted exact);
   if gap simple exact < 0.03 then Alcotest.failf "simple: %g" (gap simple exact)
 
+let clip_ends () =
+  let run averaging =
+    let t = M3.create ~seed:3 ~averaging () in
+    M3.run t 3_000;
+    M3.average_strategy t
+  in
+  let simple = run Simple and weighted = run Weighted in
+  Alcotest.(check (float 0.)) "clip at 1" 0. (gap simple (run (Clipped 1.)));
+  Alcotest.(check (float 0.))
+    "no clip" 0.
+    (gap weighted (run (Clipped Float.infinity)));
+  if gap simple weighted = 0. then Alcotest.fail "simple equals weighted"
+
+let clip_between () =
+  let a = profile 3 and b = profile 4 in
+  let exact = exact_average [ a; b ] in
+  let err averaging = gap (averaged averaging 40_000 a b) exact in
+  let simple = err Simple and clipped = err (Clipped 16.) in
+  if clipped >= simple then
+    Alcotest.failf "clipped %g, simple %g" clipped simple
+
 let only_traverser () =
   let t = M3.create ~seed:2 () in
   M3.run t 2;
@@ -147,7 +168,10 @@ let three_player_kuhn () =
 let bad_interval () =
   Alcotest.check_raises "interval"
     (Invalid_argument "Multi_mccfr.create: interval must be positive")
-    (fun () -> ignore (M3.create ~interval:0 ()))
+    (fun () -> ignore (M3.create ~interval:0 ()));
+  Alcotest.check_raises "clip"
+    (Invalid_argument "Multi_mccfr.create: clip must be at least 1") (fun () ->
+      ignore (M3.create ~averaging:(Clipped 0.5) ()))
 
 let tests =
   [
@@ -156,6 +180,8 @@ let tests =
     Alcotest.test_case "leduc matches two-player mccfr" `Quick
       (matches_two_player (module Leduc) 300);
     Alcotest.test_case "weighted averaging is unbiased" `Quick averaging;
+    Alcotest.test_case "clip ends" `Quick clip_ends;
+    Alcotest.test_case "clipping cuts the bias" `Quick clip_between;
     Alcotest.test_case "traverse moves one player" `Quick only_traverser;
     Alcotest.test_case "seeded" `Quick seeded;
     Alcotest.test_case "three-player kuhn" `Quick three_player_kuhn;

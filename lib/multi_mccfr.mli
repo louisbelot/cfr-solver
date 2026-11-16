@@ -1,4 +1,4 @@
-type averaging = Simple | Weighted | Full
+type averaging = Simple | Weighted | Clipped of float | Full
 
 val averaging_name : averaging -> string
 
