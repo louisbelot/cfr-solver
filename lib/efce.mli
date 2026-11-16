@@ -1,0 +1,14 @@
+type t
+
+val create : ?plus:bool -> Multi_tree.t -> t
+val iterate : t -> unit
+val run : t -> int -> unit
+val iterations : t -> int
+val current : t -> float array
+val mixture : t -> Correlated.t
+
+val fixed_point :
+  Treeplex.t ->
+  lambda:float array ->
+  local:float array array ->
+  float array * float array
