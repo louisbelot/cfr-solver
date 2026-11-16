@@ -1338,6 +1338,124 @@ private-values model (`cfr-solver bidding --case CASE --top X`):
   naive bidder still makes 1.395 against 1.481, since the price is set by the
   other bid.
 
+## Correlated equilibrium
+
+A Nash equilibrium has every player randomize on their own. An extensive-form
+correlated equilibrium (EFCE, von Stengel and Forges 2008) adds a mediator who
+draws a joint pure strategy profile and whispers each move to its player only
+when that player reaches the decision. Nobody is forced to obey; the profile is
+an equilibrium if no player gains from a trigger deviation: follow the
+recommendations until move `a` is recommended at infoset `I`, then ignore the
+mediator and play some fixed continuation `y` from `I` on.
+
+`Correlated` measures this for a uniform mixture of product profiles (the
+empirical play of a learning run). For player i with sequence-form plan x_t,
+gradient l_t (payoffs times everyone else's reach) and a trigger
+sigma = (I, a), the gain of a continuation y is
+
+```
+(1/T) sum_t [ x_t[sigma] <l_t restricted to I's subtree, y>
+              - <l_t restricted to sequences at or below sigma, x_t> ]
+```
+
+Both terms are linear, so one aggregated gradient per trigger is enough and the
+best `y` is a backward-induction pass over the subtree. A brute force test
+enumerates every pure strategy of two-player Kuhn and every pure continuation
+of every trigger and agrees with it to 1e-12.
+
+`Efce` is the trigger-regret dynamics of Farina, Celli, Marchesi and Gatti
+(2021). Each trigger owns a regret minimizer over the strategies of its
+subtree, fed with x_t[sigma] l_t, and regret matching over triggers mixes them
+into a linear map phi(x) = sum_sigma lambda_sigma phi_sigma(x). The strategy
+played is a fixed point x = phi(x), and the fixed point is what turns their
+regret bound into a bound on the EFCE gap. It can be computed top-down: at an
+infoset J with parent sequence p, the normalized action weights r solve
+
+```
+r_b (L + lambda_b) = c_b + sum_b' lambda_b' Y[b', b] r_b'
+```
+
+where L is the trigger weight on the path to p, c collects the triggers above
+J that pass through it (weighted by x[sigma] and their continuation), and Y
+holds the root behavior of the triggers at J itself. Adding a lazy diagonal
+makes this the stationary distribution of a small Markov chain, which
+`Markov.stationary` finds exactly by picking a closed recurrent class and
+solving it. A test checks phi(x) = x against the definition of phi_sigma
+(follow outside sigma's subtree, replace with x[sigma] y inside) for random
+weights and continuations on Kuhn and three-player Kuhn.
+
+On a 2x2 game EFCE is ordinary correlated equilibrium, which gives an
+independent check: after 20,000 iterations on chicken the mixture's swap
+gains, computed from the joint action distribution, equal the trigger gap to
+1e-9 and are below 0.01.
+
+```
+cfr-solver efce -g kuhn3 -n 100000
+cfr-solver efce -g sheriff --items 3 --rounds 1 -n 100000
+```
+
+EFCE gap of the empirical play at 100,000 iterations (`trigger+` uses RM+ for
+the triggers and the local minimizers):
+
+| game | trigger | trigger+ | cfr | cfr+ |
+|------|--------:|---------:|----:|-----:|
+| Kuhn, 2 players | 5.29e-04 | 4.87e-04 | 3.59e-04 | 2.51e-05 |
+| Kuhn, 3 players | 1.58e-04 | 7.53e-05 | 1.91e-04 | 3.77e-06 |
+| Sheriff, 3 items, 1 round | 1.24e-02 | 4.21e-03 | 1.01e-02 | 3.72e-04 |
+
+![EFCE gap on Sheriff](docs/efce-sheriff.svg)
+
+The trigger dynamics fall at least as fast as the 1/sqrt(T) the theory promises. CFR+ does better
+on all three games, and the reason is visible in the values: its iterates
+settle on a Nash equilibrium, and a Nash equilibrium is an EFCE. Nothing
+guarantees that (CFR only controls external regret, which gives coarse
+correlated equilibria), but on these small games it happens. Vanilla CFR's
+gap is not monotone on Sheriff: 9.9e-02 at 1,778 iterations, 1.96e-01 at
+5,623, 3.3e-02 at 10,000.
+
+### The mediator's best equilibrium
+
+Every learning run on Sheriff ends at welfare around 0.8 (smuggler 0.78 to
+0.79, sheriff 0.0003 to 0.04). The equilibria a mediator could pick are much
+better. For two players and no chance, von Stengel and Forges show the EFCE
+set is a polytope over a correlation plan xi(sigma1, sigma2), defined for
+pairs of sequences whose infosets lie on a common path, with consistency
+constraints like the sequence form's and one incentive block per trigger. The
+block bounds the deviation value with the dual of the deviator's best
+response LP, so each trigger adds a variable per infoset of its subtree.
+`Efce_lp` builds that LP; the objective is welfare or one player's payoff.
+
+Sheriff (Farina, Ling, Fang and Sandholm 2019): the smuggler loads 0 to n
+illegal items, then in each of r rounds offers a bribe of 0 to 2 and the
+sheriff answers pass or inspect; only the last round counts. Not inspecting
+pays the smuggler 5n minus the bribe and the sheriff the bribe; inspecting
+finds the items (fine 1 per item) or pays the smuggler 1 for a false alarm.
+The rules follow OpenSpiel's `sheriff`.
+
+```
+cfr-solver efce-welfare --items 1,2,3,5,10 --rounds 1
+```
+
+| items | rounds | pairs | rows | SW-max EFCE | Farina et al. |
+|------:|-------:|------:|-----:|-------------|---------------|
+| 1 | 1 | 63 | 109 | (3.4444, 1.5556) | (3.00, 2.00) |
+| 2 | 1 | 91 | 161 | (8.0000, 2.0000) | (8.00, 2.00) |
+| 3 | 1 | 119 | 221 | (3.8861, 1.4304) | (3.89, 1.43) |
+| 5 | 1 | 175 | 365 | (2.2825, 1.2601) | (2.28, 1.26) |
+| 10 | 1 | 315 | 865 | (1.7616, 0.9319) | (1.76, 0.93) |
+| 1 | 2 | 711 | 1135 | (3.0000, 2.0000) exact | (3.00, 2.00) |
+
+The welfare matches every published entry. At one item the optimum is not
+unique: the float simplex lands on a 3.44/1.56 split of the same total 5, and
+the exact rational solver (`--exact`) on the two-round game finds the paper's
+3/2. With three items the best EFCE is worth 5.32 against the 0.8 the
+dynamics reach. The second round only matters as a signal, and with it the
+mediator gets the full 10 at two items.
+
+The float tableau solves one round up to ten items in 0.18 s. Two rounds is
+where the dense simplex stops scaling: 1,135 rows take 44 s with the exact
+solver warm-started from the float basis.
+
 ## A market-making game
 
 Trading interviews like "make me a market on the sum of these cards". `Market`
