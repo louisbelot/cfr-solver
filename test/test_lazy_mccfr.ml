@@ -47,6 +47,42 @@ let kuhn_two () =
   let module E = Multi.Eval (G) in
   Alcotest.(check (float 5e-3)) "value" (-1. /. 18.) (E.values sigma).(0)
 
+let sampling = Lazy_mccfr.Average { epsilon = 0.05; tau = 100.; beta = 100. }
+
+let kuhn_sampled () =
+  let module G = Multi.Of_game (Kuhn) in
+  let module Z = Lazy_mccfr.Make (Lazy_mccfr.Of_multi (G)) in
+  let module B = Multi_br.Make (G) in
+  let module E = Multi.Eval (G) in
+  let z = Z.create ~seed:11 ~sampling () in
+  Z.run z 50_000;
+  let sigma = Z.average_strategy z in
+  let nc = B.nash_conv sigma in
+  if nc > 1e-2 then Alcotest.failf "nash conv %g" nc;
+  Alcotest.(check (float 5e-3)) "value" (-1. /. 18.) (E.values sigma).(0)
+
+let leduc_pruned () =
+  let module G = Multi.Of_game (Leduc) in
+  let module Z = Lazy_mccfr.Make (Lazy_mccfr.Of_multi (G)) in
+  let module B = Multi_br.Make (G) in
+  let run sampling =
+    let z = Z.create ~seed:3 ~sampling () in
+    while Z.touched z < 5_000_000 do
+      Z.iterate z
+    done;
+    (Z.iterations z, B.nash_conv (Z.average_strategy z))
+  in
+  let n_every, _ = run Every and n, nc = run sampling in
+  if n <= n_every then Alcotest.failf "iterations %d against %d" n n_every;
+  if nc > 0.1 then Alcotest.failf "nash conv %g" nc
+
+let bad_sampling () =
+  Alcotest.check_raises "epsilon"
+    (Invalid_argument "Lazy_mccfr.create: bad sampling parameters") (fun () ->
+      let module Z = Lazy_mccfr.Make (Lazy_mccfr.Of_multi (K3)) in
+      ignore
+        (Z.create ~sampling:(Average { epsilon = 0.; tau = 1.; beta = 1. }) ()))
+
 let random_profile seed =
   let rng = Rng.make seed in
   List.fold_left
@@ -102,6 +138,9 @@ let tests =
     Alcotest.test_case "matches kuhn3 tree" `Quick (matches (module K3) 3000);
     Alcotest.test_case "matches leduc3 tree" `Quick (matches (module L3) 200);
     Alcotest.test_case "two-player kuhn" `Quick kuhn_two;
+    Alcotest.test_case "sampled kuhn" `Quick kuhn_sampled;
+    Alcotest.test_case "sampling prunes leduc" `Quick leduc_pruned;
+    Alcotest.test_case "bad sampling" `Quick bad_sampling;
     Alcotest.test_case "fixed seats" `Quick responds;
     Alcotest.test_case "playout mean" `Quick playout;
   ]

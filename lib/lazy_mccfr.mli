@@ -21,6 +21,10 @@ module Of_multi (G : Multi.S) : GAME with type state = G.history
 
 type policy = string -> int -> float array
 
+type sampling =
+  | Every
+  | Average of { epsilon : float; tau : float; beta : float }
+
 module Make (G : GAME) : sig
   type t
 
@@ -29,6 +33,7 @@ module Make (G : GAME) : sig
     ?weighting:Cfr.algorithm ->
     ?interval:int ->
     ?fixed:(int -> policy option) ->
+    ?sampling:sampling ->
     unit ->
     t
 

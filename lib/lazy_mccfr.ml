@@ -44,6 +44,10 @@ end
 
 type policy = string -> int -> float array
 
+type sampling =
+  | Every
+  | Average of { epsilon : float; tau : float; beta : float }
+
 type entry = {
   labels : string array;
   regret : float array;
@@ -59,6 +63,7 @@ module Make (G : GAME) = struct
     weighting : Cfr.algorithm;
     interval : int;
     fixed : int -> policy option;
+    sampling : sampling;
     solo : bool;
     mutable passes : int;
     mutable iterations : int;
@@ -66,17 +71,23 @@ module Make (G : GAME) = struct
   }
 
   let create ?(seed = 1) ?(weighting = Cfr.Vanilla) ?(interval = 1)
-      ?(fixed = fun _ -> None) () =
+      ?(fixed = fun _ -> None) ?(sampling = Every) () =
     if Cfr.predictive weighting then
       invalid_arg "Lazy_mccfr.create: predictive weighting";
     if interval < 1 then
       invalid_arg "Lazy_mccfr.create: interval must be positive";
+    (match sampling with
+    | Average { epsilon; tau; beta }
+      when not (epsilon > 0. && epsilon <= 1. && tau >= 0. && beta > 0.) ->
+        invalid_arg "Lazy_mccfr.create: bad sampling parameters"
+    | _ -> ());
     {
       table = Hashtbl.create 4096;
       rng = Rng.make seed;
       weighting;
       interval;
       fixed;
+      sampling;
       solo =
         List.length
           (List.filter
@@ -127,6 +138,15 @@ module Make (G : GAME) = struct
       e.stamp <- t.passes
     end
 
+  let probes t e =
+    match t.sampling with
+    | Every -> fun _ -> 1.
+    | Average { epsilon; tau; beta } ->
+        let total = Array.fold_left ( +. ) 0. e.sum in
+        fun a ->
+          Float.max epsilon
+            (Float.min 1. ((beta +. (tau *. e.sum.(a))) /. (beta +. total)))
+
   let rec walk t i r s =
     t.touched <- t.touched + 1;
     match G.node s with
@@ -151,10 +171,14 @@ module Make (G : GAME) = struct
                   e.sum.(a) <- e.sum.(a) +. (r *. e.current.(a))
                 done;
               let vals = Array.make n 0. and v = ref 0. in
+              let probe = probes t e in
               for a = 0 to n - 1 do
-                let u = walk t i (r *. e.current.(a)) (next a) in
-                vals.(a) <- u;
-                v := !v +. (e.current.(a) *. u)
+                let q = probe a in
+                if q >= 1. || Rng.float t.rng < q then begin
+                  let u = walk t i (r *. e.current.(a) /. q) (next a) /. q in
+                  vals.(a) <- u;
+                  v := !v +. (e.current.(a) *. u)
+                end
               done;
               for a = 0 to n - 1 do
                 e.regret.(a) <- e.regret.(a) +. (vals.(a) -. !v)
