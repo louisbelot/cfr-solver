@@ -31,16 +31,7 @@ let evaluate dealt seen hand others =
 let cache = Domain.DLS.new_key (fun () -> Hashtbl.create 4096)
 
 let values ~dealt ~seen ~hand ~others =
-  let key =
-    String.init
-      (12 + Array.length others)
-      (fun i ->
-        Char.chr
-          (if i < 4 then dealt.(i)
-           else if i < 8 then seen.(i - 4)
-           else if i < 12 then hand.(i - 8)
-           else others.(i - 12)))
-  in
+  let key = pack [ dealt; seen; hand; others ] in
   let tbl = Domain.DLS.get cache in
   match Hashtbl.find_opt tbl key with
   | Some v -> v

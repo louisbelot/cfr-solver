@@ -200,6 +200,18 @@ let sell_value post mine others s =
   mean_share post mine others
   -. mean_share post (shift mine s (-1)) (shift others (extreme ( < ) others) 1)
 
+let pack parts =
+  let b =
+    Bytes.create (List.fold_left (fun n a -> n + Array.length a) 0 parts)
+  in
+  ignore
+    (List.fold_left
+       (fun o a ->
+         Array.iteri (fun i x -> Bytes.set b (o + i) (Char.chr x)) a;
+         o + Array.length a)
+       0 parts);
+  Bytes.to_string b
+
 type quote = { px : int; who : int }
 type trade = { suit : suit; px : int; buyer : int; seller : int; tick : int }
 

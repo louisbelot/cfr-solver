@@ -47,13 +47,31 @@ let decide rng (v : view) ~edge buy sell =
       else Pass
   | a -> a
 
+let table = Domain.DLS.new_key (fun () -> Hashtbl.create 4096)
+
+let values ~dealt ~seen ~hand ~others =
+  let key = pack [ dealt; seen; hand; others ] in
+  let tbl = Domain.DLS.get table in
+  match Hashtbl.find_opt tbl key with
+  | Some v -> v
+  | None ->
+      let post = posterior ~seen dealt in
+      let v =
+        ( Array.map (buy_value post hand others) suits,
+          Array.mapi
+            (fun i s ->
+              if hand.(i) > 0 then sell_value post hand others s else 0.)
+            suits )
+      in
+      if Hashtbl.length tbl >= 1 lsl 20 then Hashtbl.reset tbl;
+      Hashtbl.add tbl key v;
+      v
+
 let valuer name ~counting ~edge =
   let make rng ~players ~seat dealt =
     let c = tally ~players ~seat dealt in
-    let post = ref (posterior dealt) and processed = ref 0 in
-    let cached = ref (-1)
-    and buy = Array.make 4 0.
-    and sell = Array.make 4 0. in
+    let processed = ref 0 and cached = ref (-1) in
+    let buy = ref [||] and sell = ref [||] in
     fun (v : view) ->
       let n = List.length v.trades in
       if n <> !cached then begin
@@ -61,19 +79,18 @@ let valuer name ~counting ~edge =
           List.filteri (fun i _ -> i < n - !processed) v.trades
           |> List.rev
           |> List.iter (observe c);
-          processed := n;
-          post := posterior ~seen:(seen c) dealt
+          processed := n
         end;
-        let rest = others v in
-        Array.iteri
-          (fun i s ->
-            buy.(i) <- buy_value !post v.hand rest s;
-            sell.(i) <-
-              (if v.hand.(i) > 0 then sell_value !post v.hand rest s else 0.))
-          suits;
+        let b, s =
+          values ~dealt
+            ~seen:(if counting then seen c else dealt)
+            ~hand:v.hand ~others:(others v)
+        in
+        buy := b;
+        sell := s;
         cached := n
       end;
-      decide rng v ~edge buy sell
+      decide rng v ~edge !buy !sell
   in
   { name; make }
 

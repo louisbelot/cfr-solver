@@ -19,6 +19,8 @@ val goal_probs : float array -> float array
 val expected_payout : float array -> int array -> int array -> float
 val buy_value : float array -> int array -> int array -> suit -> float
 val sell_value : float array -> int array -> int array -> suit -> float
+val pack : int array list -> string
+
 type quote = { px : int; who : int }
 type trade = { suit : suit; px : int; buyer : int; seller : int; tick : int }
 
