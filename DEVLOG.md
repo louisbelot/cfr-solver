@@ -2587,3 +2587,118 @@ or a new best quote) instead of a fixed count, more rounds now that the value
 cache made traversals cheap, and five players. Then variance-reduced
 averaging for the n-player sampler, which the hash table makes easy to try
 on leduc4 without the tree.
+
+## 2026-11-15: long Figgie, training against the field, clipped averaging
+
+Built:
+
+- `Figgie.t.events` and `view.events`: a public count of trades and resting
+  quotes. Passes and rejected quotes do not count.
+- `Figgie_abs` pace. `Clock` is the old game (everyone acts once per round,
+  for a fixed number of rounds). `Events` ends a round at the first event,
+  ends the game on a round where everyone passes, and after the last counted
+  event gives everyone one closing turn with only pass, lift, hit and dump.
+  The deployed bot acts once each time the event count moves, with the round
+  set to the count capped at the last trained one.
+- `Figgie_abs.Against`: the rule bots sit in the other seats as chance nodes,
+  rebuilt at each visit from their dealt hand and the public trades, so seat 0
+  learns a best response inside the abstraction to the real field.
+- `Figgie_bots` value table: the valuer bots look up posterior-based buy and
+  sell values by (dealt, seen, hand, other sizes), shared through
+  `Figgie.pack` with the abstraction's own cache.
+- `Lazy_mccfr` sampling: `Every` (the old external sampling) or `Average`,
+  average strategy sampling after Gibson, Burch, Lanctot and Szafron (2012).
+- `Multi_mccfr.Clipped c`: the unbiased average with every weight capped at c.
+  `es-clip4` and `es-clip16` in `multi-es`.
+- `figgie-cfr --pace`, `--field`, `--sampling`.
+
+Design notes:
+
+- The first event-paced version had no closing turn and lost $65.20 a game in
+  the 200-tick field, worse than acting on the clock. A quote posted on the
+  last event ended the game before anyone could take it, so every quoting
+  action had the same value, the last round's average came out uniform over
+  them, and the deployed bot spends most of a real game in that round (about
+  160 events per 200-tick game against six trained).
+- With the closing turn the self-play bot still lost $22 a game, and a
+  decomposition of its trades over 1,000 games showed where the money went: about
+  7.6 buys and 8.6 sells a game, bought at 11.86 on average and sold at 7.15,
+  with almost five of the buys in suits that were not the goal. That is what
+  adverse selection looks like: bids at 60 and 90% of its own value get
+  filled when the seller knows more.
+- Trained in self-play the bot is still far behind (-$22.18), while an
+  abstract best response finds nothing against it (-0.89 +- 0.13). Against
+  the field the same abstraction is at +$8.79, so the action set and key were
+  good enough and the opponents in training were the problem.
+- Bots as chance nodes: a fresh bot per visit has the same decision rule as a
+  long-lived one because the only memory the valuers keep is the card tally,
+  which is rebuilt from the public trades. That made the values the cost of a
+  visit; the table took the field game from 52.2 s to 4.6 s for 2M nodes with
+  identical iterations, infosets and node counts, and a 300-game tournament
+  prints the same table as before.
+- Average strategy sampling divides a sampled child's value by its sampling
+  probability and passes r sigma(a) / q down as the averaging reach, so both
+  the regrets and the solo-learner average stay unbiased. With q = 1 the
+  arithmetic is the old code's (multiplying and dividing by 1.0 is exact), and
+  no random number is drawn, so `Every` reproduces the old runs bit for bit.
+- Tau 1000 and beta 1e6, the first setting tried, prune almost nothing here:
+  the sums grow by about one per visit, so beta dominates for most of a run.
+  On Leduc at 1e8 nodes it ran 2,257,413 iterations against 2,228,579 for
+  `Every`; tau 100 and beta 100 ran 2,576,069.
+
+Results (4,000 games of 200 ticks, the same deals and seats for every bot):
+
+- Four players, field-trained, six event rounds, average sampling, 150,000
+  iterations (1.0e8 nodes, 112 s): +8.79 +- 0.81 a game. Fundamentalist +2.38,
+  counter +2.67, passive -16.18, the clock bot from 2026-11-13 -7.77.
+- Five players with noise in the field, 100,000 iterations: +9.23 +- 0.76
+  against fundamentalist +9.42 and counter +10.17.
+- Self-play, six event rounds, 20,000 iterations: -22.18 +- 1.18.
+
+From a driver over the same functions (2,000 games, seed 1, field-trained to
+1e8 nodes each), 200-tick P&L by number of event rounds and sampler:
+
+| events | every | average |
+|-------:|------:|--------:|
+| 4      | +0.67 | +1.73   |
+| 6      |       | +8.64   |
+| 8      | +6.19 | +7.80   |
+| 9      |       | +8.04   |
+
+Average sampling ran 3.7 times as many iterations at four events (1,052,336
+against 287,039) and 1.5 times at eight. The same driver at 4 events and 5e6
+nodes showed the horizon problem directly: +3.30 at 5 ticks (fundamentalist
++2.45), +1.27 at 10, -1.36 at 25 and -4.78 at 50.
+
+Clipped averaging, leduc3, three seeds, NashConv at 3e9 nodes: simple
+2.360e-02, weighted 2.693e-02, clip at 4 2.659e-02, clip at 16 2.679e-02.
+Clipping closes about half of the weighted-simple gap at 1e7 and 1e8 nodes
+and a tenth at 3e9. In the frozen-profile test (alternating two fixed
+profiles on kuhn3), the largest error at 320,000 rounds is 0.046 simple, 0.040
+clipped at 2, 0.044 at 4, 0.0047 at 16 and 0.0025 weighted.
+Leduc4, one seed, at 3e9 nodes: simple 2.472e-02, weighted 3.052e-02, clip
+at 4 2.955e-02, clip at 16 2.979e-02 (about half the gap closed at 5.6e8 by
+clipping at 4, a sixth at 3e9). The unbiased average loses because of the
+reweighting itself, not because of a few large weights, and `Simple` stays
+the default.
+
+Checks: 9 new tests (suite at 447, 239 s). Engine event counts on a scripted
+book. Event rounds on five-player Figgie: zero-sum payoffs, the round never
+skipping, at most one turn each per round, only taking actions in the closing
+turn, a passing round ending the game and a first bid ending the round. The
+deployed event bot acting once against a passive field when it passes and
+twice when its repeated bid is rejected. The field game: only seat 0 decides,
+one decision against a passive field, more than two a game against the real
+bots, a wrong field size rejected. Event-paced training beating uniform by
+four standard errors. Average sampling on Kuhn (NashConv under 0.01 at 50,000
+iterations, value -1/18) and running more Leduc iterations per node than
+`Every`. `Clipped 1` equal to `Simple` and `Clipped infinity` equal to
+`Weighted` bit for bit on kuhn3, `Clipped 16` beating simple in the frozen
+test, and clipped runs matching two-player MCCFR exactly.
+
+Next: the abstraction itself. Finer value buckets, quote prices relative to
+the book instead of value, and other suits than the favourite (the five-player
+result suggests that is where the noise trader's money goes), checked with an
+LBR-style probe that plays the real engine's full action set against the
+abstract profile. Then deeper horizons: the key has one digit for the round,
+so more than nine event rounds needs a different encoding.

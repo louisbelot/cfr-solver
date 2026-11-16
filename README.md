@@ -558,9 +558,8 @@ closes about half the gap to simple averaging at 1e7 and 1e8 nodes, a third at
 the end is the reweighting itself: `Simple` counts an iteration less when a
 third player was unlikely to let the game reach the node, which the textbook
 average does not do, and in this game that turns out to be the better average.
-The clipped runs also cost what weighted costs, 91 s of CPU for the three
-seeds against 79 s for simple, since they compute the reach product at every
-opponent node.
+Four-player Leduc, one seed, says the same: at 3e9 nodes simple is at
+2.472e-02, weighted 3.052e-02, clipped at 4 2.955e-02 and at 16 2.979e-02.
 
 ![NashConv against nodes touched in eight-card three-player Leduc](docs/es-leduc3.svg)
 
