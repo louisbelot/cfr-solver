@@ -178,6 +178,123 @@ let brute_gap () =
       best (Correlated.gain mix s)
   done
 
+let brute_coarse () =
+  let tree = kuhn2 in
+  let tp = Treeplex.build tree in
+  let rng = Rng.make 11 in
+  let profiles = List.init 3 (fun _ -> random_flat tree rng) in
+  let mix = Correlated.create tp in
+  List.iter (Correlated.add mix) profiles;
+  let set flat pi =
+    let f = Array.copy flat in
+    List.iter
+      (fun (k, a) ->
+        for b = 0 to Array.length tree.labels.(k) - 1 do
+          f.(tree.offset.(k) + b) <- (if a = b then 1. else 0.)
+        done)
+      pi;
+    f
+  in
+  let prob flat pi =
+    List.fold_left (fun w (k, a) -> w *. flat.(tree.offset.(k) + a)) 1. pi
+  in
+  let reaches k pi =
+    let s = tp.parent.(k) in
+    s < 0
+    ||
+    let j = Treeplex.infoset tp s in
+    List.assoc j pi = s - tree.offset.(j)
+  in
+  Array.iteri
+    (fun k _ ->
+      let p = tree.owner.(k) in
+      let sub = Array.to_list tp.subtree.(k) in
+      let ys =
+        List.map
+          (List.filter (fun (j, _) -> List.mem j sub))
+          (pure_strategies tree p)
+        |> List.sort_uniq compare
+      in
+      let gain y =
+        List.fold_left
+          (fun acc flat ->
+            List.fold_left
+              (fun acc pi ->
+                let dev =
+                  if reaches k pi then
+                    List.map
+                      (fun (j, b) ->
+                        if List.mem j sub then (j, List.assoc j y) else (j, b))
+                      pi
+                  else pi
+                in
+                let u pi = (Multi_br.payoff tree (set flat pi)).(p) in
+                acc +. (prob flat pi *. (u dev -. u pi)))
+              acc (pure_strategies tree p))
+          0. profiles
+        /. float_of_int (List.length profiles)
+      in
+      let best =
+        List.fold_left (fun m y -> Float.max m (gain y)) Float.neg_infinity ys
+      in
+      close ~eps:1e-12
+        (Printf.sprintf "infoset %s" tree.keys.(k))
+        best
+        (Correlated.coarse_gain mix k))
+    tree.keys
+
+let nested () =
+  let rng = Rng.make 5 in
+  List.iter
+    (fun tree ->
+      let tp = Treeplex.build tree in
+      let mix = Correlated.create tp in
+      for _ = 1 to 4 do
+        Correlated.add mix (random_flat tree rng)
+      done;
+      Array.iteri
+        (fun k _ ->
+          let sum = ref 0. in
+          for s = tree.offset.(k) to tree.offset.(k + 1) - 1 do
+            sum := !sum +. Correlated.gain mix s
+          done;
+          if Correlated.coarse_gain mix k > !sum +. 1e-12 then
+            Alcotest.failf "infoset %s: coarse %g > %g" tree.keys.(k)
+              (Correlated.coarse_gain mix k)
+              !sum)
+        tree.keys;
+      let e = Correlated.gap mix
+      and c = Correlated.gap ~concept:Efcce mix
+      and nf = Correlated.gains ~concept:Nfcce mix in
+      if c > e *. float_of_int (Array.length tree.keys) then
+        Alcotest.failf "efcce %g vs efce %g" c e;
+      Array.iter (fun g -> if g < 0. then Alcotest.failf "nfcce %g" g) nf)
+    [ kuhn2; kuhn3 ]
+
+let single_profile () =
+  let rng = Rng.make 3 in
+  List.iter
+    (fun tree ->
+      let flat = random_flat tree rng in
+      let mix = Correlated.create (Treeplex.build tree) in
+      Correlated.add mix flat;
+      let profile =
+        Array.fold_left
+          (fun (acc, k) key ->
+            let n = Array.length tree.labels.(k) in
+            ( Strategy.add key ~actions:tree.labels.(k)
+                ~probs:(Array.sub flat tree.offset.(k) n)
+                acc,
+              k + 1 ))
+          (Strategy.empty, 0) tree.keys
+        |> fst
+      in
+      let br = Multi_br.gains tree profile in
+      Array.iteri
+        (fun i g -> close ~eps:1e-12 (Printf.sprintf "player %d" i) br.(i) g)
+        (Correlated.gains ~concept:Nfcce mix))
+    [ kuhn2; kuhn3 ]
+
 let correlated_equilibrium () =
   let tree = tree_of Bimatrix.chicken in
   let t = Efce.create tree in
@@ -290,6 +407,9 @@ let tests =
     Alcotest.test_case "fixed point kuhn" `Quick (fixed_point kuhn2 3);
     Alcotest.test_case "fixed point kuhn3" `Quick (fixed_point kuhn3 5);
     Alcotest.test_case "gap matches brute force" `Quick brute_gap;
+    Alcotest.test_case "coarse gain matches brute force" `Quick brute_coarse;
+    Alcotest.test_case "coarse below efce" `Quick nested;
+    Alcotest.test_case "nfcce is best response" `Quick single_profile;
     Alcotest.test_case "chicken correlated" `Quick correlated_equilibrium;
     Alcotest.test_case "kuhn value" `Quick zero_sum;
     Alcotest.test_case "kuhn3 gap shrinks" `Quick three_player;
