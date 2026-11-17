@@ -1456,6 +1456,76 @@ The float tableau solves one round up to ten items in 0.18 s. Two rounds is
 where the dense simplex stops scaling: 1,135 rows take 44 s with the exact
 solver warm-started from the float basis.
 
+### Coarse correlation and sampled play
+
+EFCE is the strongest of three nested notions. In an EFCE a player sees each
+recommendation before deciding to deviate. In an extensive-form coarse
+correlated equilibrium (EFCCE, Farina, Bianchi and Sandholm 2020) the player
+must decide on reaching an infoset, before seeing the action recommended
+there. In a normal-form coarse correlated equilibrium (NFCCE) the only allowed
+deviation is to ignore the mediator from the start. Every EFCE is an EFCCE and
+every EFCCE is an NFCCE.
+
+The EFCCE gap reuses the EFCE machinery with one trigger per infoset instead of
+per sequence. The deviator's weight is the probability that the recommended
+plan reaches the infoset (the parent sequence's realization weight) and the
+deviation is the best continuation over the same subtree. The NFCCE gain of a
+player is the sum of the EFCCE gains at that player's root infosets, so a
+single product profile gives back the usual best-response gain.
+
+The empirical frequency of CFR's iterates has NFCCE gap at most the largest
+player's average external regret, so it goes to zero in any game. Nothing
+bounds its EFCE gap. `Coarse` is CFR written over the treeplex (regret matching
+on counterfactual values from the sequence-form gradient), with two ways of
+recording play: the exact mixture of the product profiles (like CFR-Jr), or
+one sampled pure plan per player per iteration, with regrets updated against
+the opponents' sampled plans (CFR-S, Celli, Marchesi, Bianchi and Gatti 2019).
+The trigger dynamics take the same sampling option, which is the setting of
+ICFR (Celli et al. 2020). `average` is the product of CFR's average
+strategies, the classic output, which is not a coarse correlated equilibrium
+in general-sum games.
+
+```
+cfr-solver cce -g shapley -n 100000 -r cfr-s,trigger-s --concept efce
+cfr-solver cce -g sheriff --items 3 --rounds 2 -n 100000 --concept efcce
+cfr-solver cce -g leduc3 -n 1000
+```
+
+Shapley's game shows the gap between the notions cleanly. Started from the
+uniform Nash point, expected CFR never moves, but sampled play does. After
+100,000 iterations CFR-S has a coarse gap of 1.4e-4 and a correlated
+equilibrium gap of 0.093 that has hovered near 0.1 since iteration 100: regret
+matching against sampled opponents cycles around the game, and the cycle is a
+coarse equilibrium that both players would leave once they see their
+recommendation. The sampled trigger dynamics get the CE gap down to 1.0e-3.
+
+![EFCE gap of sampled play on Shapley's game](docs/cce-shapley.svg)
+
+Gaps at the end of each run (one seed for the sampled runs):
+
+| game | run | EFCE | EFCCE | NFCCE |
+|------|-----|-----:|------:|------:|
+| Sheriff 3/2, 1e5 it. | cfr | 9.55e-03 | 9.65e-03 | 9.65e-03 |
+| | cfr-s | 7.56e-02 | 3.90e-02 | 5.33e-03 |
+| | average | 1.29e-02 | 1.35e-02 | 1.35e-02 |
+| | trigger | 6.61e-03 | 4.91e-03 | 4.91e-03 |
+| | trigger-s | 5.38e-02 | 4.61e-02 | 4.61e-02 |
+| Leduc, 3 players, 1e3 it. | cfr | 8.79e-03 | 1.16e-02 | 3.38e-02 |
+| | cfr-s | 2.17e-02 | 2.24e-02 | 9.78e-02 |
+| | average | 1.14e-02 | 1.75e-02 | 4.91e-02 |
+| | trigger | 4.89e-03 | 6.99e-03 | 2.48e-02 |
+| | trigger-s | 3.58e-02 | 4.45e-02 | 1.99e-01 |
+
+On two-round Sheriff CFR-S has the second smallest NFCCE gap (5.3e-3, behind
+the trigger dynamics) and the largest EFCE gap (7.6e-2). The sampled trigger
+dynamics beat CFR-S there only on the EFCE gap they are built for, and on
+Leduc after 1,000 iterations they trail it on all three. Sampling adds
+O(1/sqrt T) noise on top of the regret bound, and these are single seeds. On
+Leduc the NFCCE gap is the largest of the three because it sums over each
+player's root infosets (one per private card).
+
+![EFCCE gap on two-round Sheriff](docs/cce-sheriff.svg)
+
 ## A market-making game
 
 Trading interviews like "make me a market on the sum of these cards". `Market`
@@ -3344,6 +3414,18 @@ independent one computed on the game itself (string keys, own reach summed
 over histories rather than once per infoset) for twelve iterations of Kuhn.
 With exact memories Kuhn must get under 0.01 in 200 iterations, and the
 network version under 0.04 in 80, for both SD-CFR and the strategy network.
+
+The EFCE gap of a mixture of three random Kuhn profiles is checked against
+brute force (every pure plan of the deviator, every pure continuation of every
+trigger), and the EFCCE gain of every infoset the same way with the trigger
+moved from the sequence to the infoset. The NFCCE gains of a single profile
+equal the best-response gains, and an infoset's EFCCE gain never exceeds the
+sum of its sequences' EFCE gains. `Coarse` with expected play matches
+`Multi_cfr` to 1e-10 in current and average strategy for 200 iterations of
+three-player Kuhn with perturbed payoffs (the plain game has exact ties, where
+regret matching flips on rounding). Sampled plans must be pure and hit each
+action with its probability within 0.015 over 20,000 draws, and CFR-S has to
+cut its NFCCE gap by a factor of three between 500 and 20,000 iterations.
 
 ## License
 
