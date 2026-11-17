@@ -7,6 +7,7 @@ let game name items rounds : (module Multi.S) =
   | "kuhn" -> (module (val Kuhn_n.game 2))
   | "kuhn3" -> (module (val Kuhn_n.game 3))
   | "leduc" -> (module (val Leduc_n.game 2))
+  | "leduc3" -> (module (val Leduc_n.game 3))
   | "chicken" -> Bimatrix.chicken
   | "shapley" -> Bimatrix.shapley
   | _ -> Sheriff.game { Sheriff.baseline with items; rounds }
@@ -109,6 +110,97 @@ let dynamics name items rounds iterations chosen csv svg =
     Ok ()
   with Sys_error msg -> Error (`Msg msg)
 
+let coarse_runs = [ "cfr"; "cfr-s"; "average"; "trigger"; "trigger-s" ]
+let concepts = Correlated.[ ("efce", Efce); ("efcce", Efcce); ("nfcce", Nfcce) ]
+
+let coarse_trace tree seed run marks =
+  let rng = Rng.make seed in
+  let step, mixture =
+    match run with
+    | "trigger" | "trigger-s" ->
+        let rng = if run = "trigger" then None else Some rng in
+        let t = Efce.create ~plus:true ?rng tree in
+        ((fun () -> Efce.iterate t), fun () -> Efce.mixture t)
+    | "average" ->
+        let t = Coarse.create tree in
+        ( (fun () -> Coarse.iterate t),
+          fun () ->
+            let m = Correlated.create (Treeplex.build tree) in
+            Correlated.add m (Coarse.average t);
+            m )
+    | _ ->
+        let rng = if run = "cfr" then None else Some rng in
+        let t = Coarse.create ?rng tree in
+        ((fun () -> Coarse.iterate t), fun () -> Coarse.mixture t)
+  in
+  let done_ = ref 0 in
+  List.map
+    (fun k ->
+      while !done_ < k do
+        step ();
+        incr done_
+      done;
+      let m = mixture () in
+      (k, List.map (fun (_, c) -> Correlated.gap ~concept:c m) concepts))
+    marks
+
+let coarse name items rounds iterations seed chosen concept svg =
+  let g = game name items rounds in
+  let (module G : Multi.S) = g in
+  let tree = Multi_tree.build g in
+  Format.printf "%s: %d players, %d infosets@.@." G.name G.players
+    (Array.length tree.keys);
+  let marks = log_checkpoints 4 iterations in
+  let results =
+    List.map (fun r -> (r, coarse_trace tree seed r marks)) chosen
+  in
+  let index = ref 0 in
+  List.iteri (fun i (n, _) -> if n = concept then index := i) concepts;
+  Format.printf "%s gap@.%10s" concept "iteration";
+  List.iter (fun (r, _) -> Format.printf "%11s" r) results;
+  Format.printf "@.";
+  List.iteri
+    (fun i k ->
+      Format.printf "%10d" k;
+      List.iter
+        (fun (_, rows) ->
+          Format.printf "%11s" (sci (List.nth (snd (List.nth rows i)) !index)))
+        results;
+      Format.printf "@.")
+    marks;
+  Format.printf "@.after %d iterations@.%-10s" iterations "";
+  List.iter (fun (c, _) -> Format.printf "%11s" c) concepts;
+  Format.printf "@.";
+  List.iter
+    (fun (r, rows) ->
+      Format.printf "%-10s" r;
+      List.iter
+        (fun v -> Format.printf "%11s" (sci v))
+        (snd (List.nth rows (List.length rows - 1)));
+      Format.printf "@.")
+    results;
+  try
+    Option.iter
+      (fun path ->
+        Plot.loglog
+          ~title:
+            (Printf.sprintf "%s: %s gap" G.name
+               (String.uppercase_ascii concept))
+          ~xlabel:"iterations" ~ylabel:(concept ^ " gap")
+          (List.map
+             (fun (r, rows) ->
+               {
+                 Plot.label = r;
+                 dashed = String.ends_with ~suffix:"-s" r;
+                 points =
+                   List.map (fun (k, gaps) -> (k, List.nth gaps !index)) rows;
+               })
+             results)
+        |> write_file path)
+      svg;
+    Ok ()
+  with Sys_error msg -> Error (`Msg msg)
+
 let published =
   [
     ((1, 1), (3.00, 2.00));
@@ -159,10 +251,18 @@ let cmds =
           (enum
              (List.map
                 (fun n -> (n, n))
-                [ "kuhn"; "kuhn3"; "leduc"; "sheriff"; "chicken"; "shapley" ]))
+                [
+                  "kuhn";
+                  "kuhn3";
+                  "leduc";
+                  "leduc3";
+                  "sheriff";
+                  "chicken";
+                  "shapley";
+                ]))
           "kuhn3"
       & info [ "g"; "game" ] ~docv:"GAME"
-          ~doc:"kuhn, kuhn3, leduc, sheriff, chicken or shapley.")
+          ~doc:"kuhn, kuhn3, leduc, leduc3, sheriff, chicken or shapley.")
   in
   let items =
     Arg.(
@@ -202,6 +302,31 @@ let cmds =
         term_result
           (const dynamics $ name $ items $ rounds $ iterations $ chosen
           $ file [ "csv" ] "Write the trace as CSV."
+          $ file [ "svg" ] "Write the gap chart as SVG."));
+    Cmd.v
+      (Cmd.info "cce"
+         ~doc:
+           "EFCE, EFCCE and NFCCE gaps of CFR, sampled CFR (CFR-S), \
+            the             product of CFR's average strategies and the \
+            trigger dynamics.")
+      Term.(
+        term_result
+          (const coarse $ name $ items $ rounds $ iterations
+          $ Arg.(
+              value & opt int 1
+              & info [ "seed" ] ~docv:"N" ~doc:"Sampling seed.")
+          $ Arg.(
+              value
+              & opt
+                  (list (enum (List.map (fun r -> (r, r)) coarse_runs)))
+                  coarse_runs
+              & info [ "r"; "runs" ] ~docv:"LIST"
+                  ~doc:"Any of cfr, cfr-s, average, trigger, trigger-s.")
+          $ Arg.(
+              value
+              & opt (enum (List.map (fun (n, _) -> (n, n)) concepts)) "nfcce"
+              & info [ "concept" ] ~docv:"C"
+                  ~doc:"Gap to chart: efce, efcce or nfcce.")
           $ file [ "svg" ] "Write the gap chart as SVG."));
     Cmd.v
       (Cmd.info "efce-welfare"
