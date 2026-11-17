@@ -1,6 +1,6 @@
 type t
 
-val create : ?plus:bool -> Multi_tree.t -> t
+val create : ?plus:bool -> ?rng:Rng.t -> Multi_tree.t -> t
 val iterate : t -> unit
 val run : t -> int -> unit
 val iterations : t -> int

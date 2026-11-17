@@ -3,6 +3,7 @@ open Treeplex
 type t = {
   tp : Treeplex.t;
   plus : bool;
+  rng : Rng.t option;
   mixture : Correlated.t;
   trigger : float array;
   regret : float array array;
@@ -13,7 +14,7 @@ type t = {
   mutable iterations : int;
 }
 
-let create ?(plus = false) tree =
+let create ?(plus = false) ?rng tree =
   let tp = Treeplex.build tree in
   let slots = Multi_tree.slots tree in
   let span s =
@@ -23,6 +24,7 @@ let create ?(plus = false) tree =
   {
     tp;
     plus;
+    rng;
     mixture = Correlated.create tp;
     trigger = Array.make slots 0.;
     regret = Array.init slots (fun s -> Array.make (span s) 0.);
@@ -180,8 +182,15 @@ let iterate t =
   strategies t;
   let flat, x = fixed_point t.tp ~lambda:t.lambda ~local:t.local in
   Array.blit flat 0 t.flat 0 (Array.length flat);
-  let g, u = gradients t.tp flat in
-  Correlated.record t.mixture x g u;
+  let played, plan =
+    match t.rng with
+    | None -> (flat, x)
+    | Some rng ->
+        let p = sample t.tp rng flat in
+        (p, plans t.tp p)
+  in
+  let g, u = gradients t.tp played in
+  Correlated.record t.mixture plan g u;
   update t g x;
   t.iterations <- t.iterations + 1
 
