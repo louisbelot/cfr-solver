@@ -2784,3 +2784,89 @@ Next: a sparse LP for the correlation plan so two- and three-round Sheriff
 (and Battleship) solve in seconds, then sampled play (one pure profile per
 iteration, as in Celli et al.) where CFR's empirical frequency is known to
 stall, and steering learners toward the welfare-optimal EFCE.
+
+## 2026-11-17: coarse correlation and sampled play
+
+Built:
+
+- `Correlated` takes a concept: `Efce`, `Efcce` or `Nfcce`. EFCCE triggers
+  sit on infosets instead of sequences, weighted by the realization weight of
+  the infoset's parent sequence; the deviation is the same backward pass over
+  the infoset's subtree. NFCCE gains are the sum of the EFCCE gains at a
+  player's root infosets.
+- `Treeplex.sample`: one pure plan from a behavioral profile, one action per
+  infoset.
+- `Coarse`: CFR over the treeplex. Regret matching (or RM+) on counterfactual
+  values built from the sequence-form gradient, recording either the exact
+  product mixture or one sampled pure profile per iteration (CFR-S, Celli et
+  al. 2019), with regrets taken against the opponents' sampled plans.
+  `average` gives the product of the average strategies.
+- `Efce.create ?rng` samples the same way (the ICFR setting of Celli et al.
+  2020), still weighting its own triggers by its expected plan.
+- `cce` command: five runs (cfr, cfr-s, average, trigger, trigger-s), all
+  three gaps, `leduc3` added to the game list. `docs/cce-shapley.svg` and
+  `docs/cce-sheriff.svg`.
+
+Design notes:
+
+- For a product profile the EFCCE deviation at infoset I only needs
+  x(parent(I)) times the gradient over I's subtree, because the player's own
+  randomness is independent of the others'. The follow value is the sum of
+  the EFCE follow values of I's sequences, kept as one number per infoset.
+- Summing the root EFCCE gains gives the NFCCE gain exactly: terminals where
+  the player never acts appear in neither the deviation nor the follow value,
+  so they cancel instead of needing a separate full best response.
+- Sampled play feeds the pure profile into the same `gradients` call. Player
+  i's gradient never uses i's own reach, so only the opponents' samples
+  matter, which is the CFR-S update.
+- The first cross-check against `Multi_cfr` on Kuhn3 failed at iteration 1:
+  some infosets have two actions with exactly equal counterfactual values,
+  and the two codes sum them in different orders, so one regret came out at
+  +1e-17 and regret matching went pure. The check runs on Kuhn3 with payoffs
+  perturbed by up to 0.1 from a hash of the history instead.
+- `Multi_cfr.current_strategy` is the next iterate (regret matching on the
+  updated regrets), so `Coarse.current` does the same rather than returning
+  the profile it just played.
+
+Checks:
+
+- EFCCE gain of every Kuhn infoset against brute force over every pure plan
+  of the deviator and every pure continuation, for a mixture of three random
+  profiles: equal to 1e-12.
+- NFCCE gains of one random profile equal `Multi_br.gains` to 1e-12 on Kuhn
+  and Kuhn3; EFCCE gain at an infoset never above the sum of its sequences'
+  EFCE gains.
+- Expected `Coarse` matches `Multi_cfr` vanilla to 1e-10 (current and
+  average) for 200 iterations of perturbed Kuhn3.
+- 20,000 samples: pure, frequencies within 0.015. CFR-S NFCCE gap on Kuhn3
+  and the sampled trigger dynamics' EFCE gap on Kuhn fall by 3x between 500
+  and 20,000 iterations and end under 0.02.
+- Full suite: 466 tests in 407 s.
+
+Results:
+
+Shapley's game, 100,000 iterations: CFR-S has CCE gap 1.4e-4 and CE gap
+0.093, flat near 0.1 since iteration 100. The sampled trigger dynamics reach
+CE gap 1.0e-3. Expected CFR stays at the uniform Nash point.
+
+| game | run | EFCE | EFCCE | NFCCE |
+|------|-----|-----:|------:|------:|
+| Sheriff 3/2, 1e5 it. | cfr | 9.55e-03 | 9.65e-03 | 9.65e-03 |
+| | cfr-s | 7.56e-02 | 3.90e-02 | 5.33e-03 |
+| | average | 1.29e-02 | 1.35e-02 | 1.35e-02 |
+| | trigger | 6.61e-03 | 4.91e-03 | 4.91e-03 |
+| | trigger-s | 5.38e-02 | 4.61e-02 | 4.61e-02 |
+| Leduc3, 1e3 it. | cfr | 8.79e-03 | 1.16e-02 | 3.38e-02 |
+| | cfr-s | 2.17e-02 | 2.24e-02 | 9.78e-02 |
+| | average | 1.14e-02 | 1.75e-02 | 4.91e-02 |
+| | trigger | 4.89e-03 | 6.99e-03 | 2.48e-02 |
+| | trigger-s | 3.58e-02 | 4.45e-02 | 1.99e-01 |
+
+All five Sheriff runs together take 31 s, the five Leduc3 runs 77 s.
+Goofspiel is left out: the implementation here is two-player zero-sum, where
+the product of CFR's averages already converges to a Nash equilibrium, which
+is an EFCE. The sampled runs are one seed each where
+Celli et al. average 50.
+
+Next: steering learners to the welfare-optimal EFCE on Sheriff against the LP
+optimum, then a sparse correlation-plan LP for two and three rounds.
