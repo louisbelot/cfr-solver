@@ -13,3 +13,4 @@ val actions : t -> int -> int
 val plans : t -> float array -> float array
 val gradients : t -> float array -> float array array * float array
 val sums : t -> float array array -> float array -> float array
+val sample : t -> Rng.t -> float array -> float array

@@ -140,3 +140,11 @@ let sums tp g x =
     done
   done;
   part
+
+let sample t rng flat =
+  let off = t.tree.offset in
+  let f = Array.make (Array.length flat) 0. in
+  for k = 0 to Array.length t.parent - 1 do
+    f.(off.(k) + Rng.pick rng flat off.(k) (actions t k)) <- 1.
+  done;
+  f
