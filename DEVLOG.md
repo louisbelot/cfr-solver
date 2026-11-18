@@ -2870,3 +2870,95 @@ Celli et al. average 50.
 
 Next: steering learners to the welfare-optimal EFCE on Sheriff against the LP
 optimum, then a sparse correlation-plan LP for two and three rounds.
+
+## 2026-11-18: steering learners to the best EFCE
+
+Built:
+
+- `Efce_lp.mass`: the LP's correlation plan xi(sigma0, sigma1) on relevant
+  pairs, read back from the solution.
+- `Mediator.game`: the mediator-augmented game of a two-player game without
+  chance, sampling recommendations lazily from the plan. `Mediator.direct`
+  is the obeying profile.
+- `Learner`: the regret-matching core of `Coarse` (regrets, current and
+  average behavior, one backward pass per gradient), pulled out so `Steer`
+  can drive it with modified gradients. `Coarse` now uses it.
+- `Steer`: simultaneous CFR+ in the augmented game with the TrajectorySteer
+  payments of Zhang, Farina et al. (EC 2024): alpha to everyone when all
+  obey, P to each obeying player when someone deviated. Tracks welfare,
+  off-direct mass and payment per round, current and averaged.
+- `steer` command with a welfare-gap chart and a payment chart
+  (`docs/steer-welfare.svg`, `docs/steer-payments.svg`).
+
+Design notes:
+
+- No decomposition of the plan into pure joint plans. Each player carries
+  rho, the last sequence the mediator recommended to it; at infoset I of
+  player p the recommendation is a with probability
+  xi(rho_p a, rho_q) / xi(rho_p, rho_q). A deviator stops getting
+  recommendations and its rho freezes at the trigger. Both pairs are
+  relevant because rho_p and rho_q end at infosets on the current path, and
+  the ratios telescope: obeying reaches z with probability xi(z), a deviation
+  after trigger sigma reaches it with xi(sigma, sigma_q(z)). Those are the
+  two sides of the LP's incentive rows, so obeying is a Nash equilibrium of
+  the augmented game exactly when the plan is an EFCE.
+- A mediator that sees every query would be stronger than EFCE: it could
+  notice a missing query and punish a deviation the other player can't see.
+  The optimal-equilibria paper (Zhang et al., NeurIPS 2023) gives the EFCE
+  mediator imperfect recall for this reason. Sampling from the plan's ratios
+  sidesteps the issue because the mediator only ever conditions on
+  recommendations, never on who asked.
+- Payments only depend on the leaf, so they are two extra leaf-payoff
+  games (all obeyed; this player obeyed and someone else didn't) built once.
+  The learners' gradient is g + alpha g_bonus + P g_fine, three
+  `Treeplex.gradients` passes per iteration.
+- With no payments the augmented game changes nothing: every copy of an
+  infoset gets the same update from a uniform start, so the recommendation is
+  never read. On Sheriff the averages match plain CFR+ to every printed
+  digit. On Chicken the copies sit at the mixed Nash point (1/3, 2/3) until
+  about iteration 100, then rounding differences grow (the point is unstable
+  under CFR+) and the learners split onto obeying.
+- The float simplex does not finish the two-round LP (left over a minute);
+  the exact one takes 44 s, so the command and the tests use the exact
+  solver and the tests solve the two-round game once.
+
+Checks:
+
+- Obeying in the mediated game gives the LP's values and no `Multi_br`
+  gain above 1e-9 on Chicken and on Sheriff with 1, 2, 3 items and one
+  round and with one item and two rounds (the gains are exactly 0 with the
+  exact LP on three items).
+- A Chicken plan with all weight on (swerve, swerve) shows a gain of exactly
+  1 for each player.
+- At the obeying profile `Steer.evaluate` reports the LP welfare, zero
+  off-direct mass and a payment of 2 alpha.
+- Three-item Sheriff with P = 4, alpha = 0.1: after 2,000 iterations the
+  current profile obeys, welfare equals the LP to 1e-6 and the payment is
+  0.2. Unpaid learners stay off-direct with welfare under a third of the
+  optimum.
+- Full suite: 473 tests in 271 s.
+
+Results (three-item Sheriff, one round, 10,000 iterations, alpha = 0.1):
+
+| run | average welfare | off-direct (avg) | paid per round (avg) |
+|-----|----------------:|-----------------:|---------------------:|
+| CFR+, no mediator | 0.8080 | | |
+| mediated, unpaid | 0.8080 | 0.9999 | 0 |
+| P = 1 | 1.2465 | 0.9995 | 0.783 |
+| P = 4 | 5.3160 | 4.1e-3 | 0.2155 |
+| P = 16 | 5.3151 | 4.7e-4 | 0.2068 |
+
+The SW-max EFCE is worth 5.3165. P = 1 is below what Sheriff's payoff range
+(about 18) needs. With P = 4 the current profile obeys exactly from
+iteration 136 and what the mediator keeps paying is the 2 alpha bonus;
+alpha_t = 0.5 t^(-1/4) brings the last round down to 0.1 and the average to
+0.138. Chicken: unpaid mediated CFR+ averages 10.48, P = 4 reaches 10.4997
+of the CE's 10.5, plain CFR+ 9.33. On the paper's own Sheriff instance (one
+item, two rounds) plain CFR+ already averages 4.998 of the optimal 5, so
+there is little to steer. The five runs of the `steer` command take 0.95 s
+for 10,000 iterations.
+
+Next: the trajectory-feedback version with sampled play (one leaf per
+round, outcome-sampling learners), where the paper shows constant P cannot
+work in general, and the optimal-equilibrium Lagrangian solved by CFR
+against the LP.
