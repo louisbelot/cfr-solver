@@ -54,10 +54,44 @@ let recommended () =
     (Mediator.recommended "?0p#1.0.2");
   Alcotest.(check (option int)) "off" None (Mediator.recommended "?0p#1#off")
 
+let three =
+  lazy (mediated (Sheriff.game { Sheriff.baseline with items = 3; rounds = 1 }))
+
+let at_direct () =
+  let r, med = Lazy.force three in
+  let d = Mediator.direct med in
+  let t = Steer.create ~pay:4. med ~direct:d in
+  let s = Steer.evaluate t ~alpha:0.25 d in
+  close "welfare" (r.values.(0) +. r.values.(1)) s.welfare;
+  close "off" 0. s.off;
+  close "payment" 0.5 s.payment
+
+let converges () =
+  let r, med = Lazy.force three in
+  let d = Mediator.direct med in
+  let t = Steer.create ~alpha:(fun _ -> 0.1) ~pay:4. med ~direct:d in
+  Steer.run t 2000;
+  let s = Steer.last t in
+  if s.off > 1e-6 then Alcotest.failf "off-direct mass %g" s.off;
+  close ~eps:1e-6 "welfare" (r.values.(0) +. r.values.(1)) s.welfare;
+  close ~eps:1e-6 "payment" 0.2 s.payment
+
+let unsteered () =
+  let r, med = Lazy.force three in
+  let t = Steer.create med ~direct:(Mediator.direct med) in
+  Steer.run t 2000;
+  let s = Steer.average t in
+  if s.off < 0.99 then Alcotest.failf "off-direct mass %g" s.off;
+  if s.welfare > (r.values.(0) +. r.values.(1)) /. 3. then
+    Alcotest.failf "welfare %g" s.welfare
+
 let tests =
   [
     Alcotest.test_case "chicken mediator" `Quick chicken;
     Alcotest.test_case "sheriff mediator" `Quick sheriff;
     Alcotest.test_case "swerve is not a ce" `Quick not_equilibrium;
     Alcotest.test_case "recommendation keys" `Quick recommended;
+    Alcotest.test_case "payments at direct" `Quick at_direct;
+    Alcotest.test_case "steering converges" `Quick converges;
+    Alcotest.test_case "no payments, no obedience" `Quick unsteered;
   ]
