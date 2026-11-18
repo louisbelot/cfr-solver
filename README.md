@@ -1456,6 +1456,94 @@ The float tableau solves one round up to ten items in 0.18 s. Two rounds is
 where the dense simplex stops scaling: 1,135 rows take 44 s with the exact
 solver warm-started from the float basis.
 
+### Steering learners to it
+
+The LP gives the welfare-optimal EFCE, but learners left alone don't find it.
+Zhang, Farina et al. (EC 2024) ask what a mediator has to pay no-regret
+learners to steer them there. The setting is the mediator-augmented game: a
+mediator draws recommendations, each player sees its own recommendation when
+it reaches an infoset, and the direct strategy is to obey. A plan is an EFCE
+exactly when obeying is a Nash equilibrium of that game.
+
+`Mediator.game` builds the augmented game straight from the correlation plan,
+with no decomposition into pure plans. Each player carries the last sequence
+the mediator recommended to it. At an infoset I of player p the
+recommendation is a with probability xi(rho_p a, rho_q) / xi(rho_p, rho_q),
+where rho_q is the other player's recommended sequence. A player who
+disobeys stops getting recommendations and its rho freezes at the trigger.
+Both pairs are relevant because rho_p and rho_q end at infosets on the
+current path. Products of the ratios telescope, so obeying reaches leaf z
+with probability xi(z), and a deviation after trigger sigma reaches it with
+xi(sigma, sigma_q(z)). Those are exactly the follow and deviation terms in the
+LP's incentive rows. Each player's infoset is its original infoset plus the
+recommendations it has seen.
+
+`Steer` runs simultaneous CFR+ for both players in that game with
+TrajectorySteer payments, which depend only on the leaf reached. If everyone
+obeyed, each player gets alpha; if someone deviated, every player who obeyed
+gets P. Payments are linear in leaf payoffs, so the learners' gradients are
+the game's gradients plus alpha and P times the gradients of two indicator
+games built once.
+
+```
+cfr-solver steer -g sheriff --items 3 --rounds 1 -n 10000 --pay 1,4,16
+```
+
+```
+sheriff-3-2-1: SW-max EFCE 5.3165 (3.8861, 1.4304), exact LP 0.0 s
+mediated game: 34 infosets (original 8), direct gains 0.000e+00 0.000e+00
+
+average welfare
+ iteration       cfr+   mediated        P=1        P=4       P=16
+        10     2.7643     2.7643     3.2223     5.3300     4.5453
+       100     1.3702     1.3702     1.6255     5.3015     5.1824
+      1000     0.9450     0.9450     1.2810     5.3123     5.3030
+     10000     0.8080     0.8080     1.2465     5.3160     5.3151
+
+after 10000 iterations
+              off avg   off last   paid avg  paid last
+mediated    9.999e-01  1.000e+00  0.000e+00  0.000e+00
+P=1         9.995e-01  1.000e+00  7.829e-01  7.831e-01
+P=4         4.135e-03  0.000e+00  2.155e-01  2.000e-01
+P=16        4.738e-04  0.000e+00  2.068e-01  2.000e-01
+```
+
+(Rows trimmed to one per decade; alpha = 0.1.)
+"off" is the probability that some player disobeys.
+
+Unpaid CFR+ in the augmented game matches CFR+ in the original game to every
+printed digit. Both start uniform and recommendations change no payoff, so
+every copy of an infoset gets the same update and the recommendation is never
+used. P = 1 is too small here: Sheriff payoffs span about 18, and paying 1 to
+the players who obeyed doesn't make obeying worth it. With P = 4 the current
+profile obeys exactly from iteration 136 on (off-direct mass 0.1 at iteration
+99), and the average welfare reaches 5.316 against the LP's 5.3165. What's
+left is the cost of alpha: once everyone obeys, the mediator pays 2 alpha per
+round. With `--decay` (alpha_t = 0.5 t^(-1/4)) the last round costs 0.1 and
+the average 0.138 for P = 4.
+
+![Welfare gap to the SW-max EFCE on Sheriff with three items](docs/steer-welfare.svg)
+
+![Average payment per round](docs/steer-payments.svg)
+
+The gap curves dip because the steered average passes through the optimum
+on its way down: early rounds with off-direct play earn more than the
+equilibrium. Two other cases are worth noting. On Chicken, unpaid learners
+in the augmented game end up obeying (welfare 10.48 of the CE's 10.5,
+against 9.33 for plain CFR+), but only by accident. The copies stay equal at
+the mixed Nash point (1/3, 2/3) for about 100 iterations; that point is
+unstable under CFR+, rounding differences between the copies grow, and the
+dynamics split onto obeying. The Sheriff instance in the paper's experiments (one item, two rounds) is
+the opposite: plain CFR+ already averages 4.998 of the optimal 5, so steering
+has nothing to add there.
+
+The mediated game passes an independent check: `Multi_br` best responses
+against obeying gain nothing (exactly 0 with the exact LP, 2e-16 on the two-round
+game) and their values equal the LP's, on Chicken and on Sheriff with one to
+three items and one round, or one item and two rounds. A plan that puts all
+weight on both players swerving in Chicken gives each player a gain of
+exactly 1, the payoff of daring instead.
+
 ### Coarse correlation and sampled play
 
 EFCE is the strongest of three nested notions. In an EFCE a player sees each
@@ -3426,6 +3514,15 @@ three-player Kuhn with perturbed payoffs (the plain game has exact ties, where
 regret matching flips on rounding). Sampled plans must be pure and hit each
 action with its probability within 0.015 over 20,000 draws, and CFR-S has to
 cut its NFCCE gap by a factor of three between 500 and 20,000 iterations.
+
+The mediated game built from the SW-max plan has to give the LP's values
+under obeying and no best-response gain above 1e-9 (Chicken, Sheriff with
+one to three items in one round and one item in two rounds), while an
+all-swerve plan on Chicken must show a gain of exactly 1 for both players.
+At the direct profile `Steer` must report zero off-direct mass and a payment
+of 2 alpha. On three-item Sheriff, P = 4 has to reach obeying play, the LP
+welfare and a payment of 2 alpha within 2,000 iterations, and unpaid
+learners have to stay off-direct with welfare under a third of the optimum.
 
 ## License
 
