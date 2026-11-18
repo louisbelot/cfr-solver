@@ -243,6 +243,108 @@ let welfare items rounds exact =
         items)
     rounds
 
+let steer name items rounds iterations alpha decay pays svg payments_svg =
+  let g = game name items rounds in
+  let (module G : Multi.S) = g in
+  let tree = Multi_tree.build g in
+  let plan = Efce_lp.plan tree in
+  let t0 = Unix.gettimeofday () in
+  match Efce_lp.solve ~exact:true plan with
+  | None -> Error (`Msg "correlation-plan LP failed")
+  | Some r -> (
+      let lp = r.values.(0) +. r.values.(1) in
+      let med = Multi_tree.build (Mediator.game tree (Efce_lp.mass plan r)) in
+      let direct = Mediator.direct med in
+      let gains =
+        Multi_br.gains med
+          (Strategy.union
+             (Multi_br.strategy med 0 direct)
+             (Multi_br.strategy med 1 direct))
+      in
+      Format.printf "%s: SW-max EFCE %.4f (%.4f, %.4f), exact LP %.1f s@."
+        G.name lp r.values.(0) r.values.(1)
+        (Unix.gettimeofday () -. t0);
+      Format.printf
+        "mediated game: %d infosets (original %d), direct gains %s %s@.@."
+        (Array.length med.keys) (Array.length tree.keys)
+        (sci gains.(0))
+        (sci gains.(1));
+      let schedule t =
+        if decay then alpha *. (float_of_int t ** -0.25) else alpha
+      in
+      let runs =
+        ( "cfr+",
+          Steer.create tree ~direct:(Array.make (Multi_tree.slots tree) 0.) )
+        :: ("mediated", Steer.create med ~direct)
+        :: List.map
+             (fun p ->
+               ( Printf.sprintf "P=%g" p,
+                 Steer.create ~alpha:schedule ~pay:p med ~direct ))
+             pays
+      in
+      let marks = log_checkpoints 4 iterations in
+      let rows =
+        List.map
+          (fun k ->
+            ( k,
+              List.map
+                (fun (_, t) ->
+                  Steer.run t (k - Steer.iterations t);
+                  Steer.average t)
+                runs ))
+          marks
+      in
+      Format.printf "average welfare@.%10s" "iteration";
+      List.iter (fun (n, _) -> Format.printf "%11s" n) runs;
+      Format.printf "@.";
+      List.iter
+        (fun (k, stats) ->
+          Format.printf "%10d" k;
+          List.iter
+            (fun (s : Steer.stats) -> Format.printf "%11.4f" s.welfare)
+            stats;
+          Format.printf "@.")
+        rows;
+      Format.printf "@.after %d iterations@.%-10s%11s%11s%11s%11s@." iterations
+        "" "off avg" "off last" "paid avg" "paid last";
+      List.iter
+        (fun (n, t) ->
+          if n <> "cfr+" then
+            let a = Steer.average t and l = Steer.last t in
+            Format.printf "%-10s%11s%11s%11s%11s@." n (sci a.off) (sci l.off)
+              (sci a.payment) (sci l.payment))
+        runs;
+      let chart path ~ylabel ~title f =
+        Option.iter
+          (fun path ->
+            Plot.loglog ~title ~xlabel:"iterations" ~ylabel
+              (List.mapi
+                 (fun i (n, _) ->
+                   {
+                     Plot.label = n;
+                     dashed = i < 2;
+                     points =
+                       List.map
+                         (fun (k, stats) -> (k, f (List.nth stats i)))
+                         rows;
+                   })
+                 runs
+              |> List.filter (fun (s : Plot.series) ->
+                  s.label <> "cfr+"
+                  && List.exists (fun (_, y) -> y > 0.) s.points))
+            |> write_file path)
+          path
+      in
+      try
+        chart svg ~ylabel:"SW-max EFCE minus average welfare"
+          ~title:(Printf.sprintf "%s: welfare gap to the LP optimum" G.name)
+          (fun s -> Float.abs (lp -. s.welfare));
+        chart payments_svg ~ylabel:"average payment per round"
+          ~title:(Printf.sprintf "%s: cost of steering" G.name) (fun s ->
+            s.payment);
+        Ok ()
+      with Sys_error msg -> Error (`Msg msg))
+
 let cmds =
   let name =
     Arg.(
@@ -306,9 +408,8 @@ let cmds =
     Cmd.v
       (Cmd.info "cce"
          ~doc:
-           "EFCE, EFCCE and NFCCE gaps of CFR, sampled CFR (CFR-S), \
-            the             product of CFR's average strategies and the \
-            trigger dynamics.")
+           "EFCE, EFCCE and NFCCE gaps of CFR, sampled CFR (CFR-S), the \
+            product of CFR's average strategies and the trigger dynamics.")
       Term.(
         term_result
           (const coarse $ name $ items $ rounds $ iterations
@@ -338,4 +439,26 @@ let cmds =
         $ ints [ "items" ] [ 1; 2; 5; 10 ] "Item counts."
         $ ints [ "rounds" ] [ 1 ] "Round counts."
         $ Arg.(value & flag & info [ "exact" ] ~doc:"Exact rational simplex."));
+    Cmd.v
+      (Cmd.info "steer"
+         ~doc:
+           "Steer CFR+ learners to the SW-max EFCE with trajectory payments \
+            (Zhang, Farina et al. 2024), the mediator sampling from the LP's \
+            correlation plan.")
+      Term.(
+        term_result
+          (const steer $ name $ items $ rounds $ iterations
+          $ Arg.(
+              value & opt float 0.1
+              & info [ "alpha" ] ~docv:"A" ~doc:"Bonus for all-direct play.")
+          $ Arg.(
+              value & flag
+              & info [ "decay" ] ~doc:"Bonus alpha * t^(-1/4) instead of alpha.")
+          $ Arg.(
+              value
+              & opt (list float) [ 1.; 4. ]
+              & info [ "pay" ] ~docv:"LIST"
+                  ~doc:"Payments to direct players when someone deviates.")
+          $ file [ "svg" ] "Write the welfare-gap chart as SVG."
+          $ file [ "payments-svg" ] "Write the payment chart as SVG."));
   ]
