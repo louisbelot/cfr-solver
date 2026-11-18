@@ -4,6 +4,7 @@ let () =
       ("kuhn", Test_kuhn.tests);
       ("efce", Test_efce.tests);
       ("coarse", Test_coarse.tests);
+      ("steer", Test_steer.tests);
       ("team", Test_team.tests);
       ("tme", Test_tme.tests);
       ("flp", Test_flp.tests);
