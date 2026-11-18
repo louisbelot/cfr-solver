@@ -9,7 +9,7 @@ type plan = {
   pairs : int;
 }
 
-type result = { values : float array; vars : int; rows : int }
+type result = { values : float array; vars : int; rows : int; x : float array }
 
 let plan tree =
   if tree.players <> 2 then invalid_arg "Efce_lp: two players only";
@@ -177,5 +177,10 @@ let solve ?(exact = false) ?objective p =
           values.(0) <- values.(0) +. (w *. u.(0));
           values.(1) <- values.(1) +. (w *. u.(1)))
         p.leaves;
-      { values; vars; rows = List.length rows })
+      { values; vars; rows = List.length rows; x })
     solution
+
+let mass p r s0 s1 =
+  match Hashtbl.find_opt p.index (s0, s1) with
+  | Some i -> r.x.(i)
+  | None -> invalid_arg "Efce_lp.mass: irrelevant pair"
