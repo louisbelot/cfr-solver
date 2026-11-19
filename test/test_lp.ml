@@ -196,6 +196,98 @@ let degenerate_bound () =
           Float.abs (v -. Rat.to_float value) < 1e-7
       | _ -> false)
 
+let random_lp =
+  QCheck2.Gen.(
+    int_range 1 4 >>= fun vars ->
+    let coeffs = array_size (pure vars) (int_range (-3) 3) in
+    let rel = oneof_list [ Lp.Le; Lp.Ge; Lp.Eq ] in
+    quad (pure vars)
+      (list_size (int_range 1 5) (triple coeffs rel (int_range (-6) 6)))
+      coeffs int)
+
+let resumed () =
+  prop ~count:400 "resume from any basis matches dense" random_lp
+    (fun (vars, rows, obj, seed) ->
+      let rows =
+        List.map
+          (fun (a, rel, b) ->
+            row (List.init vars (fun j -> (j, i a.(j)))) rel (i b))
+          rows
+        @ List.init vars (fun j -> row [ (j, i 1) ] Le (i 4))
+      in
+      let obj = List.init vars (fun j -> (j, i obj.(j))) in
+      let m = List.length rows in
+      let rel (r : Lp.row) =
+        match r.rel with
+        | (Le | Ge) when Rat.sign r.rhs < 0 -> if r.rel = Le then Lp.Ge else Le
+        | rel -> rel
+      in
+      let n =
+        vars
+        + List.length (List.filter (fun r -> rel r <> Eq) rows)
+        + List.length (List.filter (fun r -> rel r <> Le) rows)
+      in
+      let st = Random.State.make [| seed |] in
+      let perm = Array.init n Fun.id in
+      for k = n - 1 downto 1 do
+        let r = Random.State.int st (k + 1) in
+        let t = perm.(k) in
+        perm.(k) <- perm.(r);
+        perm.(r) <- t
+      done;
+      let basis = Array.sub perm 0 m in
+      match
+        ( Lp.resume ~basis ~vars obj rows,
+          Lp.maximize ~warm:false ~bland:true ~vars obj rows )
+      with
+      | Optimal a, Optimal b -> Rat.equal a.value b.value
+      | Infeasible, Infeasible | Unbounded, Unbounded -> true
+      | _ -> false)
+
+let dual_restart () =
+  let rows =
+    [
+      row [ (0, i 1) ] Le (i 4);
+      row [ (1, i 2) ] Le (i 12);
+      row [ (0, i 3); (1, i 2) ] Le (i 18);
+    ]
+  in
+  List.iter
+    (fun basis ->
+      match Lp.resume ~basis ~vars:2 [ (0, i 3); (1, i 5) ] rows with
+      | Optimal { value; x; pivots } ->
+          Alcotest.check rat "value" (i 36) value;
+          Alcotest.(check (array rat)) "point" [| i 2; i 6 |] x;
+          Alcotest.(check int) "pivots" 1 pivots
+      | _ -> Alcotest.fail "not optimal")
+    [ [| 0; 1; 3 |]; [| 0; 1; 4 |] ]
+
+let transport () =
+  let n = 24 in
+  let v a b = (a * n) + b in
+  let cost a b = ((a * 7) + (b * 13) + (a * b * 5)) mod 17 in
+  let rows =
+    List.init n (fun a ->
+        row (List.init n (fun b -> (v a b, i 1))) Eq (i (a + 1)))
+    @ List.init n (fun b ->
+        row (List.init n (fun a -> (v a b, i 1))) Le (i (n + 1 - b)))
+  in
+  let obj =
+    List.concat
+      (List.init n (fun a -> List.init n (fun b -> (v a b, i (-cost a b)))))
+  in
+  let dense = fst (optimum ~warm:false ~vars:(n * n) obj rows) in
+  let basis =
+    Array.init (2 * n) (fun r -> (n * n) + if r < n then n + r else r - n)
+  in
+  match Lp.resume ~basis ~vars:(n * n) obj rows with
+  | Optimal { value; pivots; _ } ->
+      Alcotest.check rat "value" dense value;
+      Alcotest.(check bool)
+        (Printf.sprintf "%d pivots" pivots)
+        true (pivots > 32)
+  | _ -> Alcotest.fail "not optimal"
+
 let tests =
   [
     Alcotest.test_case "wyndor" `Quick wyndor;
@@ -207,4 +299,7 @@ let tests =
     random_2d ();
     Alcotest.test_case "bound on beale" `Quick beale_bound;
     degenerate_bound ();
+    resumed ();
+    Alcotest.test_case "resume from a bad basis" `Quick dual_restart;
+    Alcotest.test_case "transport past the eta limit" `Quick transport;
   ]
