@@ -46,7 +46,7 @@ let solve game cold lemke iterations csv svg =
     "%s: %d + %d sequences, %d + %d infosets, %d payoff entries (%.2fs)@."
     G.name (S.sequences t P0) (S.sequences t P1) (S.infosets t P0)
     (S.infosets t P1) (S.entries t) build;
-  Format.printf "exact LP: %d + %d pivots, %.2fs%s@." (fst sol.pivots)
+  Format.printf "exact LP: %d + %d exact pivots, %.2fs%s@." (fst sol.pivots)
     (snd sol.pivots) lp
     (if cold then ", cold start" else "");
   Format.printf "value      %s@.           = %.12f@." (Rat.to_string sol.value)

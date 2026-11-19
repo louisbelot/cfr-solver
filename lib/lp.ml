@@ -229,8 +229,6 @@ module Simplex (F : FIELD) = struct
     run ?limit t ~bland ~allowed:t.cols = `Optimal
     && F.compare (F.add (rhs t t.obj) slack) F.zero >= 0
 
-  let primal t = Array.for_all (fun r -> F.sign (rhs t r) >= 0) t.rows
-
   let expel t ~first_art =
     Array.iteri
       (fun i r ->
@@ -286,23 +284,6 @@ module Simplex (F : FIELD) = struct
           loop ())
     in
     loop ()
-
-  let install t target =
-    let wanted = Hashtbl.create 64 in
-    List.iter (fun j -> Hashtbl.replace wanted j ()) target;
-    List.iter
-      (fun j ->
-        if not (Array.exists (( = ) j) t.basis) then
-          let rec find i =
-            if i < Array.length t.rows then
-              if
-                (not (Hashtbl.mem wanted t.basis.(i)))
-                && not (zero t.rows.(i).(j))
-              then pivot t i j
-              else find (i + 1)
-          in
-          find 0)
-      target
 end
 
 module A = Simplex (Approx)
@@ -323,15 +304,6 @@ let normalize rows =
     rows
   |> Array.of_list
 
-let float_basis ~bland ~vars c rows =
-  let t, first_art = A.setup ~vars rows in
-  let limit = 20 * (Array.length rows + t.cols) in
-  if not (A.phase1 ~limit t ~bland ~first_art) then None
-  else
-    match A.phase2 ~limit t ~bland ~first_art (fun j -> Rat.to_float c.(j)) with
-    | `Optimal -> Some (Array.to_list t.basis)
-    | `Unbounded | `Stopped -> None
-
 let finish ~bland ~vars ~first_art c t =
   match E.phase2 t ~bland ~first_art (fun j -> c.(j)) with
   | `Unbounded | `Stopped -> Unbounded
@@ -342,24 +314,268 @@ let finish ~bland ~vars ~first_art c t =
         t.basis;
       Optimal { value = E.rhs t t.obj; x; pivots = t.pivots }
 
-let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
-  let rows = normalize rows in
-  let t, first_art = E.setup ~vars rows in
-  let c = Array.make first_art Rat.zero in
-  List.iter
-    (fun (j, v) ->
-      if j < 0 || j >= vars then invalid_arg "Lp.maximize: variable";
-      c.(j) <- Rat.add c.(j) v)
-    objective;
-  let t =
-    match if warm then float_basis ~bland ~vars c rows else None with
-    | Some basis ->
-        E.install t basis;
-        if E.primal t then t else fst (E.setup ~vars rows)
-    | None -> t
+type standard = {
+  m : int;
+  first_art : int;
+  columns : (int * Rat.t) list array;
+  b : Rat.t array;
+  cost : Rat.t array;
+  start : int array;
+}
+
+let standard ~vars objective rows =
+  let m = Array.length rows in
+  let slacks =
+    Array.fold_left (fun n r -> if r.rel = Eq then n else n + 1) 0 rows
   in
-  if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art c t
-  else Infeasible
+  let first_art = vars + slacks in
+  let arts =
+    Array.fold_left (fun n r -> if r.rel = Le then n else n + 1) 0 rows
+  in
+  let columns = Array.make (first_art + arts) [] in
+  let start = Array.make m 0 in
+  let slack = ref vars and art = ref first_art in
+  let merge coeffs =
+    let tbl = Hashtbl.create 8 in
+    List.iter
+      (fun (j, v) ->
+        if j < 0 || j >= vars then invalid_arg "Lp.maximize: variable";
+        let w = Option.value (Hashtbl.find_opt tbl j) ~default:Rat.zero in
+        Hashtbl.replace tbl j (Rat.add w v))
+      coeffs;
+    tbl
+  in
+  for i = m - 1 downto 0 do
+    Hashtbl.iter
+      (fun j v ->
+        if not (Rat.is_zero v) then columns.(j) <- (i, v) :: columns.(j))
+      (merge rows.(i).coeffs)
+  done;
+  Array.iteri
+    (fun i r ->
+      (match r.rel with
+      | Le ->
+          columns.(!slack) <- [ (i, Rat.one) ];
+          start.(i) <- !slack
+      | Ge ->
+          columns.(!slack) <- [ (i, Rat.neg Rat.one) ];
+          columns.(!art) <- [ (i, Rat.one) ];
+          start.(i) <- !art
+      | Eq ->
+          columns.(!art) <- [ (i, Rat.one) ];
+          start.(i) <- !art);
+      if r.rel <> Eq then incr slack;
+      if r.rel <> Le then incr art)
+    rows;
+  let cost = Array.make first_art Rat.zero in
+  Hashtbl.iter (fun j v -> cost.(j) <- v) (merge objective);
+  { m; first_art; columns; b = Array.map (fun r -> r.rhs) rows; cost; start }
+
+let dot y col =
+  List.fold_left (fun acc (i, a) -> Rat.add acc (Rat.mul y.(i) a)) Rat.zero col
+
+module Revised = struct
+  type eta = { r : int; ar : Rat.t; rest : (int * Rat.t) list }
+
+  type t = {
+    s : standard;
+    basis : int array;
+    pos : int array;
+    mutable lu : Lu.t;
+    mutable etas : eta list;
+    mutable pivots : int;
+    mutable stall : int;
+  }
+
+  let factor s basis = Lu.factor s.m (Array.map (fun j -> s.columns.(j)) basis)
+
+  let create s basis =
+    let pos = Array.make (Array.length s.columns) (-1) in
+    Array.iteri (fun i j -> pos.(j) <- i) basis;
+    Option.map
+      (fun lu -> { s; basis; pos; lu; etas = []; pivots = 0; stall = 0 })
+      (factor s basis)
+
+  let ftran t v =
+    let v = Lu.solve t.lu v in
+    List.iter
+      (fun e ->
+        let vr = Rat.div v.(e.r) e.ar in
+        v.(e.r) <- vr;
+        if not (Rat.is_zero vr) then
+          List.iter (fun (i, a) -> v.(i) <- Rat.sub v.(i) (Rat.mul a vr)) e.rest)
+      (List.rev t.etas);
+    v
+
+  let btran t c =
+    let c = Array.copy c in
+    List.iter
+      (fun e ->
+        let s =
+          List.fold_left
+            (fun acc (i, a) -> Rat.sub acc (Rat.mul c.(i) a))
+            c.(e.r) e.rest
+        in
+        c.(e.r) <- Rat.div s e.ar)
+      t.etas;
+    Lu.solve_t t.lu c
+
+  let column t j =
+    let col = Array.make t.s.m Rat.zero in
+    List.iter (fun (i, a) -> col.(i) <- a) t.s.columns.(j);
+    ftran t col
+
+  let enter t ?alpha r j ratio =
+    let alpha = match alpha with Some a -> a | None -> column t j in
+    t.stall <- (if Rat.is_zero ratio then t.stall + 1 else 0);
+    t.pos.(t.basis.(r)) <- -1;
+    t.basis.(r) <- j;
+    t.pos.(j) <- r;
+    t.pivots <- t.pivots + 1;
+    if List.length t.etas < 32 then (
+      let rest = ref [] in
+      Array.iteri
+        (fun i a ->
+          if i <> r && not (Rat.is_zero a) then rest := (i, a) :: !rest)
+        alpha;
+      t.etas <- { r; ar = alpha.(r); rest = !rest } :: t.etas)
+    else
+      match factor t.s t.basis with
+      | Some lu ->
+          t.lu <- lu;
+          t.etas <- []
+      | None -> failwith "Lp: singular basis"
+
+  let art t j = j >= t.s.first_art
+  let values t = ftran t t.s.b
+
+  let duals t cost =
+    btran t
+      (Array.map (fun j -> if art t j then Rat.zero else cost.(j)) t.basis)
+
+  let reduced t cost y j = Rat.sub cost.(j) (dot y t.s.columns.(j))
+
+  let violated t x i =
+    let v = Rat.sign x.(i) in
+    v < 0 || (v > 0 && art t t.basis.(i))
+
+  let bland t = t.stall > 50
+  let mag q = if Rat.sign q < 0 then Rat.neg q else q
+
+  let infeasible t x =
+    let best = ref (-1) in
+    let better i =
+      if bland t then t.basis.(i) < t.basis.(!best)
+      else Rat.compare (mag x.(i)) (mag x.(!best)) > 0
+    in
+    Array.iteri
+      (fun i _ -> if violated t x i && (!best < 0 || better i) then best := i)
+      x;
+    !best
+
+  let nonbasic t f =
+    let rec go j =
+      j < t.s.first_art && ((t.pos.(j) < 0 && f j) || go (j + 1))
+    in
+    go 0
+
+  let dual_feasible t cost =
+    let y = duals t cost in
+    not (nonbasic t (fun j -> Rat.sign (reduced t cost y j) > 0))
+
+  let rec dual t cost =
+    let x = values t in
+    let r = infeasible t x in
+    if r < 0 then `Feasible
+    else
+      let y = duals t cost in
+      let e = Array.make t.s.m Rat.zero in
+      e.(r) <- Rat.one;
+      let rho = btran t e in
+      let dir = -Rat.sign x.(r) in
+      let best = ref (-1) and ratio = ref Rat.zero in
+      for j = 0 to t.s.first_art - 1 do
+        if t.pos.(j) < 0 then
+          let a = dot rho t.s.columns.(j) in
+          if Rat.sign a = -dir then
+            let q = Rat.div (reduced t cost y j) a in
+            let q = if dir > 0 then q else Rat.neg q in
+            if !best < 0 || Rat.compare q !ratio < 0 then (
+              best := j;
+              ratio := q)
+      done;
+      if !best < 0 then `Infeasible
+      else (
+        enter t r !best !ratio;
+        dual t cost)
+
+  let rec primal t cost =
+    let y = duals t cost in
+    let j = ref (-1) and best = ref Rat.zero in
+    (try
+       for k = 0 to t.s.first_art - 1 do
+         if t.pos.(k) < 0 then
+           let d = reduced t cost y k in
+           if Rat.compare d !best > 0 then (
+             j := k;
+             best := d;
+             if bland t then raise Exit)
+       done
+     with Exit -> ());
+    let j = !j in
+    if j < 0 then `Optimal
+    else
+      let x = values t in
+      let col = Array.make t.s.m Rat.zero in
+      List.iter (fun (i, a) -> col.(i) <- a) t.s.columns.(j);
+      let alpha = ftran t col in
+      let best = ref (-1) and ratio = ref Rat.zero in
+      Array.iteri
+        (fun i a ->
+          let q =
+            if art t t.basis.(i) then
+              if Rat.is_zero a then None else Some Rat.zero
+            else if Rat.sign a > 0 then Some (Rat.div x.(i) a)
+            else None
+          in
+          match q with
+          | Some q ->
+              let c = if !best < 0 then -1 else Rat.compare q !ratio in
+              if c < 0 || (c = 0 && t.basis.(i) < t.basis.(!best)) then (
+                best := i;
+                ratio := q)
+          | None -> ())
+        alpha;
+      if !best < 0 then `Unbounded
+      else (
+        enter t ~alpha !best j !ratio;
+        primal t cost)
+
+  let phase1 t =
+    Array.init t.s.first_art (fun j ->
+        if t.pos.(j) >= 0 then Rat.zero else Rat.neg Rat.one)
+
+  let solve t ~vars =
+    let cost = t.s.cost in
+    let feasible =
+      if infeasible t (values t) < 0 then `Feasible
+      else if dual_feasible t cost then dual t cost
+      else dual t (phase1 t)
+    in
+    match feasible with
+    | `Infeasible -> Infeasible
+    | `Feasible -> (
+        match primal t cost with
+        | `Unbounded -> Unbounded
+        | `Optimal ->
+            let xb = values t and x = Array.make vars Rat.zero in
+            Array.iteri (fun i j -> if j < vars then x.(j) <- xb.(i)) t.basis;
+            let value = ref Rat.zero in
+            Array.iteri
+              (fun j v -> value := Rat.add !value (Rat.mul cost.(j) v))
+              x;
+            Optimal { value = !value; x; pivots = t.pivots })
+end
 
 let float_problem name ~vars objective rows =
   let rows = normalize rows in
@@ -422,3 +638,48 @@ let bound_float ?limit ~vars objective rows =
         match A.dual ?limit ~slack:1e-7 t ~allowed:first_art with
         | `Optimal -> Some (A.rhs t t.obj, primal t ~vars (Array.make vars 0.))
         | `Infeasible | `Stopped -> Some (A.rhs t t.obj, near))
+
+let float_basis ~vars s rows =
+  let rows =
+    Array.mapi
+      (fun i r ->
+        if r.rel = Eq then r
+        else
+          let d =
+            Rat.of_ints (1000 + ((i + 1) * 7919 mod 1000)) 10_000_000_000
+          in
+          { r with rhs = Rat.add r.rhs d })
+      rows
+  in
+  let t, first_art = A.setup ~vars rows in
+  let limit = 2 * (s.m + Array.length s.columns) in
+  t.harris <- true;
+  if A.phase1 ~limit ~slack:1e-6 t ~bland:false ~first_art then
+    ignore
+      (A.phase2 ~limit t ~bland:false ~first_art (fun j ->
+           Rat.to_float s.cost.(j)));
+  t.basis
+
+let exact s ~vars basis =
+  let t =
+    match Revised.create s basis with
+    | Some t -> t
+    | None -> Option.get (Revised.create s s.start)
+  in
+  Revised.solve t ~vars
+
+let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
+  let rows = normalize rows in
+  let s = standard ~vars objective rows in
+  if warm then exact s ~vars (float_basis ~vars s rows)
+  else
+    let t, first_art = E.setup ~vars rows in
+    if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art s.cost t
+    else Infeasible
+
+let resume ~basis ~vars objective rows =
+  let s = standard ~vars objective (normalize rows) in
+  let n = Array.length s.columns in
+  if Array.length basis <> s.m || Array.exists (fun j -> j < 0 || j >= n) basis
+  then invalid_arg "Lp.resume: basis";
+  exact s ~vars (Array.copy basis)

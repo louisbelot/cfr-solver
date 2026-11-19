@@ -46,3 +46,6 @@ val bound_float :
   (int * Rat.t) list ->
   row list ->
   (float * float array) option
+
+val resume :
+  basis:int array -> vars:int -> (int * Rat.t) list -> row list -> result
