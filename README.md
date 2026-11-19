@@ -1087,43 +1087,63 @@ they don't.
 ```
 $ cfr-solver exact -g leduc
 leduc: 337 + 337 sequences, 144 + 144 infosets, 966 payoff entries (0.00s)
-exact LP: 358 + 362 pivots, 21.12s
+exact LP: 0 + 0 exact pivots, 0.75s
 value      -1454920850547486749701863871533/16995463438839962469905132501930
-           = -0.085606424319
+           = -0.085606424078
 nash conv  0
 ```
 
 That is the -0.085606 usually quoted for Leduc. The small Liar's dice variants
 come out as the fractions in the published tables, and the test suite checks
-each one:
+each one. Times are for both LPs, before and after the revised solver below.
+Leduc, both 1x4 rows and 2x2 were timed back to back with the old binary; the
+other before times are the ones this table showed until now.
 
-| game | sequences per player | pivots | time | value |
+| game | sequences per player | before | after | value |
 |---|---:|---:|---:|---:|
-| Kuhn | 13 | 16 + 16 | 0.00 s | -1/18 |
-| Leduc, 2 ranks | 155 | 163 + 166 | 0.03 s | 0 |
-| Liar's dice 1x2 | 31 | 38 + 39 | 0.00 s | 0 |
-| Liar's dice 1x2 wild | 31 | 36 + 36 | 0.00 s | 1/2 |
-| Liar's dice 1x3 | 190 | 187 + 180 | 0.02 s | -1/9 |
-| Liar's dice 1x3 wild | 190 | 197 + 193 | 0.03 s | 1/9 |
-| Liar's dice 1x4 | 1021 | 805 + 809 | 0.39 s | -1/8 |
-| Liar's dice 1x4 wild | 1021 | 2538 + 909 | 52.5 s | 1/16 |
-| Liar's dice 2x2 | 766 | 775 + 739 | 0.44 s | 1/8 |
-| Liar's dice 2x2 wild | 766 | 692 + 709 | 0.25 s | 7/8 |
+| Kuhn | 13 | 0.00 s | 0.00 s | -1/18 |
+| Leduc, 2 ranks | 155 | 0.03 s | 0.02 s | 0 |
+| Leduc | 337 | 22.84 s | 0.75 s | -0.085606424078 |
+| Liar's dice 1x2 | 31 | 0.00 s | 0.00 s | 0 |
+| Liar's dice 1x2 wild | 31 | 0.00 s | 0.00 s | 1/2 |
+| Liar's dice 1x3 | 190 | 0.02 s | 0.02 s | -1/9 |
+| Liar's dice 1x3 wild | 190 | 0.03 s | 0.02 s | 1/9 |
+| Liar's dice 1x4 | 1021 | 0.42 s | 0.43 s | -1/8 |
+| Liar's dice 1x4 wild | 1021 | 59.01 s | 0.94 s | 1/16 |
+| Liar's dice 2x2 | 766 | 0.46 s | 0.30 s | 1/8 |
+| Liar's dice 2x2 wild | 766 | 0.25 s | 0.10 s | 7/8 |
 
-Two things make this fast enough. Sequence-form LPs are very degenerate (most
-right-hand sides are zero), and a plain Dantzig rule with a fallback to Bland's
-rule needed more than 15,000 pivots on Leduc without finishing. The ratio test
-now breaks ties lexicographically on the rows of the basis inverse, which
-cannot cycle, and Bland's rule only takes over during a long degenerate stall.
-Then the same simplex, written once as a functor over the number field, runs
-first in floating point. Its final basis is pivoted into the exact tableau and
-the exact simplex carries on from there. The float answer is only a starting
-point: the exact phases still check every reduced cost, so a bad float basis
-costs time, never correctness. On every game above except 1x4 wild the float
-basis was already exactly optimal and the exact simplex made no further
-pivots; on 1x4 wild the float pass ends on a basis that is infeasible in exact
-arithmetic, and the solver starts cold. Without the float start, Leduc did not
-finish in 15 minutes and Leduc with two ranks took 376 + 342 pivots.
+Sequence-form LPs are very degenerate (most right-hand sides are zero). The
+solver runs in two stages. A dense float tableau finds a basis first: every
+inequality's right-hand side is pushed out by a different amount around 1e-7,
+which breaks the ties that make Dantzig's rule stall, and a Harris ratio test
+prefers large pivots among near ties. The float answer is then thrown away and
+only the basis is kept. `Lu` factors that basis matrix in exact rationals
+(sparse Gaussian elimination with Markowitz pivoting, ties broken toward the
+entry with the fewest bits), and two triangular solves give the exact primal
+x_B = B^-1 b and the exact duals y = c_B B^-1. If x_B >= 0 and every reduced
+cost c_j - y A_j is <= 0, the basis is optimal and the value is certified
+exactly, whatever happened in floating point. This is the basis verification
+of QSopt_ex (Applegate, Cook, Dash and Espinoza 2007). On every game in the
+table the float basis passes, so the exact stage is two factorizations and
+four solves: 0.08 s of the 0.75 s on Leduc, the rest is the float tableau.
+
+When the basis fails the check, an exact revised simplex carries on from it.
+If the basis is dual feasible, the dual simplex restores primal feasibility.
+Otherwise the dual simplex runs on an artificial cost (0 on basic columns, -1
+on the rest), which makes any basis dual feasible, until x_B >= 0, and the
+primal simplex finishes with the real costs. Pricing is Dantzig's in both,
+falling back to Bland's rule after 50 degenerate pivots in a row. Basis
+changes are kept as a product of eta matrices and the basis is refactored
+every 32 pivots. `Lp.resume` starts this simplex from any basis, which is how
+the tests reach it: random LPs with mixed rows solved from a random set of
+columns, and a 24 by 24 transport problem that needs more than 32 pivots, all
+against the old dense rational tableau, which stays as `--cold`.
+
+Before, the float basis was pivoted into a dense rational tableau, about 700
+full-row pivots with fractions growing at every step, and on 1x4 wild the
+basis came out infeasible and the exact solve restarted cold. Without the
+float start, Leduc did not finish in 15 minutes.
 
 With the exact equilibrium in hand, `--iterations` runs CFR, CFR+, DCFR, PCFR+
 and PDCFR+ and evaluates each average strategy exactly: every infoset's float
@@ -1283,16 +1303,17 @@ starting point and makes every pivot well defined even when the start is
 degenerate (most sequences sit in the basis at level zero). Each answer is
 certified by an exact best response for both players: both gains must be 0.
 
-On zero-sum games it reproduces the LP values with fewer pivots, but each
-pivot is slower, because the LP has a float warm start and this has none:
+On zero-sum games it reproduces the LP values in far fewer pivots, but each
+pivot is a dense rational one and there is no float warm start, so it is
+slower than the LP:
 
-| game | LP pivots | LP time | Lemke pivots | Lemke time | value |
-|---|---|---|---|---|---|
-| Kuhn | 16 + 16 | 0.00 s | 13 | 0.00 s | -1/18 |
-| Leduc, 2 ranks | 163 + 166 | 0.03 s | 167 | 4.82 s | 0 |
-| Liar's dice 1x3 | 187 + 180 | 0.02 s | 37 | 0.14 s | -1/9 |
-| Liar's dice 2x2 | 775 + 739 | 0.44 s | 143 | 3.54 s | 1/8 |
-| Liar's dice 1x4 | 805 + 809 | 0.42 s | 87 | 3.38 s | -1/8 |
+| game | LP time | Lemke pivots | Lemke time | value |
+|---|---|---|---|---|
+| Kuhn | 0.00 s | 13 | 0.00 s | -1/18 |
+| Leduc, 2 ranks | 0.02 s | 167 | 4.82 s | 0 |
+| Liar's dice 1x3 | 0.02 s | 37 | 0.14 s | -1/9 |
+| Liar's dice 2x2 | 0.30 s | 143 | 3.54 s | 1/8 |
+| Liar's dice 1x4 | 0.43 s | 87 | 3.38 s | -1/8 |
 
 (`cfr-solver exact -g GAME --lemke`; the Liar's dice rows are the no-wild
 variants.)
@@ -1443,18 +1464,21 @@ cfr-solver efce-welfare --items 1,2,3,5,10 --rounds 1
 | 3 | 1 | 119 | 221 | (3.8861, 1.4304) | (3.89, 1.43) |
 | 5 | 1 | 175 | 365 | (2.2825, 1.2601) | (2.28, 1.26) |
 | 10 | 1 | 315 | 865 | (1.7616, 0.9319) | (1.76, 0.93) |
-| 1 | 2 | 711 | 1135 | (3.0000, 2.0000) exact | (3.00, 2.00) |
+| 1 | 2 | 711 | 1135 | (4.0000, 1.0000) exact | (3.00, 2.00) |
 
 The welfare matches every published entry. At one item the optimum is not
-unique: the float simplex lands on a 3.44/1.56 split of the same total 5, and
-the exact rational solver (`--exact`) on the two-round game finds the paper's
-3/2. With three items the best EFCE is worth 5.32 against the 0.8 the
-dynamics reach. The second round only matters as a signal, and with it the
-mediator gets the full 10 at two items.
+unique: the float simplex lands on a 3.44/1.56 split of the same total 5, the
+exact rational solver (`--exact`) on the one-round game finds the paper's 3/2,
+and on the two-round game it ends on 4/1. With three items the best EFCE is
+worth 5.32 against the 0.8 the dynamics reach. The second round only matters
+as a signal, and with it the mediator gets the full 10 at two items.
 
 The float tableau solves one round up to ten items in 0.18 s. Two rounds is
-where the dense simplex stops scaling: 1,135 rows take 44 s with the exact
-solver warm-started from the float basis.
+where the dense float tableau stops scaling: with `--exact`, 1,135 rows take
+26.5 s, 11 s of it in the float pass, which runs out of pivots, and 15 s in
+5,117 exact revised-simplex pivots from where it stopped. The old exact path
+took 54 s on the same machine, and ten items in one round went from 121.6 s
+to 5.5 s.
 
 ### Steering learners to it
 
