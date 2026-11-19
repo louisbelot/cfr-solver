@@ -62,6 +62,7 @@ let () =
       ("bigint", Test_bigint.tests);
       ("rat", Test_rat.tests);
       ("lp", Test_lp.tests);
+      ("lu", Test_lu.tests);
       ("sequence form", Test_sequence_form.tests);
       ("auction", Test_auction.tests);
       ("market", Test_market.tests);
