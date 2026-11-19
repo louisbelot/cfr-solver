@@ -148,7 +148,16 @@ let pruning () =
       ("cfr rbp", Cfr.Vanilla, true, true, 1000);
     ]
 
+let exact name g =
+  let t = Sequence_form.build g in
+  let elapsed, _ = time (fun () -> ignore (Sequence_form.solve t)) in
+  Printf.printf "%-6s %-14s %10.2f s\n" name "exact lp" elapsed
+
 let () =
+  exact "leduc" (module Leduc);
+  exact "liars"
+    (module (val Liars_dice.game { Liars_dice.dice = 1; faces = 4; wild = true })
+    : Game.S);
   seven_cards ();
   subgame "river" (Bet_tree.limit ~pot:6. ~bet:1. 1) "Qs Jh 8d 5c 2s" 2000;
   let turn = Bet_tree.limit ~pot:4. ~bet:1. 2 in
