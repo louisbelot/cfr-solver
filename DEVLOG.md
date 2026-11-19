@@ -2962,3 +2962,100 @@ Next: the trajectory-feedback version with sampled play (one leaf per
 round, outcome-sampling learners), where the paper shows constant P cannot
 work in general, and the optimal-equilibrium Lagrangian solved by CFR
 against the LP.
+
+## 2026-11-19: exact LP by basis verification
+
+Built:
+
+- `Lu`: sparse LU of a square rational matrix given by columns. Gaussian
+  elimination on hash-table rows and columns, Markowitz pivot choice
+  ((r - 1)(c - 1) smallest, ties toward the entry with the fewest bits),
+  `solve` for B x = b and `solve_t` for B^T y = c.
+- `Lp.Revised`: an exact revised simplex over the standard form (structural
+  columns, then one slack per inequality, then one artificial per row that
+  needs it). Artificial columns are variables fixed at zero: they may sit in
+  the basis at level 0, never enter, and a basic artificial with a nonzero
+  value counts as infeasible. Basis changes are eta matrices on top of the
+  last factorization, refactored every 32 pivots.
+- `Lp.maximize` (the warm default) now keeps only the float tableau's basis,
+  verifies it exactly and pivots exactly from there if it has to.
+  `Lp.resume ~basis` runs the same thing from any basis. `--cold` is still
+  the old dense rational tableau.
+- An exact LP line in the benchmark (Leduc and 1x4 wild Liar's dice).
+
+Design notes:
+
+- Verification is the QSopt_ex idea (Applegate, Cook, Dash and Espinoza
+  2007): a float simplex usually ends on the right basis even when its numbers
+  are off, and one exact factorization of that basis settles optimality.
+  x_B = B^-1 b >= 0 and c_j - y A_j <= 0 for every nonbasic column, with
+  y = c_B B^-1, is a certificate; the value is c_B x_B = y b. Nothing from the
+  float pass is trusted except the list of column indices.
+- From a basis that fails: dual feasible goes straight to the dual simplex.
+  Otherwise the dual simplex runs on an artificial cost, 0 on basic columns
+  and -1 on the others, for which the current basis is dual feasible (y = 0,
+  every reduced cost -1), until x_B >= 0; then the primal simplex with the
+  real cost. That is a phase 1 that works from any basis, so no big-M and no
+  restart from the slack basis. A dual row with no candidate column is an
+  infeasibility proof (x_r = xbar_r minus nonnegative terms).
+- Pricing: Dantzig in the primal (largest reduced cost) and the most violated
+  row in the dual, switching to Bland's rule after 50 degenerate pivots in a
+  row. The first version used Bland throughout and refactored after every
+  pivot: two-round Sheriff took 16,150 pivots and 401 s. Dantzig cut it to
+  5,117 pivots, eta updates from 153 s to 15 s for those pivots.
+- The float pass decides everything else. I tried three: the old lexicographic
+  tableau, the shifted-bounds pass that `bound_float` uses (x >= -d with
+  d around 1e-6, Harris, then a dual cleanup on the true b) and a tableau with
+  every inequality's right-hand side pushed out by a distinct amount around
+  1e-7 and a Harris ratio test. The shifted pass was best on Leduc (1.1 s) but
+  needed 15,345 pivots on 1x4 wild, and the exact simplex had not finished
+  from its basis after ten minutes. Running it first and the perturbed pass
+  second cost 264 s on 1x4 wild. The perturbed pass alone, capped at 2(m + n)
+  pivots, is the one that never loses badly, and its final basis is used even
+  when phase 1 runs out of pivots. Perturbing only the Le rows made two-round
+  Sheriff cycle to the 78,340-pivot cap.
+- The float basis and the exact standard form must agree on column numbers.
+  Both are built from the same normalized rows (b >= 0), and the perturbation
+  only adds to b, so no row flips between Le and Ge and the art columns line
+  up.
+
+Checks:
+
+- `Lu` against an independent determinant on 500 random sparse integer
+  matrices up to 7x7: factor succeeds exactly when det != 0, and both solves
+  reproduce b and c exactly. Repeated entries add, entries that cancel make
+  the matrix singular.
+- `Lp.resume` from a random set of m columns, on 400 random LPs with Le, Ge and
+  Eq rows and boxes, gives the same verdict (optimal value, infeasible or
+  unbounded) as the dense rational tableau with Bland's rule. Wyndor from a
+  primal feasible basis and from a dual feasible one: one pivot each. A
+  24 x 24 transport problem from the artificial basis passes 32 pivots, so
+  the refactorization path runs, and matches the dense value.
+- Every exact game value in the suite is unchanged (Kuhn -1/18, Leduc's
+  fraction, all Liar's dice fractions), the EFCE, team and TME tests that go
+  through `Lp.maximize` pass. Full suite: 478 tests in 197 s (271 s last run).
+
+Results, old binary (a worktree at the previous commit) and new one back to
+back on the same machine:
+
+| LP | before | after | exact pivots after |
+|----|-------:|------:|-------------------:|
+| Leduc, both players | 22.84 s | 0.75 s | 0 |
+| Liar's dice 1x4 wild | 59.01 s | 0.94 s | 0 |
+| Liar's dice 1x4 | 0.42 s | 0.43 s | 0 |
+| Liar's dice 2x2 | 0.46 s | 0.30 s | 0 |
+| Sheriff EFCE, 5 items | 15.06 s | 0.86 s | 0 |
+| Sheriff EFCE, 10 items | 121.62 s | 5.54 s | 0 |
+| Sheriff EFCE, 1 item, 2 rounds | 53.98 s | 26.51 s | 5,117 |
+
+On Leduc the exact stage is 0.08 s of the 0.75 s; the rest is the dense float
+tableau. The two-round Sheriff LP is the one case where the float pass runs
+out of pivots, and it now dominates: about 11 s of float pivots before the
+exact simplex takes over. The decimal printed for Leduc used to read
+-0.085606424319 in this log and the README; the fraction is the same, and
+`Rat.to_float` of it gives -0.085606424078.
+
+Next: a sparse float revised simplex (the float twin of `Revised`, with a
+threshold-pivoting float LU and the same eta file) for the float pass, which
+is now the cost on every LP here; then exact values of small river subgames
+through the sequence form.
