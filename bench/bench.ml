@@ -153,11 +153,25 @@ let exact name g =
   let elapsed, _ = time (fun () -> ignore (Sequence_form.solve t)) in
   Printf.printf "%-6s %-14s %10.2f s\n" name "exact lp" elapsed
 
+let efce items rounds =
+  let plan =
+    Efce_lp.plan
+      (Multi_tree.build
+         (Sheriff.game { Sheriff.baseline with items; rounds }))
+  in
+  let elapsed, _ = time (fun () -> ignore (Efce_lp.solve ~exact:true plan)) in
+  Printf.printf "%-6s %-14s %10.2f s
+" "sheriff"
+    (Printf.sprintf "efce lp %dx%d" items rounds)
+    elapsed
+
 let () =
   exact "leduc" (module Leduc);
   exact "liars"
     (module (val Liars_dice.game { Liars_dice.dice = 1; faces = 4; wild = true })
     : Game.S);
+  efce 10 1;
+  efce 1 2;
   seven_cards ();
   subgame "river" (Bet_tree.limit ~pot:6. ~bet:1. 1) "Qs Jh 8d 5c 2s" 2000;
   let turn = Bet_tree.limit ~pot:4. ~bet:1. 2 in
