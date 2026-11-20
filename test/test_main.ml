@@ -63,6 +63,7 @@ let () =
       ("rat", Test_rat.tests);
       ("lp", Test_lp.tests);
       ("lu", Test_lu.tests);
+      ("flu", Test_flu.tests);
       ("sequence form", Test_sequence_form.tests);
       ("auction", Test_auction.tests);
       ("market", Test_market.tests);
