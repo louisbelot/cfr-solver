@@ -89,6 +89,7 @@ let leduc_lp () =
   Alcotest.check rat "equilibrium" Rat.zero
     (Rat.add (S.best_response t P0 y) (S.best_response t P1 x));
   Alcotest.check rat "value" sol.value (S.value t x y);
+  Alcotest.(check (pair int int)) "float basis is optimal" (0, 0) sol.pivots;
   let module G = (val leduc2_game) in
   let module C = Cfr.Make (G) in
   let module E = Eval.Make (G) in

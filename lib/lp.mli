@@ -47,5 +47,8 @@ val bound_float :
   row list ->
   (float * float array) option
 
+val revised_float :
+  ?limit:int -> vars:int -> (int * Rat.t) list -> row list -> Fsimplex.result
+
 val resume :
   basis:int array -> vars:int -> (int * Rat.t) list -> row list -> result

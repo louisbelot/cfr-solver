@@ -639,26 +639,37 @@ let bound_float ?limit ~vars objective rows =
         | `Optimal -> Some (A.rhs t t.obj, primal t ~vars (Array.make vars 0.))
         | `Infeasible | `Stopped -> Some (A.rhs t t.obj, near))
 
-let float_basis ~vars s rows =
-  let rows =
+let sparse s b =
+  {
+    Fsimplex.m = s.m;
+    first_art = s.first_art;
+    columns =
+      Array.map
+        (fun col ->
+          Array.of_list (List.map (fun (i, v) -> (i, Rat.to_float v)) col))
+        s.columns;
+    b;
+    cost = Array.map Rat.to_float s.cost;
+    start = s.start;
+  }
+
+let float_basis s rows =
+  let b =
     Array.mapi
       (fun i r ->
-        if r.rel = Eq then r
-        else
-          let d =
-            Rat.of_ints (1000 + ((i + 1) * 7919 mod 1000)) 10_000_000_000
-          in
-          { r with rhs = Rat.add r.rhs d })
+        let shift =
+          if r.rel = Eq then 0.
+          else float (1000 + ((i + 1) * 7919 mod 1000)) /. 1e10
+        in
+        Rat.to_float r.rhs +. shift)
       rows
   in
-  let t, first_art = A.setup ~vars rows in
-  let limit = 2 * (s.m + Array.length s.columns) in
-  t.harris <- true;
-  if A.phase1 ~limit ~slack:1e-6 t ~bland:false ~first_art then
-    ignore
-      (A.phase2 ~limit t ~bland:false ~first_art (fun j ->
-           Rat.to_float s.cost.(j)));
-  t.basis
+  (Fsimplex.solve ~limit:(2 * (s.m + Array.length s.columns)) (sparse s b))
+    .basis
+
+let revised_float ?limit ~vars objective rows =
+  let s = standard ~vars objective (normalize rows) in
+  Fsimplex.solve ?limit (sparse s (Array.map Rat.to_float s.b))
 
 let exact s ~vars basis =
   let t =
@@ -671,7 +682,7 @@ let exact s ~vars basis =
 let maximize ?(bland = false) ?(warm = true) ~vars objective rows =
   let rows = normalize rows in
   let s = standard ~vars objective rows in
-  if warm then exact s ~vars (float_basis ~vars s rows)
+  if warm then exact s ~vars (float_basis s rows)
   else
     let t, first_art = E.setup ~vars rows in
     if E.phase1 t ~bland ~first_art then finish ~bland ~vars ~first_art s.cost t

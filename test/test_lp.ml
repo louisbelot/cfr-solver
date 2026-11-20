@@ -288,6 +288,73 @@ let transport () =
         true (pivots > 32)
   | _ -> Alcotest.fail "not optimal"
 
+let sparse_wyndor () =
+  let r =
+    Lp.revised_float ~vars:2
+      [ (0, i 3); (1, i 5) ]
+      [
+        row [ (0, i 1) ] Le (i 4);
+        row [ (1, i 2) ] Le (i 12);
+        row [ (0, i 3); (1, i 2) ] Le (i 18);
+      ]
+  in
+  Alcotest.(check bool) "optimal" true (r.status = Fsimplex.Optimal);
+  Alcotest.(check (float 1e-12)) "value" 36. r.value;
+  Alcotest.(check (array (float 1e-12)))
+    "point" [| 2.; 6. |] (Array.sub r.x 0 2)
+
+let sparse_beale () =
+  let r =
+    Lp.revised_float ~vars:4
+      [ (0, q 3 4); (1, i (-20)); (2, q 1 2); (3, i (-6)) ]
+      [
+        row [ (0, q 1 4); (1, i (-8)); (2, i (-1)); (3, i 9) ] Le (i 0);
+        row [ (0, q 1 2); (1, i (-12)); (2, q (-1) 2); (3, i 3) ] Le (i 0);
+        row [ (2, i 1) ] Le (i 1);
+      ]
+  in
+  Alcotest.(check bool) "optimal" true (r.status = Fsimplex.Optimal);
+  Alcotest.(check (float 1e-9)) "value" 1.25 r.value
+
+let sparse_random () =
+  prop ~count:400 "sparse float simplex matches exact" random_lp
+    (fun (vars, rows, obj, _) ->
+      let rows =
+        List.map
+          (fun (a, rel, b) ->
+            row (List.init vars (fun j -> (j, i a.(j)))) rel (i b))
+          rows
+      in
+      let obj = List.init vars (fun j -> (j, i obj.(j))) in
+      let r = Lp.revised_float ~vars obj rows in
+      match (Lp.maximize ~warm:false ~bland:true ~vars obj rows, r.status) with
+      | Optimal { value; _ }, Optimal ->
+          Float.abs (r.value -. Rat.to_float value) < 1e-9
+      | Infeasible, Infeasible | Unbounded, Unbounded -> true
+      | _ -> false)
+
+let sparse_transport () =
+  let n = 24 in
+  let v a b = (a * n) + b in
+  let cost a b = ((a * 7) + (b * 13) + (a * b * 5)) mod 17 in
+  let rows =
+    List.init n (fun a ->
+        row (List.init n (fun b -> (v a b, i 1))) Eq (i (a + 1)))
+    @ List.init n (fun b ->
+        row (List.init n (fun a -> (v a b, i 1))) Le (i (n + 1 - b)))
+  in
+  let obj =
+    List.concat
+      (List.init n (fun a -> List.init n (fun b -> (v a b, i (-cost a b)))))
+  in
+  let dense = fst (optimum ~warm:false ~vars:(n * n) obj rows) in
+  let r = Lp.revised_float ~vars:(n * n) obj rows in
+  Alcotest.(check bool) "optimal" true (r.status = Fsimplex.Optimal);
+  Alcotest.(check (float 1e-9)) "value" (Rat.to_float dense) r.value;
+  let cap = Lp.revised_float ~limit:5 ~vars:(n * n) obj rows in
+  Alcotest.(check bool) "stopped" true (cap.status = Fsimplex.Stopped);
+  Alcotest.(check int) "pivots" 5 cap.pivots
+
 let tests =
   [
     Alcotest.test_case "wyndor" `Quick wyndor;
@@ -302,4 +369,8 @@ let tests =
     resumed ();
     Alcotest.test_case "resume from a bad basis" `Quick dual_restart;
     Alcotest.test_case "transport past the eta limit" `Quick transport;
+    Alcotest.test_case "sparse float, wyndor" `Quick sparse_wyndor;
+    Alcotest.test_case "sparse float, beale" `Quick sparse_beale;
+    sparse_random ();
+    Alcotest.test_case "sparse float, transport" `Quick sparse_transport;
   ]
