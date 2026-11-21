@@ -377,6 +377,13 @@ let sheriff_table () =
   check 5 (2.28 +. 1.26);
   check 10 (1.76 +. 0.93)
 
+let sheriff_two_rounds () =
+  let v =
+    welfare ~exact:true
+      (Sheriff.game { Sheriff.baseline with items = 2; rounds = 2 })
+  in
+  close "welfare" 10. (v.(0) +. v.(1))
+
 let sheriff_game () =
   let c = { Sheriff.baseline with items = 2; rounds = 2 } in
   let tree = tree_of (Sheriff.game c) in
@@ -416,5 +423,6 @@ let tests =
     Alcotest.test_case "chicken welfare 10.5" `Quick chicken_welfare;
     Alcotest.test_case "zero-sum value" `Quick zero_sum_value;
     Alcotest.test_case "sheriff table 1" `Quick sheriff_table;
+    Alcotest.test_case "sheriff, two rounds exact" `Quick sheriff_two_rounds;
     Alcotest.test_case "sheriff game" `Quick sheriff_game;
   ]
