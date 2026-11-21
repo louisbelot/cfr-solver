@@ -172,6 +172,7 @@ let () =
     : Game.S);
   efce 10 1;
   efce 1 2;
+  efce 2 2;
   seven_cards ();
   subgame "river" (Bet_tree.limit ~pot:6. ~bet:1. 1) "Qs Jh 8d 5c 2s" 2000;
   let turn = Bet_tree.limit ~pot:4. ~bet:1. 2 in
