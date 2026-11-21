@@ -156,12 +156,10 @@ let exact name g =
 let efce items rounds =
   let plan =
     Efce_lp.plan
-      (Multi_tree.build
-         (Sheriff.game { Sheriff.baseline with items; rounds }))
+      (Multi_tree.build (Sheriff.game { Sheriff.baseline with items; rounds }))
   in
   let elapsed, _ = time (fun () -> ignore (Efce_lp.solve ~exact:true plan)) in
-  Printf.printf "%-6s %-14s %10.2f s
-" "sheriff"
+  Printf.printf "%-6s %-14s %10.2f s\n" "sheriff"
     (Printf.sprintf "efce lp %dx%d" items rounds)
     elapsed
 
