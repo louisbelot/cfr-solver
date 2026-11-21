@@ -3059,3 +3059,76 @@ Next: a sparse float revised simplex (the float twin of `Revised`, with a
 threshold-pivoting float LU and the same eta file) for the float pass, which
 is now the cost on every LP here; then exact values of small river subgames
 through the sequence form.
+
+## 2026-11-21: Sparse float revised simplex
+
+The float pass that hands the exact solver its starting basis was a dense
+float tableau, and since the exact revised simplex went in it was most of the
+time on every LP here. It is now a sparse revised simplex, the float twin of
+`Revised`:
+
+- `Flu`: a float LU with threshold pivoting. A pivot has to be at least 0.1 of
+  the largest entry left in its column, the Markowitz count (r-1)(c-1) picks
+  among those, and the search walks the sparsest columns first and stops after
+  four that have an acceptable pivot. Entries under 1e-14 are dropped, and a
+  column whose largest entry is under 1e-11 makes the factorization fail.
+- `Fsimplex`: primal simplex on that factorization with devex pricing, a
+  Harris two-pass ratio test at 1e-9 and an eta file that is refactored after
+  128 updates or once it holds about three times the factor's nonzeros. When a
+  refactorization comes out singular, the entering column is rejected instead.
+- `Lp.maximize` builds the float problem from the exact one, pushes the
+  right-hand sides out by 1e-7 to 2e-7, keeps only the basis and verifies it
+  exactly as before. `Lp.revised_float` runs the float solver on its own for
+  the tests: Wyndor, Beale's cycling example, a 24 x 24 transport problem and
+  400 random LPs against the exact tableau.
+
+The first version didn't help two-round Sheriff with two items: the float
+basis failed the exact check and the exact simplex was still going after ten
+minutes. Three things were wrong:
+
+- The perturbation pushed >= rows up as well, which tightens them. The EFCE
+  LPs have a lot of >= incentive rows, and the tightened LP had a different
+  optimal vertex. Only <= rows move now.
+- Optimal and unbounded were declared on the running updates of x_B and the
+  reduced costs. The solver now recomputes both through the factorization and
+  only stops if the answer still holds.
+- At five items the float pass hit its pivot limit, 2(m+n), halfway through
+  phase 2. It wasn't cycling, phase 2 is just very degenerate there. With
+  8(m+n) it finishes after 33,409 pivots and the basis passes the exact check.
+
+Something I tried and dropped: shifting the right-hand side under degenerate
+basic variables after 200 degenerate pivots in a row, putting it back at the
+end and repairing feasibility with a dual simplex. It removed the stalls on
+Liar's dice and one-item Sheriff. But once the ties were broken, the Harris
+test lost its choice of large pivots among near ties, and within a few hundred
+pivots the basis was numerically singular: a fresh factorization of it failed,
+and phase 1 or phase 2 reported a false "unbounded". A pivot tolerance relative
+to the column's largest entry, skipping columns with only tiny entries and a
+Harris tolerance wider than the shift didn't help. The bigger pivot limit did
+the job without any of it.
+
+Tests: a new EFCE test solves two-round Sheriff with two items exactly and
+checks that the welfare is 10. Full suite: 487 tests in 150 s.
+
+Results, the previous commit (built in a worktree) and this one back to back:
+
+| LP | before | after | exact pivots after |
+|----|-------:|------:|-------------------:|
+| Leduc, both players | 0.73 s | 0.27 s | 0 |
+| Liar's dice 1x4 wild | 0.97 s | 0.65 s | 0 |
+| Liar's dice 1x4 | 0.45 s | 0.32 s | 0 |
+| Liar's dice 2x2 | 0.30 s | 0.25 s | 0 |
+| Sheriff EFCE, 10 items | 4.54 s | 0.15 s | 0 |
+| Sheriff EFCE, 1 item, 2 rounds | 21.08 s | 0.69 s | 0 |
+| Sheriff EFCE, 2 items, 2 rounds | over 240 s | 2.74 s | 0 |
+| Sheriff EFCE, 3 items, 2 rounds | not run | 8.38 s | 0 |
+| Sheriff EFCE, 5 items, 2 rounds | not run | 128.89 s | 0 |
+
+The exact answer on two-round Sheriff with one item moved from 4/1 to the
+paper's 3/2 split: a different optimal vertex of the same LP, total 5 both
+times. Two to five items over two rounds all give (8, 2), which matches
+Farina et al. where they report it.
+
+Next: the float pass is now nearly all of the time on the biggest LPs (five
+items over two rounds), so steepest-edge pricing or a float dual simplex for
+it, then exact values of small river subgames through the sequence form.
