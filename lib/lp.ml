@@ -658,7 +658,7 @@ let float_basis s rows =
     Array.mapi
       (fun i r ->
         let shift =
-          if r.rel = Eq then 0.
+          if r.rel <> Le then 0.
           else float (1000 + ((i + 1) * 7919 mod 1000)) /. 1e10
         in
         Rat.to_float r.rhs +. shift)
