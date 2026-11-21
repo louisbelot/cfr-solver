@@ -37,6 +37,7 @@ type t = {
   rows : (int * float) array array;
   arow : float array;
   touched : int Dynarray.t;
+  mutable fresh : bool;
   mutable fill : int;
   mutable budget : int;
   mutable pivots : int;
@@ -76,6 +77,7 @@ let factor p basis =
   Flu.factor p.m (Array.map (fun j -> Array.to_list p.columns.(j)) basis)
 
 let refresh t cost =
+  t.fresh <- true;
   t.xb <- ftran t t.p.b;
   let y = btran t (Array.map cost t.basis) in
   for j = 0 to t.p.first_art - 1 do
@@ -125,59 +127,16 @@ let leaving t alpha ~phase2 =
     Some (r, if blocks r then 0. else Float.max 0. (t.xb.(r) /. alpha.(r)))
 
 let swap t r j =
-  let l = t.basis.(r) in
-  t.pos.(l) <- -1;
+  t.pos.(t.basis.(r)) <- -1;
   t.basis.(r) <- j;
-  t.pos.(j) <- r;
-  l
+  t.pos.(j) <- r
 
-let rec iterate t ~limit ~phase2 cost rejected =
-  if t.pivots >= limit then Stopped
-  else
-    let q = entering t rejected in
-    if q < 0 then Optimal
-    else
-      let alpha = ftran t (dense t t.p.columns.(q)) in
-      match leaving t alpha ~phase2 with
-      | None -> Unbounded
-      | Some (r, theta) -> (
-          let arq = alpha.(r) in
-          let l = swap t r q in
-          if Dynarray.length t.etas < eta_limit && t.fill < t.budget then (
-            pivot t ~r ~q ~l ~alpha ~theta;
-            let rest = ref [] in
-            Array.iteri
-              (fun i a ->
-                if i <> r && Float.abs a > Flu.drop then rest := (i, a) :: !rest)
-              alpha;
-            let rest = Array.of_list !rest in
-            t.fill <- t.fill + Array.length rest;
-            Dynarray.add_last t.etas { r; ar = arq; rest };
-            iterate t ~limit ~phase2 cost rejected)
-          else
-            match factor t.p t.basis with
-            | None ->
-                ignore (swap t r l);
-                Hashtbl.replace rejected q ();
-                iterate t ~limit ~phase2 cost rejected
-            | Some lu ->
-                pivot t ~r ~q ~l ~alpha ~theta;
-                t.lu <- lu;
-                Dynarray.clear t.etas;
-                t.fill <- 0;
-                t.budget <- 3 * (Flu.nonzeros lu + t.p.m);
-                t.refactors <- t.refactors + 1;
-                Hashtbl.reset rejected;
-                refresh t cost;
-                iterate t ~limit ~phase2 cost rejected)
-
-and pivot t ~r ~q ~l ~alpha ~theta =
-  let arq = alpha.(r) in
+let unit t r =
   let e = Array.make t.p.m 0. in
   e.(r) <- 1.;
-  let rho = btran t e in
-  let dq = t.d.(q) and wq = t.w.(q) in
-  let step = dq /. arq in
+  btran t e
+
+let row t rho f =
   Array.iteri
     (fun i ri ->
       if Float.abs ri > Flu.drop then
@@ -189,21 +148,82 @@ and pivot t ~r ~q ~l ~alpha ~theta =
     rho;
   Dynarray.iter
     (fun j ->
-      let arj = t.arow.(j) in
+      let a = t.arow.(j) in
       t.arow.(j) <- 0.;
-      if t.pos.(j) < 0 && j <> l && arj <> 0. then (
+      if t.pos.(j) < 0 && a <> 0. then f j a)
+    t.touched;
+  Dynarray.clear t.touched
+
+let update t ~r ~q ~alpha ~theta =
+  let arq = alpha.(r) and l = t.basis.(r) in
+  let wq = t.w.(q) in
+  let step = t.d.(q) /. arq in
+  row t (unit t r) (fun j arj ->
+      if j <> q then (
         t.d.(j) <- t.d.(j) -. (step *. arj);
         let ratio = arj /. arq in
-        t.w.(j) <- Float.max t.w.(j) (ratio *. ratio *. wq)))
-    t.touched;
-  Dynarray.clear t.touched;
+        t.w.(j) <- Float.max t.w.(j) (ratio *. ratio *. wq)));
   t.d.(q) <- 0.;
   if l < t.p.first_art then (
     t.d.(l) <- -.step;
     t.w.(l) <- Float.max (wq /. (arq *. arq)) 1.);
   Array.iteri (fun i a -> t.xb.(i) <- t.xb.(i) -. (theta *. a)) alpha;
   t.xb.(r) <- theta;
-  t.pivots <- t.pivots + 1
+  t.pivots <- t.pivots + 1;
+  t.fresh <- false
+
+let change t ~r ~q ~alpha ~theta cost rejected =
+  let eta = Dynarray.length t.etas < eta_limit && t.fill < t.budget in
+  let lu =
+    if eta then None
+    else
+      let basis = Array.copy t.basis in
+      basis.(r) <- q;
+      factor t.p basis
+  in
+  if (not eta) && Option.is_none lu then Hashtbl.replace rejected q ()
+  else (
+    update t ~r ~q ~alpha ~theta;
+    swap t r q;
+    match lu with
+    | None ->
+        let rest = ref [] in
+        Array.iteri
+          (fun i a ->
+            if i <> r && Float.abs a > Flu.drop then rest := (i, a) :: !rest)
+          alpha;
+        let rest = Array.of_list !rest in
+        t.fill <- t.fill + Array.length rest;
+        Dynarray.add_last t.etas { r; ar = alpha.(r); rest }
+    | Some lu ->
+        t.lu <- lu;
+        Dynarray.clear t.etas;
+        t.fill <- 0;
+        t.budget <- 3 * (Flu.nonzeros lu + t.p.m);
+        t.refactors <- t.refactors + 1;
+        Hashtbl.reset rejected;
+        refresh t cost)
+
+let rec primal t ~limit ~phase2 cost rejected =
+  let again () = primal t ~limit ~phase2 cost rejected in
+  if t.pivots >= limit then Stopped
+  else
+    let q = entering t rejected in
+    if q < 0 then
+      if t.fresh then Optimal
+      else (
+        refresh t cost;
+        again ())
+    else
+      let alpha = ftran t (dense t t.p.columns.(q)) in
+      match leaving t alpha ~phase2 with
+      | None when t.fresh -> Unbounded
+      | None ->
+          refresh t cost;
+          again ()
+      | Some (r, theta) ->
+          change t ~r ~q ~alpha ~theta cost rejected;
+          again ()
 
 let result t status cost =
   let x = Array.make (Array.length t.p.columns) 0. in
@@ -250,6 +270,7 @@ let solve ?(limit = max_int) p =
       rows = transpose p;
       arow = Array.make p.first_art 0.;
       touched = Dynarray.create ();
+      fresh = false;
       fill = 0;
       budget = 3 * (Flu.nonzeros lu + p.m);
       pivots = 0;
@@ -260,18 +281,17 @@ let solve ?(limit = max_int) p =
   let real j = if j < p.first_art then p.cost.(j) else 0. in
   refresh t art;
   let scale = Array.fold_left (fun a v -> Float.max a (Float.abs v)) 1. p.b in
-  match iterate t ~limit ~phase2:false art (Hashtbl.create 8) with
+  match primal t ~limit ~phase2:false art (Hashtbl.create 8) with
   | Stopped | Unbounded | Infeasible -> result t Stopped real
   | Optimal -> (
-      let infeasibility =
-        Array.fold_left
-          (fun acc i ->
-            if t.basis.(i) >= p.first_art then acc +. t.xb.(i) else acc)
-          0. (Array.init p.m Fun.id)
-      in
+      let infeasibility = ref 0. in
+      Array.iteri
+        (fun i j ->
+          if j >= p.first_art then infeasibility := !infeasibility +. t.xb.(i))
+        t.basis;
       Array.fill t.w 0 p.first_art 1.;
       refresh t real;
-      match iterate t ~limit ~phase2:true real (Hashtbl.create 8) with
+      match primal t ~limit ~phase2:true real (Hashtbl.create 8) with
       | Stopped -> result t Stopped real
-      | _ when infeasibility > 1e-7 *. scale -> result t Infeasible real
+      | _ when !infeasibility > 1e-7 *. scale -> result t Infeasible real
       | status -> result t status real)
