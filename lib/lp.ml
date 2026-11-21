@@ -664,7 +664,7 @@ let float_basis s rows =
         Rat.to_float r.rhs +. shift)
       rows
   in
-  (Fsimplex.solve ~limit:(2 * (s.m + Array.length s.columns)) (sparse s b))
+  (Fsimplex.solve ~limit:(8 * (s.m + Array.length s.columns)) (sparse s b))
     .basis
 
 let revised_float ?limit ~vars objective rows =
