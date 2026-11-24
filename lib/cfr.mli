@@ -25,4 +25,6 @@ module Make (G : Game.S) : sig
   val touched : t -> int
   val average_strategy : t -> Strategy.t
   val current_strategy : t -> Strategy.t
+  val infosets : t -> Tree.infoset array
+  val regrets : t -> (string * float array) list
 end

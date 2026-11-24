@@ -228,4 +228,7 @@ module Make (G : Game.S) = struct
   let current_strategy t =
     if t.schedule.predictive then Table.predicted_strategy t.table t.last
     else Table.current_strategy t.table
+
+  let infosets t = t.table.infosets
+  let regrets t = Table.regrets t.table
 end
