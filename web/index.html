@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFR in the browser</title>
+<meta name="description" content="Counterfactual regret minimization on Kuhn poker, Leduc hold'em, Liar's dice and Goofspiel, compiled from OCaml with js_of_ocaml.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>CFR in the browser</h1>
+    <p>
+      The OCaml solver from <a href="https://github.com/louisbelot/cfr-solver">cfr-solver</a>,
+      compiled to JavaScript with js_of_ocaml and running in a web worker on your machine.
+      Pick a game and an algorithm, run it, then click any information set to see how its
+      strategy and regrets moved.
+    </p>
+  </header>
+
+  <section class="controls" aria-label="Solver settings">
+    <label>Game
+      <select id="game">
+        <option value="kuhn">Kuhn poker</option>
+        <option value="leduc">Leduc hold'em</option>
+        <option value="liars-1d4">Liar's dice, 1 die, 4 faces</option>
+        <option value="liars">Liar's dice, 1 die, 6 faces</option>
+        <option value="goofspiel-4">Goofspiel, 4 cards</option>
+        <option value="goofspiel">Goofspiel, 5 cards</option>
+      </select>
+    </label>
+    <label>Algorithm
+      <select id="algorithm">
+        <option value="cfr">CFR</option>
+        <option value="cfr+" selected>CFR+</option>
+        <option value="lcfr">Linear CFR</option>
+        <option value="dcfr">DCFR</option>
+        <option value="dcfr+">DCFR+</option>
+        <option value="pcfr+">PCFR+</option>
+        <option value="pdcfr+">PDCFR+</option>
+      </select>
+    </label>
+    <label>Iterations
+      <input id="iterations" type="number" min="1" max="1000000" value="10000">
+    </label>
+    <label class="check"><input id="last" type="checkbox" checked> Track last iterate</label>
+    <button id="run" type="button">Run</button>
+    <button id="stop" type="button" disabled>Stop</button>
+  </section>
+
+  <p id="notation" class="note"></p>
+
+  <section class="panel" aria-labelledby="exploit-title">
+    <h2 id="exploit-title">Exploitability</h2>
+    <p class="note">
+      How much a best response wins against the strategy, averaged over both seats, in the
+      game's payoff units. Solid lines are the average strategy (the one CFR's guarantee is
+      about), dashed lines the strategy played at that iteration. Each algorithm keeps its
+      color; running it again on the same game replaces its line.
+    </p>
+    <div id="legend" class="legend"></div>
+    <div id="chart" class="chart"></div>
+  </section>
+
+  <div class="split">
+    <section class="panel" aria-labelledby="table-title">
+      <h2 id="table-title">Strategy</h2>
+      <div class="filters">
+        <input id="filter" type="search" placeholder="Filter infosets" aria-label="Filter infosets">
+        <select id="seat" aria-label="Player">
+          <option value="all">Both players</option>
+          <option value="0">Player 0</option>
+          <option value="1">Player 1</option>
+        </select>
+      </div>
+      <div id="actions" class="actions"></div>
+      <p id="table-note" class="note"></p>
+      <div id="table" class="table" role="list"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="detail-title">
+      <h2 id="detail-title">Information set</h2>
+      <p id="detail-note" class="note">Click a row in the strategy list.</p>
+      <div id="detail"></div>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="play-title">
+    <h2 id="play-title">Play against it</h2>
+    <p class="note">
+      Deal a hand against the selected run's average strategy. The bot samples its move from
+      that mix at every infoset; its private information shows once the hand is over.
+    </p>
+    <div class="filters">
+      <select id="play-seat" aria-label="Your seat">
+        <option value="0">You are player 0</option>
+        <option value="1">You are player 1</option>
+      </select>
+      <button id="deal" type="button" disabled>Deal</button>
+    </div>
+    <p id="play-note" class="note">Run a solver first.</p>
+    <div id="play" class="play" aria-live="polite"></div>
+  </section>
+
+  <footer>
+    <p>
+      Every number here comes from the same code as the command-line tool: the tree walk,
+      the regret updates and the exact best response. Checkpoints are geometric (each one
+      25% later than the last), and on large games older snapshots are thinned to every
+      second one so memory stays bounded.
+    </p>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
