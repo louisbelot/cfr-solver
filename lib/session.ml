@@ -1,0 +1,160 @@
+type point = {
+  iteration : int;
+  touched : int;
+  average : float;
+  current : float option;
+}
+
+type row = {
+  iteration : int;
+  average : float array;
+  current : float array;
+  regret : float array;
+}
+
+type frame = {
+  index : int;
+  at : int;
+  avg : float array;
+  cur : float array;
+  reg : float array;
+}
+
+type t = {
+  game : (module Game.S);
+  average : unit -> Strategy.t;
+  infosets : Tree.infoset array;
+  offset : int array;
+  lookup : (string, int) Hashtbl.t;
+  step : unit -> unit;
+  iterations : unit -> int;
+  touched : unit -> int;
+  snapshot : unit -> float array * float array * float array;
+  exploit : unit -> float * float option;
+  budget : int;
+  growth : float;
+  mutable next : int;
+  mutable count : int;
+  mutable stride : int;
+  mutable points : point list;
+  mutable frames : frame list;
+}
+
+let create ?(algorithm = Cfr.Vanilla) ?(last = true) ?(budget = 4_000_000)
+    ?(growth = 1.25) (module G : Game.S) =
+  if growth <= 1. then invalid_arg "Session.create: growth must exceed 1";
+  let module C = Cfr.Make (G) in
+  let module B = Best_response.Make (G) in
+  let c = C.create ~algorithm () in
+  let infosets = C.infosets c in
+  let n = Array.length infosets in
+  let offset = Array.make (n + 1) 0 in
+  Array.iteri
+    (fun i (s : Tree.infoset) ->
+      offset.(i + 1) <- offset.(i) + Array.length s.actions)
+    infosets;
+  let lookup = Hashtbl.create n in
+  Array.iteri
+    (fun i (s : Tree.infoset) -> Hashtbl.replace lookup s.key i)
+    infosets;
+  let flatten get =
+    let a = Array.make offset.(n) 0. in
+    Array.iteri
+      (fun i (s : Tree.infoset) ->
+        Array.blit (get i s) 0 a offset.(i) (Array.length s.actions))
+      infosets;
+    a
+  in
+  let snapshot () =
+    let avg = C.average_strategy c and cur = C.current_strategy c in
+    let reg = Array.of_list (List.map snd (C.regrets c)) in
+    let probs s _ (i : Tree.infoset) =
+      Strategy.probs s i.key ~n:(Array.length i.actions)
+    in
+    (flatten (probs avg), flatten (probs cur), flatten (fun i _ -> reg.(i)))
+  in
+  let exploit () =
+    let e = B.exploitability (C.average_strategy c) in
+    (e, if last then Some (B.exploitability (C.current_strategy c)) else None)
+  in
+  {
+    game = (module G);
+    average = (fun () -> C.average_strategy c);
+    infosets;
+    offset;
+    lookup;
+    step = (fun () -> C.iterate c);
+    iterations = (fun () -> C.iterations c);
+    touched = (fun () -> C.touched c);
+    snapshot;
+    exploit;
+    budget;
+    growth;
+    next = 1;
+    count = 0;
+    stride = 1;
+    points = [];
+    frames = [];
+  }
+
+let game t = t.game
+let infosets t = t.infosets
+let average t = t.average ()
+let iterations t = t.iterations ()
+let touched t = t.touched ()
+let slots t = t.offset.(Array.length t.infosets)
+
+let rec thin t =
+  if 3 * slots t * List.length t.frames > t.budget && List.length t.frames > 1
+  then begin
+    t.stride <- 2 * t.stride;
+    t.frames <- List.filter (fun f -> f.index mod t.stride = 0) t.frames;
+    thin t
+  end
+
+let record t =
+  let at = t.iterations () in
+  let average, current = t.exploit () in
+  t.points <-
+    { iteration = at; touched = t.touched (); average; current } :: t.points;
+  if t.count mod t.stride = 0 then begin
+    let avg, cur, reg = t.snapshot () in
+    t.frames <- { index = t.count; at; avg; cur; reg } :: t.frames;
+    thin t
+  end;
+  t.count <- t.count + 1
+
+let iterate t =
+  t.step ();
+  let n = t.iterations () in
+  if n >= t.next then begin
+    record t;
+    t.next <-
+      max (n + 1) (int_of_float (Float.ceil (float_of_int n *. t.growth)))
+  end
+
+let checkpoint t =
+  match t.points with
+  | p :: _ when p.iteration = t.iterations () -> ()
+  | _ -> record t
+
+let points t = List.rev t.points
+let frames t = List.rev_map (fun f -> f.at) t.frames
+
+let row t i iteration (avg, cur, reg) =
+  let o = t.offset.(i) and k = t.offset.(i + 1) - t.offset.(i) in
+  {
+    iteration;
+    average = Array.sub avg o k;
+    current = Array.sub cur o k;
+    regret = Array.sub reg o k;
+  }
+
+let history t key =
+  Hashtbl.find_opt t.lookup key
+  |> Option.map (fun i ->
+      List.rev_map (fun f -> row t i f.at (f.avg, f.cur, f.reg)) t.frames)
+
+let table t =
+  let s = t.snapshot () and at = t.iterations () in
+  Array.init (Array.length t.infosets) (fun i -> row t i at s)
