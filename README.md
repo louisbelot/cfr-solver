@@ -44,6 +44,52 @@ gifts) that keep it from getting more exploitable.
 
 ![Exploitability against nodes touched in Leduc hold'em](docs/leduc.svg)
 
+## In the browser
+
+[louisbelot.github.io/cfr-solver](https://louisbelot.github.io/cfr-solver/) runs
+the same OCaml code in your browser. The solver is compiled to JavaScript with
+js_of_ocaml (a 128 KB worker in the release build) and runs in a web worker, so
+the page stays responsive while it iterates. Pick Kuhn, Leduc, Liar's dice or
+Goofspiel and any of the seven full-tree algorithms, and runs on the same game
+are drawn on one exploitability chart, average strategy solid and last iterate
+dashed. Clicking an infoset shows its average strategy and cumulative regrets
+over the run, and the last panel deals hands against the run's average strategy.
+
+![The browser version on Leduc hold'em](docs/web.jpg)
+
+The worker gives the same numbers as the native build. PCFR+ on Leduc, for
+example, reports an exploitability of 0.00126789 at iteration 568 in both, to
+the six digits the page shows. In Node 24, 1,000 CFR+ iterations of Leduc take
+about 0.26 s, best responses at every checkpoint included.
+
+The page makes one thing easy to see that the CLI tables hide: on Kuhn poker the
+last iterate of PCFR+ falls below 1e-12 by iteration 118 and reaches 1.4e-17 by
+10,000, while vanilla CFR's last iterate is still 0.24 from equilibrium after
+10,000 iterations (its average is at 0.0025).
+
+To build it locally:
+
+```
+opam install js_of_ocaml-compiler js_of_ocaml
+dune build --profile release ./web/worker.bc.js
+node web/smoke.js _build/default/web/worker.bc.js
+```
+
+then serve `web/index.html`, `web/style.css`, `web/app.js` and
+`_build/default/web/worker.bc.js` from one directory (a worker can't load from
+`file://`). The web executable is marked optional, so `dune build` skips it when
+js_of_ocaml isn't installed.
+
+Two details. Checkpoints are geometric, each 25% later than the last (1, 2, 3,
+4, 5, 7, 9, 12, ...), so a run of n iterations stores about 10 log10(n) of
+them. Each checkpoint keeps the full average, current and regret tables for the
+infoset history. When that would pass 4 million floats (Liar's dice with six
+faces has 49,140 action slots, so 27 snapshots fit), every second snapshot is
+dropped and from then on only every second checkpoint is kept, so the stored
+ones always sit on an even lattice of checkpoints. And js_of_ocaml 6.4.1 crashes compiling the library in
+separate-compilation mode (an assertion in its variable assignment pass), so
+the web directory builds whole-program in every profile.
+
 ## Example
 
 ```

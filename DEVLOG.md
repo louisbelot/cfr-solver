@@ -3132,3 +3132,68 @@ Farina et al. where they report it.
 Next: the float pass is now nearly all of the time on the biggest LPs (five
 items over two rounds), so steepest-edge pricing or a float dual simplex for
 it, then exact values of small river subgames through the sequence form.
+
+## 2026-11-24: the solver in the browser
+
+The library now runs in a browser. `web/worker.ml` is about 40 lines of
+js_of_ocaml glue around a new pure OCaml module, `Explorer`, which takes typed
+requests (create a run, step it for a time budget, fetch the strategy table, an
+infoset's history, deal a hand, act) and answers with `Json.t`. Keeping the
+protocol in the library means alcotest covers it natively; the worker only
+decodes the JS message and posts the reply as a string. The page itself
+(`web/index.html`, `app.js`, `style.css`) is plain JavaScript with hand-drawn SVG
+charts and no build step.
+
+Pieces underneath:
+
+- `Session` wraps one full-tree CFR run and records checkpoints on a geometric
+  schedule (next = max(n + 1, ceil(1.25 n))): exploitability of the average
+  and, optionally, of the current strategy, plus snapshots of the average,
+  current and regret tables. Snapshot memory is bounded by thinning: when the
+  stored tables pass the budget, the stride doubles and only snapshots whose
+  checkpoint index is a multiple of it survive. New ones are taken at the same
+  stride, so the kept set stays an evenly spaced lattice instead of being dense
+  at the end. `checkpoint` adds a final point at the target so the last reported
+  number is for the iteration count shown.
+- `Cfr.Make` exposes `infosets` and `regrets` (the table already had them).
+- `Catalog` holds the game and algorithm names that the CLI and the page share;
+  it adds `liars-1d4` and `goofspiel-4`, which fit the browser better.
+- `Play` gained a resumable form: `start` walks chance and bot nodes and stops
+  at the human's turn with a `resume` closure, and `hand` is now a loop over it.
+  The browser needs this because it can't block inside an `ask` callback. The
+  explorer hides the bot's infoset keys (they contain its private card or die)
+  until the hand is over.
+
+Checks:
+
+- Session against a plain `Cfr.Make` run: same exploitability at checkpoint 38
+  and same average strategy at 50 (CFR+, Kuhn), to 1e-15.
+- The current strategy in every snapshot equals regret matching on that
+  snapshot's regrets.
+- Thinning: with room for four snapshots, 1,000 iterations keep at most four,
+  the first is iteration 1 and the gaps in checkpoint index are equal.
+- Dealing from a solved Kuhn run reports -1/18 and +1/18 for the two seats
+  (within 2e-3 after 2,000 CFR+ iterations); bot moves carry no infoset until
+  showdown, for 20 seeded hands.
+- `web/smoke.js` drives the compiled worker in Node and runs in the Pages
+  workflow before deploying.
+- JS against native: PCFR+ on Leduc gives 0.0012678914760820836 at iteration
+  568 natively and 0.00126789 from the worker (rounded to six digits on the
+  wire); 710 and 888 agree the same way.
+
+Numbers, Node 24 on this machine, release build (128 KB worker): 1,000 CFR+
+iterations of Leduc with both exploitabilities at every checkpoint in 0.26 s,
+2,000 PCFR+ iterations of Liar's dice 1x4 in 2.2 s in the browser, 100
+iterations of six-faced Liar's dice in 6.3 s. Full suite: 501 tests in 148 s.
+
+On Kuhn, the last iterate of PCFR+ is below 1e-12 at checkpoint 118 and at
+1.4e-17 after 10,000 iterations; PDCFR+ gets there at 148 and its average is at
+1.8e-16. Vanilla CFR's last iterate is still 0.24 away after 10,000.
+
+A js_of_ocaml problem: 6.4.1 hits an assertion in `js_assign.ml` ("Some
+variables escaped") when it compiles `cfr_solver.cma` separately, which is the
+default in the dev profile. An `env` stanza in `web/dune` sets whole-program
+compilation for that directory, so `dune build` works in both profiles.
+
+Next: wasm_of_ocaml for the bigger games (six-faced Liar's dice is slow in
+JS), and the Monte Carlo variants in the page.
