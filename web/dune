@@ -6,5 +6,4 @@
 (executable
  (name worker)
  (modes js)
- (optional)
  (libraries cfr_solver js_of_ocaml))

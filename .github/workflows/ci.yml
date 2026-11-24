@@ -19,8 +19,10 @@ jobs:
         with:
           ocaml-compiler: "5.2"
       - run: opam install . --deps-only --with-test
+      - run: opam install js_of_ocaml-compiler js_of_ocaml
       - run: opam exec -- dune build
       - run: opam exec -- dune test
+      - run: node web/smoke.js _build/default/web/worker.bc.js
       - name: smoke test the CLI
         if: runner.os == 'Linux'
         run: |

@@ -77,8 +77,8 @@ node web/smoke.js _build/default/web/worker.bc.js
 
 then serve `web/index.html`, `web/style.css`, `web/app.js` and
 `_build/default/web/worker.bc.js` from one directory (a worker can't load from
-`file://`). The web executable is marked optional, so `dune build` skips it when
-js_of_ocaml isn't installed.
+`file://`). Plain `dune build` builds the worker too, so it needs js_of_ocaml;
+`dune build @install` and `dune test` don't.
 
 Two details. Checkpoints are geometric, each 25% later than the last (1, 2, 3,
 4, 5, 7, 9, 12, ...), so a run of n iterations stores about 10 log10(n) of
