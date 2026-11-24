@@ -1,0 +1,10 @@
+(env
+ (_
+  (js_of_ocaml
+   (compilation_mode whole_program))))
+
+(executable
+ (name worker)
+ (modes js)
+ (optional)
+ (libraries cfr_solver js_of_ocaml))
