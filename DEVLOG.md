@@ -3197,3 +3197,89 @@ compilation for that directory, so `dune build` works in both profiles.
 
 Next: wasm_of_ocaml for the bigger games (six-faced Liar's dice is slow in
 JS), and the Monte Carlo variants in the page.
+
+## 2026-11-25: sampling, a river tab and exact rivers
+
+The browser page now runs Monte Carlo CFR and the hold'em river solver, and
+the CLI can solve a small river exactly.
+
+`Session` used to wrap `Cfr.Make` directly. It now builds an `engine` record
+(infosets, step, iteration and node counters, average, current and regrets)
+from either `Cfr.Make` or `Mccfr.Make`, and everything else (checkpoints,
+snapshots, thinning) works on that record unchanged. A sampled session takes a
+seed, and `Catalog.samplings` lists full, external and outcome (epsilon 0.6).
+The explorer refuses predictive algorithms with sampling, since `Mccfr`
+rejects them. `Session.schedule` is the geometric checkpoint rule on its own
+so the river run can share it.
+
+River runs live next to game runs in the explorer as a second variant of
+`run`. `Step` drives either one through the same time-budget loop; `Lines`
+returns the public nodes with reach-weighted mixes and the first player's
+value, and `Spot` returns one node's per-hand reach and strategy, grouped into
+the 169 hand classes by the new `Range.label`. `Subgame.lines` and the new
+`Subgame.spot` share one walk (`visit`) that carries both players' reach
+vectors down the public tree. Bad input (a board that isn't five distinct
+cards, an unparsable or empty range, a cap outside 1 to 6) comes back as an
+error reply instead of an exception in the worker.
+
+The page: a sampling selector, an iterations/nodes-touched axis, Pause and
+Resume (the run stays in the worker; Resume goes on to the larger of the old
+target and the Iterations box), and a river tab with the public tree, the
+exploitability chart in percent of the pot and a 13x13 grid. A grid cell
+fills to reach / combos, the share of the class still in the range at that
+node, and splits by the reach-weighted average strategy. Runs are colored by
+their place in the legend: coloring by algorithm and tinting for sampling made
+CFR, ES CFR and OS CFR three near-identical blues.
+
+Exact rivers: the scalar river game that the tests used as a reference
+(`test/subgame_ref.ml`) moved into the library as `Flat_subgame`, so
+`Sequence_form` can solve it. `Subgame.of_strategy` maps a `Strategy.t` back
+onto the public tree (river only; after a chance node the suit-isomorphic
+tree has no node for most cards). `cfr-solver subgame --exact` prints the LP
+value as a fraction and how far the CFR value is from it.
+
+Checks:
+
+- A sampled session against a direct `Mccfr.Make` run with seed 7 and linear
+  weighting: same nodes touched, same exploitability at 300 and every regret
+  equal. Outcome sampling gets Kuhn under 0.04 in 20,000 iterations.
+- Explorer river run against a direct `Subgame` run: checkpoints at 1, 2, 3,
+  ..., 94, 100 and the same exploitability at 100 (to the six digits sent),
+  same first-player value.
+- `Subgame.spot` against `Subgame.lines` at every node: reach mass and every
+  action frequency to 1e-12, and the root reach is the range weights.
+- Card removal in the grid on Qs Jh 8d 5c 2s: 3 combos of QQ, 6 of AA, 9 of
+  AQo, 7 of QJo, 12 of T9o (my first guess in the test, 12/9/16, forgot that
+  offsuit excludes the suited combos).
+- Exact river (QQ/AA/AKs/77/QJs against KK/AQs/72s/T9s with weights, cap 2):
+  both exact best responses to the LP plans equal the value as fractions; the
+  LP strategy on the public tree has the LP value and exploitability 0 to
+  1e-12; both best responses of a DCFR average agree between `Sequence_form`
+  and `Subgame` to 1e-12; the DCFR value is within twice its exploitability
+  of the exact value.
+- `web/smoke.js` now also runs an outcome-sampling Leduc run and 300 DCFR
+  river iterations through the compiled worker.
+
+Numbers (this machine):
+
+- Node, release worker (181,833 bytes): 300 DCFR iterations of the random vs
+  random river with checkpoints in 1.08 s. In the browser, 1,000 in 4.2 s,
+  ending at 0.00133% of the pot and -0.0822 chips for the first player, both
+  equal to the CLI.
+- Leduc with seed 1: CFR+ 2,000 iterations, 7,756,000 nodes, 8.29e-5;
+  external sampling CFR 100,000 iterations, 4,411,321 nodes, 0.0403; outcome
+  sampling CFR 400,000 iterations, 6,286,314 nodes, 0.135.
+- `subgame --exact` on a 47 vs 45 hand river (cap 4): 612 + 586 sequences,
+  30,293 payoff entries, 2.41 s; value -3948144804608/24987782611407 =
+  -0.1580030076; DCFR after 1,000 iterations is 8.85e-6 off; the LP strategy
+  measures 7.6e-15% of the pot in the public tree.
+- Full suite: 515 tests in 182 s.
+
+What didn't work: a wasm_of_ocaml build. With binaryen from MSYS2 on the
+path, `opam install wasm_of_ocaml-compiler.6.4.1` hangs while building its
+own runtime: four `wasm-merge` processes sat at zero CPU for nine minutes. I
+killed it and removed binaryen again; the wasm build needs a Linux machine
+(CI) to try.
+
+Next: wasm_of_ocaml on a Linux runner, and SoPlex-style iterative refinement
+for LPs whose float basis is far off.
