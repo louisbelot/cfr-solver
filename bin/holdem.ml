@@ -84,9 +84,12 @@ let summary t prof =
 let run_cmd f =
   try f () with Invalid_argument msg | Sys_error msg -> Error (`Msg msg)
 
-let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
+let subgame board oop ip tree algorithms iterations no_iso single exact csv svg
+    json =
   run_cmd @@ fun () ->
   let board, r0, r1 = setup board oop ip in
+  if exact && Array.length board <> 5 then
+    invalid_arg "--exact needs a river board";
   let cfg = config tree (6 - Array.length board) in
   let last = ref None in
   let runs =
@@ -140,6 +143,24 @@ let subgame board oop ip tree algorithms iterations no_iso single csv svg json =
       Format.printf "@.@.%s strategy, oop value %.4f (pot %g)@." name
         (Subgame.value t prof) (Subgame.pot t);
       summary t prof;
+      if exact then begin
+        let start = Unix.gettimeofday () in
+        let sf = Sequence_form.build (Flat_subgame.make cfg ~board r0 r1) in
+        let sol = Sequence_form.solve sf in
+        let wall = Unix.gettimeofday () -. start in
+        let v = Rat.to_float sol.value in
+        Format.printf
+          "@.exact LP: %d + %d sequences, %d payoff entries, %.2f s@."
+          (Sequence_form.sequences sf P0)
+          (Sequence_form.sequences sf P1)
+          (Sequence_form.entries sf) wall;
+        let q = Rat.to_string sol.value in
+        if String.length q <= 40 then Format.printf "  oop value %s@." q;
+        Format.printf "  oop value %.10f, %s is off by %.2e@." v name
+          (Subgame.value t prof -. v);
+        Format.printf "  LP strategy exploitability %s%% of the pot@."
+          (sci (exploitability t (Subgame.of_strategy t sol.strategy)))
+      end;
       Option.iter
         (fun path ->
           runs
@@ -619,6 +640,10 @@ let subgame_cmd =
             value & flag
             & info [ "single" ]
                 ~doc:"Store regrets and strategy sums as 32-bit floats.")
+        $ Arg.(
+            value & flag
+            & info [ "exact" ]
+                ~doc:"Also solve the river exactly with the sequence-form LP.")
         $ file [ "csv" ] "Write exploitability curves to $(docv)."
         $ file [ "svg" ] "Plot exploitability curves to $(docv)."
         $ file [ "json" ] "Write the last algorithm's strategy to $(docv)."))
