@@ -20,6 +20,16 @@ type frame = {
   reg : float array;
 }
 
+type engine = {
+  infosets : Tree.infoset array;
+  step : unit -> unit;
+  count : unit -> int;
+  nodes : unit -> int;
+  avg : unit -> Strategy.t;
+  cur : unit -> Strategy.t;
+  reg : unit -> (string * float array) list;
+}
+
 type t = {
   game : (module Game.S);
   average : unit -> Strategy.t;
@@ -40,13 +50,42 @@ type t = {
   mutable frames : frame list;
 }
 
-let create ?(algorithm = Cfr.Vanilla) ?(last = true) ?(budget = 4_000_000)
-    ?(growth = 1.25) (module G : Game.S) =
-  if growth <= 1. then invalid_arg "Session.create: growth must exceed 1";
+let full algorithm (module G : Game.S) : engine =
   let module C = Cfr.Make (G) in
-  let module B = Best_response.Make (G) in
   let c = C.create ~algorithm () in
-  let infosets = C.infosets c in
+  {
+    infosets = C.infosets c;
+    step = (fun () -> C.iterate c);
+    count = (fun () -> C.iterations c);
+    nodes = (fun () -> C.touched c);
+    avg = (fun () -> C.average_strategy c);
+    cur = (fun () -> C.current_strategy c);
+    reg = (fun () -> C.regrets c);
+  }
+
+let sampled seed weighting sampling (module G : Game.S) : engine =
+  let module M = Mccfr.Make (G) in
+  let m = M.create ~seed ~weighting sampling in
+  {
+    infosets = (M.table m).infosets;
+    step = (fun () -> M.iterate m);
+    count = (fun () -> M.iterations m);
+    nodes = (fun () -> M.touched m);
+    avg = (fun () -> M.average_strategy m);
+    cur = (fun () -> M.current_strategy m);
+    reg = (fun () -> M.regrets m);
+  }
+
+let create ?(algorithm = Cfr.Vanilla) ?sampling ?(seed = 1) ?(last = true)
+    ?(budget = 4_000_000) ?(growth = 1.25) (module G : Game.S) =
+  if growth <= 1. then invalid_arg "Session.create: growth must exceed 1";
+  let module B = Best_response.Make (G) in
+  let e =
+    match sampling with
+    | None -> full algorithm (module G)
+    | Some s -> sampled seed algorithm s (module G)
+  in
+  let infosets = e.infosets in
   let n = Array.length infosets in
   let offset = Array.make (n + 1) 0 in
   Array.iteri
@@ -66,26 +105,26 @@ let create ?(algorithm = Cfr.Vanilla) ?(last = true) ?(budget = 4_000_000)
     a
   in
   let snapshot () =
-    let avg = C.average_strategy c and cur = C.current_strategy c in
-    let reg = Array.of_list (List.map snd (C.regrets c)) in
+    let avg = e.avg () and cur = e.cur () in
+    let reg = Array.of_list (List.map snd (e.reg ())) in
     let probs s _ (i : Tree.infoset) =
       Strategy.probs s i.key ~n:(Array.length i.actions)
     in
     (flatten (probs avg), flatten (probs cur), flatten (fun i _ -> reg.(i)))
   in
   let exploit () =
-    let e = B.exploitability (C.average_strategy c) in
-    (e, if last then Some (B.exploitability (C.current_strategy c)) else None)
+    let a = B.exploitability (e.avg ()) in
+    (a, if last then Some (B.exploitability (e.cur ())) else None)
   in
   {
     game = (module G);
-    average = (fun () -> C.average_strategy c);
+    average = e.avg;
     infosets;
     offset;
     lookup;
-    step = (fun () -> C.iterate c);
-    iterations = (fun () -> C.iterations c);
-    touched = (fun () -> C.touched c);
+    step = e.step;
+    iterations = e.count;
+    touched = e.nodes;
     snapshot;
     exploit;
     budget;

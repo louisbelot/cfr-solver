@@ -16,6 +16,8 @@ type t
 
 val create :
   ?algorithm:Cfr.algorithm ->
+  ?sampling:Mccfr.sampling ->
+  ?seed:int ->
   ?last:bool ->
   ?budget:int ->
   ?growth:float ->

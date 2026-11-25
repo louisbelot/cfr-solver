@@ -136,6 +136,46 @@ let leduc_converges () =
   and last = List.nth points (List.length points - 1) in
   Alcotest.(check bool) "tenfold" true (last.average < first.average /. 10.)
 
+module M = Mccfr.Make (Kuhn)
+
+let sampled_same_as_direct () =
+  let sampling = Mccfr.External in
+  let s = Session.create ~algorithm:Linear ~sampling ~seed:7 (module Kuhn) in
+  run s 300;
+  Session.checkpoint s;
+  let m = M.create ~seed:7 ~weighting:Linear sampling in
+  M.run m 300;
+  Alcotest.(check int) "touched" (M.touched m) (Session.touched s);
+  let p = List.nth (Session.points s) (List.length (Session.points s) - 1) in
+  Alcotest.(check int) "at" 300 p.iteration;
+  Alcotest.(check (float 1e-15))
+    "average"
+    (B.exploitability (M.average_strategy m))
+    p.average;
+  let regrets = M.regrets m in
+  Array.iteri
+    (fun i (r : Session.row) ->
+      let key = (Session.infosets s).(i).key in
+      Alcotest.(check (array (float 1e-15)))
+        key (List.assoc key regrets) r.regret)
+    (Session.table s)
+
+let outcome_sampling_learns () =
+  let s =
+    Session.create ~sampling:Mccfr.outcome ~seed:3 ~last:false (module Kuhn)
+  in
+  run s 20_000;
+  Session.checkpoint s;
+  let points = Session.points s in
+  let last = List.nth points (List.length points - 1) in
+  if not (last.average < 0.04) then
+    Alcotest.failf "exploitability %g" last.average;
+  let full = kuhn () in
+  run full 1;
+  Alcotest.(check bool)
+    "cheaper than a full pass" true
+    (Session.touched s < 20_000 * Session.touched full)
+
 let tests =
   [
     Alcotest.test_case "geometric checkpoints" `Quick geometric_checkpoints;
@@ -148,4 +188,6 @@ let tests =
     Alcotest.test_case "history rows" `Quick history_rows;
     Alcotest.test_case "no last iterate" `Quick no_last_iterate;
     Alcotest.test_case "leduc converges" `Quick leduc_converges;
+    Alcotest.test_case "sampled same as direct" `Quick sampled_same_as_direct;
+    Alcotest.test_case "outcome sampling learns" `Quick outcome_sampling_learns;
   ]
