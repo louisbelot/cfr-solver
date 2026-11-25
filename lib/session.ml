@@ -163,13 +163,15 @@ let record t =
   end;
   t.count <- t.count + 1
 
+let schedule growth n =
+  max (n + 1) (int_of_float (Float.ceil (float_of_int n *. growth)))
+
 let iterate t =
   t.step ();
   let n = t.iterations () in
   if n >= t.next then begin
     record t;
-    t.next <-
-      max (n + 1) (int_of_float (Float.ceil (float_of_int n *. t.growth)))
+    t.next <- schedule t.growth n
   end
 
 let checkpoint t =

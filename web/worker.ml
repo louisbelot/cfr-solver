@@ -30,6 +30,21 @@ let request m : Explorer.request =
           seed = int_of_float (num m "seed");
         }
   | "act" -> Act { id; action = str m "action" }
+  | "river" ->
+      River
+        {
+          id;
+          board = str m "board";
+          pot = num m "pot";
+          bet = num m "bet";
+          cap = int_of_float (num m "cap");
+          oop = str m "oop";
+          ip = str m "ip";
+          algorithm = str m "algorithm";
+          last = Js.to_bool (Js.Unsafe.get m "last");
+        }
+  | "lines" -> Lines { id }
+  | "spot" -> Spot { id; path = str m "path" }
   | "drop" -> Drop { id }
   | k -> invalid_arg ("unknown request " ^ k)
 

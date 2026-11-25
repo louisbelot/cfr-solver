@@ -183,6 +183,109 @@ let sampled_runs_are_seeded () =
   Alcotest.(check bool) "same seed" true (a = b);
   Alcotest.(check bool) "other seed" true (fst a <> fst c)
 
+let board = "Qs Jh 8d 5c 2s"
+
+let river_request ?(board = board) ?(oop = "random") ?(algorithm = "dcfr") id =
+  Explorer.River
+    {
+      id;
+      board;
+      pot = 6.;
+      bet = 1.;
+      cap = 4;
+      oop;
+      ip = "random";
+      algorithm;
+      last = true;
+    }
+
+let rejects_bad_rivers () =
+  let e = Explorer.create ~now:(clock ()) in
+  let reply ?board ?oop ?algorithm () =
+    kind (Explorer.handle e (river_request ?board ?oop ?algorithm 1))
+  in
+  Alcotest.(check string) "short board" "error" (reply ~board:"Qs Jh 8d" ());
+  Alcotest.(check string) "repeated" "error" (reply ~board:"Qs Qs 8d 5c 2s" ());
+  Alcotest.(check string) "card" "error" (reply ~board:"Qs Jh 8d 5c 1s" ());
+  Alcotest.(check string) "range" "error" (reply ~oop:"AXs" ());
+  Alcotest.(check string) "blocked" "error" (reply ~oop:"QQ:0" ());
+  Alcotest.(check string) "algorithm" "error" (reply ~algorithm:"sgd" ());
+  Alcotest.(check string) "fine" "created" (reply ())
+
+let river_matches_subgame () =
+  let e = Explorer.create ~now:(clock ()) in
+  let c = Explorer.handle e (river_request 1) in
+  Alcotest.(check int) "decisions" 10 (int "decisions" c);
+  Alcotest.(check (list int))
+    "hands" [ 1081; 1081 ]
+    (List.map (function Json.Int n -> n | _ -> -1) (list "hands" c));
+  let r = Explorer.handle e (Step { id = 1; budget = 1e9; target = 100 }) in
+  Alcotest.(check bool) "done" true (field "done" r = Json.Bool true);
+  let points = list "points" r in
+  Alcotest.(check (list int))
+    "checkpoints"
+    [ 1; 2; 3; 4; 5; 7; 9; 12; 15; 19; 24; 30; 38; 48; 60; 75; 94; 100 ]
+    (List.map (int "iteration") points);
+  let b = Hand.parse board
+  and all = Range.of_string ~board:(Hand.parse board) "random" in
+  let sub =
+    Subgame.create ~algorithm:Cfr.dcfr
+      (Bet_tree.limit ~pot:6. ~bet:1. 1)
+      ~board:b all all
+  in
+  Subgame.run sub 100;
+  let prof = Subgame.average sub in
+  let expected = 100. *. Subgame.exploitability sub prof /. 6. in
+  let got = float "average" (List.nth points 17) in
+  if Float.abs (got -. expected) > 1e-5 *. expected then
+    Alcotest.failf "exploitability %g, expected %g" got expected;
+  let l = Explorer.handle e (Lines { id = 1 }) in
+  Alcotest.(check int) "lines" 10 (List.length (list "lines" l));
+  if Float.abs (float "value" l -. Subgame.value sub prof) > 1e-5 then
+    Alcotest.failf "value %g" (float "value" l)
+
+let spot_groups_classes () =
+  let e = Explorer.create ~now:(clock ()) in
+  ignore (Explorer.handle e (river_request 1));
+  ignore (Explorer.handle e (Step { id = 1; budget = 1e9; target = 30 }));
+  let s = Explorer.handle e (Spot { id = 1; path = "xb1" }) in
+  Alcotest.(check int) "player" 0 (int "player" s);
+  Alcotest.(check (list string))
+    "actions" [ "f"; "c"; "b2" ]
+    (List.map (function Json.String a -> a | _ -> "?") (list "actions" s));
+  let classes = list "classes" s and hands = list "hands" s in
+  Alcotest.(check int) "classes" 169 (List.length classes);
+  Alcotest.(check int) "hands" 1081 (List.length hands);
+  Alcotest.(check int)
+    "combos" 1081
+    (List.fold_left (fun acc c -> acc + int "combos" c) 0 classes);
+  let combos label =
+    int "combos"
+      (List.find (fun c -> field "label" c = Json.String label) classes)
+  in
+  Alcotest.(check (list int))
+    "card removal" [ 3; 6; 9; 7; 12 ]
+    [ combos "QQ"; combos "AA"; combos "AQo"; combos "QJo"; combos "T9o" ];
+  let sum f = List.fold_left (fun acc c -> acc +. f c) 0. in
+  let a = sum (float "reach") classes and b = sum (float "reach") hands in
+  if Float.abs (a -. b) > 1e-3 then Alcotest.failf "reach %g vs %g" a b;
+  Alcotest.(check string)
+    "no node" "error"
+    (kind (Explorer.handle e (Spot { id = 1; path = "zz" })))
+
+let runs_keep_their_kind () =
+  let e = fresh () in
+  ignore (Explorer.handle e (river_request 2));
+  Alcotest.(check string)
+    "lines on a game" "error"
+    (kind (Explorer.handle e (Lines { id = 1 })));
+  Alcotest.(check string)
+    "table on a river" "error"
+    (kind (Explorer.handle e (Table { id = 2 })));
+  Alcotest.(check string)
+    "deal on a river" "error"
+    (kind (Explorer.handle e (Deal { id = 2; seat = 0; seed = 1 })))
+
 let tests =
   [
     Alcotest.test_case "rejects unknown names" `Quick rejects_unknown_names;
@@ -196,4 +299,8 @@ let tests =
       hides_the_bot_until_showdown;
     Alcotest.test_case "rejects illegal actions" `Quick rejects_illegal_actions;
     Alcotest.test_case "drop forgets" `Quick drop_forgets;
+    Alcotest.test_case "rejects bad rivers" `Quick rejects_bad_rivers;
+    Alcotest.test_case "river matches subgame" `Quick river_matches_subgame;
+    Alcotest.test_case "spot groups classes" `Quick spot_groups_classes;
+    Alcotest.test_case "runs keep their kind" `Quick runs_keep_their_kind;
   ]

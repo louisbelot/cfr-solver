@@ -12,6 +12,19 @@ type request =
   | History of { id : int; key : string }
   | Deal of { id : int; seat : int; seed : int }
   | Act of { id : int; action : string }
+  | River of {
+      id : int;
+      board : string;
+      pot : float;
+      bet : float;
+      cap : int;
+      oop : string;
+      ip : string;
+      algorithm : string;
+      last : bool;
+    }
+  | Lines of { id : int }
+  | Spot of { id : int; path : string }
   | Drop of { id : int }
 
 type t

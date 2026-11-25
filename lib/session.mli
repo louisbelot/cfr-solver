@@ -24,6 +24,7 @@ val create :
   (module Game.S) ->
   t
 
+val schedule : float -> int -> int
 val game : t -> (module Game.S)
 val infosets : t -> Tree.infoset array
 val average : t -> Strategy.t
