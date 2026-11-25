@@ -1371,6 +1371,21 @@ let strategy t (prof : profile) =
   in
   go t.root Suit.identity "" Strategy.empty
 
+let of_strategy t (s : Strategy.t) =
+  Array.map
+    (fun dn ->
+      if dn.dealt <> [] then invalid_arg "Subgame.of_strategy: chance node";
+      let side = t.sides.(dn.player) and k = Array.length dn.actions in
+      let p = Array.init k (fun _ -> Array.make side.n 0.) in
+      Array.iteri
+        (fun h hand ->
+          Array.iteri
+            (fun a x -> p.(a).(h) <- x)
+            (Strategy.probs s (key hand dn.path) ~n:k))
+        side.range.hands;
+      p)
+    t.decisions
+
 type line = {
   path : string;
   player : int;

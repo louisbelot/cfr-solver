@@ -43,6 +43,7 @@ val best_response : t -> int -> profile -> float
 val exploitability : t -> profile -> float
 val key : Hand.card * Hand.card -> string -> string
 val strategy : t -> profile -> Strategy.t
+val of_strategy : t -> Strategy.t -> profile
 
 type line = {
   path : string;

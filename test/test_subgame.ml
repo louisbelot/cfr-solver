@@ -401,6 +401,58 @@ let spot_matches_lines () =
       let r = Subgame.range t 0 in
       Alcotest.(check (array (float 0.))) "root reach" r.weights s.reach
 
+let exact_river () =
+  let cfg = Bet_tree.limit ~cap:2 ~pot:4. ~bet:1. 1 in
+  let (module G) = Flat_subgame.make cfg ~board:river_board small0 small1 in
+  let sf = Sequence_form.build (module G) in
+  let sol = Sequence_form.solve sf in
+  let x, y = sol.plans in
+  Alcotest.(check bool)
+    "exact equilibrium" true
+    (Rat.equal sol.value (Sequence_form.best_response sf P0 y)
+    && Rat.equal (Rat.neg sol.value) (Sequence_form.best_response sf P1 x));
+  let t =
+    Subgame.create ~algorithm:Cfr.dcfr cfg ~board:river_board small0 small1
+  in
+  let lp = Subgame.of_strategy t sol.strategy in
+  let v = Rat.to_float sol.value in
+  close 1e-12 "lp value" v (Subgame.value t lp);
+  close 1e-12 "lp exploitability" 0. (Subgame.exploitability t lp);
+  Subgame.run t 500;
+  let avg = Subgame.average t in
+  let s = Subgame.strategy t avg in
+  List.iter
+    (fun (p, q, i) ->
+      close 1e-12
+        (Printf.sprintf "best response %d" i)
+        (Rat.to_float
+           (Sequence_form.best_response sf p (Sequence_form.plan sf q s)))
+        (Subgame.best_response t i avg))
+    [ (Game.P0, Game.P1, 0); (P1, P0, 1) ];
+  let e = Subgame.exploitability t avg in
+  if not (e > 0. && Float.abs (Subgame.value t avg -. v) <= 2. *. e) then
+    Alcotest.failf "value %g, exact %g, exploitability %g" (Subgame.value t avg)
+      v e
+
+let of_strategy_round_trip () =
+  let t = Subgame.create ~algorithm:Cfr.Plus river ~board:river_board r0 r1 in
+  Subgame.run t 30;
+  let avg = Subgame.average t in
+  let back = Subgame.of_strategy t (Subgame.strategy t avg) in
+  Array.iteri
+    (fun d node ->
+      Array.iteri
+        (fun a row ->
+          Array.iteri
+            (fun h x -> close 1e-15 (Printf.sprintf "%d %d %d" d a h) x row.(h))
+            node.(a))
+        back.(d))
+    avg;
+  let turn_tree = Subgame.create turn ~board:turn_board small0 small1 in
+  match Subgame.of_strategy turn_tree Strategy.empty with
+  | _ -> Alcotest.fail "turn accepted"
+  | exception Invalid_argument _ -> ()
+
 let tests =
   [
     Alcotest.test_case "river cfr" `Quick
@@ -462,4 +514,6 @@ let tests =
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;
     Alcotest.test_case "spot matches lines" `Quick spot_matches_lines;
+    Alcotest.test_case "exact river" `Quick exact_river;
+    Alcotest.test_case "of_strategy round trip" `Quick of_strategy_round_trip;
   ]
