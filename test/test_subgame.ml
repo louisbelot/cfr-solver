@@ -26,7 +26,7 @@ let same_strategy name ref_strategy got =
     (Strategy.bindings ref_strategy)
 
 let matches_scalar_cfr cfg board r0 r1 algorithm iterations () =
-  let (module G) = Subgame_ref.make cfg ~board r0 r1 in
+  let (module G) = Flat_subgame.make cfg ~board r0 r1 in
   let module C = Cfr.Make (G) in
   let c = C.create ~algorithm () in
   C.run c iterations;
@@ -38,7 +38,7 @@ let matches_scalar_cfr cfg board r0 r1 algorithm iterations () =
     (Subgame.strategy t (Subgame.average t))
 
 let matches_scalar_values cfg board r0 r1 () =
-  let (module G) = Subgame_ref.make cfg ~board r0 r1 in
+  let (module G) = Flat_subgame.make cfg ~board r0 r1 in
   let module B = Best_response.Make (G) in
   let module E = Eval.Make (G) in
   let t = Subgame.create ~algorithm:Cfr.Plus cfg ~board r0 r1 in
@@ -259,7 +259,7 @@ let bucketed_matches_scalar ?feature buckets algorithm iterations () =
   in
   let label p dealt hand = Subgame.bucket t p dealt hand in
   let (module G) =
-    Subgame_ref.make ~label turn ~board:turn_board small0 small1
+    Flat_subgame.make ~label turn ~board:turn_board small0 small1
   in
   let module C = Cfr.Make (G) in
   let c = C.create ~algorithm () in

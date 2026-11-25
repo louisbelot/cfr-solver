@@ -1,5 +1,3 @@
-open Cfr_solver
-
 type history =
   | Root
   | At of {
