@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CFR in the browser</title>
-<meta name="description" content="Counterfactual regret minimization on Kuhn poker, Leduc hold'em, Liar's dice and Goofspiel, compiled from OCaml with js_of_ocaml.">
+<meta name="description" content="Counterfactual regret minimization on Kuhn poker, Leduc hold'em, Liar's dice, Goofspiel and a hold'em river, compiled from OCaml with js_of_ocaml.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -15,9 +15,17 @@
       The OCaml solver from <a href="https://github.com/louisbelot/cfr-solver">cfr-solver</a>,
       compiled to JavaScript with js_of_ocaml and running in a web worker on your machine.
       Pick a game and an algorithm, run it, then click any information set to see how its
-      strategy and regrets moved.
+      strategy and regrets moved. The river tab solves a fixed-limit hold'em river over
+      full ranges and shows each hand class's strategy at every node.
     </p>
   </header>
+
+  <nav class="tabs" role="tablist" aria-label="View">
+    <button id="tab-games" type="button" role="tab" aria-selected="true" aria-controls="games-view">Small games</button>
+    <button id="tab-river" type="button" role="tab" aria-selected="false" aria-controls="river-view">Hold'em river</button>
+  </nav>
+
+  <div id="games-view" role="tabpanel" aria-labelledby="tab-games">
 
   <section class="controls" aria-label="Solver settings">
     <label>Game
@@ -41,24 +49,41 @@
         <option value="pdcfr+">PDCFR+</option>
       </select>
     </label>
+    <label>Sampling
+      <select id="sampling">
+        <option value="full">Full passes</option>
+        <option value="external">External sampling</option>
+        <option value="outcome">Outcome sampling</option>
+      </select>
+    </label>
     <label>Iterations
       <input id="iterations" type="number" min="1" max="1000000" value="10000">
     </label>
     <label class="check"><input id="last" type="checkbox" checked> Track last iterate</label>
-    <button id="run" type="button">Run</button>
-    <button id="stop" type="button" disabled>Stop</button>
+    <button id="run" class="primary" type="button">Run</button>
+    <button id="pause" type="button" disabled>Pause</button>
+    <button id="resume" type="button" disabled>Resume</button>
   </section>
 
+  <p id="run-note" class="note" aria-live="polite"></p>
   <p id="notation" class="note"></p>
+  <p id="sampling-note" class="note"></p>
 
   <section class="panel" aria-labelledby="exploit-title">
     <h2 id="exploit-title">Exploitability</h2>
     <p class="note">
       How much a best response wins against the strategy, averaged over both seats, in the
       game's payoff units. Solid lines are the average strategy (the one CFR's guarantee is
-      about), dashed lines the strategy played at that iteration. Each algorithm keeps its
-      color; running it again on the same game replaces its line.
+      about), dashed lines the strategy played at that iteration. Running the same algorithm
+      and sampling again on the same game replaces its line. Pause keeps the run, and
+      Resume carries it on to the Iterations target.
     </p>
+    <div class="filters">
+      <select id="xaxis" aria-label="Horizontal axis">
+        <option value="iteration">Against iterations</option>
+        <option value="touched">Against nodes touched</option>
+      </select>
+    </div>
     <div id="legend" class="legend"></div>
     <div id="chart" class="chart"></div>
   </section>
@@ -103,12 +128,83 @@
     <div id="play" class="play" aria-live="polite"></div>
   </section>
 
+  </div>
+
+  <div id="river-view" role="tabpanel" aria-labelledby="tab-river" hidden>
+    <section class="controls" aria-label="River settings">
+      <label>Board
+        <input id="r-board" type="text" value="Qs Jh 8d 5c 2s" size="15" spellcheck="false">
+      </label>
+      <label>Pot
+        <input id="r-pot" type="number" min="0.5" step="0.5" value="6">
+      </label>
+      <label>Bet
+        <input id="r-bet" type="number" min="0.5" step="0.5" value="1">
+      </label>
+      <label>Bets per street
+        <input id="r-cap" type="number" min="1" max="6" value="4">
+      </label>
+      <label class="wide">First to act
+        <input id="r-oop" type="text" value="random" spellcheck="false">
+      </label>
+      <label class="wide">Second to act
+        <input id="r-ip" type="text" value="random" spellcheck="false">
+      </label>
+      <label>Algorithm
+        <select id="r-algorithm"></select>
+      </label>
+      <label>Iterations
+        <input id="r-iterations" type="number" min="1" max="1000000" value="1000">
+      </label>
+      <label class="check"><input id="r-last" type="checkbox"> Track last iterate</label>
+      <button id="r-run" class="primary" type="button">Run</button>
+      <button id="r-pause" type="button" disabled>Pause</button>
+      <button id="r-resume" type="button" disabled>Resume</button>
+    </section>
+
+    <p id="r-note" class="note" aria-live="polite"></p>
+    <p class="note">
+      Fixed-limit betting on the last street: each bet or raise is the Bet size, and bN in a
+      path means N chips in on this street (x is check, c call, f fold). Ranges take
+      the usual notation, for example <code>TT+, AQs+, KQ, QJs:0.5</code>, or
+      <code>random</code> for every hand. The solver works on the public tree with one
+      regret vector per node over all hands at once, so every iteration touches each node once.
+    </p>
+
+    <section class="panel" aria-labelledby="r-exploit-title">
+      <h2 id="r-exploit-title">Exploitability</h2>
+      <p class="note">
+        Average of the two best responses as a percentage of the pot. Each algorithm keeps
+        its line until the board, pot, bet or ranges change.
+      </p>
+      <div id="r-legend" class="legend"></div>
+      <div id="r-chart" class="chart"></div>
+    </section>
+
+    <div class="split">
+      <section class="panel" aria-labelledby="r-lines-title">
+        <h2 id="r-lines-title">Public tree</h2>
+        <p id="r-lines-note" class="note"></p>
+        <div id="r-actions" class="actions"></div>
+        <div id="r-lines" class="table" role="list"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="r-spot-title">
+        <h2 id="r-spot-title">Hands at this node</h2>
+        <p id="r-spot-note" class="note">Run the solver, then click a node in the public tree.</p>
+        <div id="r-grid" class="grid13"></div>
+        <div id="r-combos" class="combos"></div>
+      </section>
+    </div>
+  </div>
+
   <footer>
     <p>
       Every number here comes from the same code as the command-line tool: the tree walk,
       the regret updates and the exact best response. Checkpoints are geometric (each one
       25% later than the last), and on large games older snapshots are thinned to every
-      second one so memory stays bounded.
+      second one so memory stays bounded. Outcome and external sampling are the Monte Carlo
+      variants of Lanctot et al. (2009); the river uses the vectorized public-tree walk.
     </p>
   </footer>
 </main>

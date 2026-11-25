@@ -5,6 +5,11 @@ const LABELS = {
   cfr: "CFR", "cfr+": "CFR+", lcfr: "Linear CFR", dcfr: "DCFR",
   "dcfr+": "DCFR+", "pcfr+": "PCFR+", "pdcfr+": "PDCFR+",
 };
+const SAMPLINGS = ["full", "external", "outcome"];
+const PREFIX = { full: "", external: "ES ", outcome: "OS " };
+const PREDICTIVE = new Set(["pcfr+", "pdcfr+"]);
+const runName = (r) => PREFIX[r.sampling] + LABELS[r.algorithm];
+const runOrder = (r) => SAMPLINGS.indexOf(r.sampling) * ALGORITHMS.length + ALGORITHMS.indexOf(r.algorithm);
 
 const GAMES = {
   kuhn: {
@@ -57,8 +62,8 @@ const state = {
   nextId: 1,
 };
 
-function seriesColor(algorithm) {
-  return css(`--series-${ALGORITHMS.indexOf(algorithm) + 1}`);
+function seriesColor(runs, r) {
+  return css(`--series-${(runs.indexOf(r) % 7) + 1}`);
 }
 
 function mixHex(a, b, t) {
@@ -67,8 +72,7 @@ function mixHex(a, b, t) {
   return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("");
 }
 
-function actionColor(name) {
-  const v = state.vocabulary;
+function actionColor(name, v = state.vocabulary) {
   const i = v.indexOf(name);
   if (v.length <= 7) return css(`--series-${i + 1}`);
   return mixHex(css("--seq-light"), css("--seq-dark"), v.length === 1 ? 1 : i / (v.length - 1));
@@ -193,7 +197,7 @@ function plot(container, series, opts) {
     cross.setAttribute("visibility", "visible"); dots.setAttribute("visibility", "visible");
     tip.textContent = "";
     const head = document.createElement("div");
-    head.textContent = `iteration ${fmtInt(at)}`;
+    head.textContent = `${opts.xName || "iteration"} ${fmtInt(at)}`;
     tip.appendChild(head);
     for (const { s, best } of rows) {
       const row = document.createElement("div");
@@ -214,37 +218,41 @@ function plot(container, series, opts) {
 }
 
 function drawChart() {
-  const game = $("game").value;
+  const nodes = $("xaxis").value === "touched";
+  const x = nodes ? (p) => p.touched : (p) => p.iteration;
   const series = [];
-  for (const r of state.runs.filter((r) => r.game === game)) {
-    const color = seriesColor(r.algorithm);
-    series.push({ name: `${LABELS[r.algorithm]} average`, color, points: r.points.map((p) => [p.iteration, p.average]) });
-    if (r.last) series.push({ name: `${LABELS[r.algorithm]} last iterate`, color, dash: true, points: r.points.map((p) => [p.iteration, p.current]) });
+  for (const r of state.runs) {
+    const color = seriesColor(state.runs, r);
+    series.push({ name: `${runName(r)} average`, color, points: r.points.map((p) => [x(p), p.average]) });
+    if (r.last) series.push({ name: `${runName(r)} last iterate`, color, dash: true, points: r.points.map((p) => [x(p), p.current]) });
   }
   plot($("chart"), series, {
-    logY: true, xLabel: "iterations", yLabel: "exploitability", label: "Exploitability against iterations",
-    empty: "Press Run to start the solver",
+    logY: true, xLabel: nodes ? "nodes touched" : "iterations", xName: nodes ? "nodes" : "iteration",
+    yLabel: "exploitability", label: "Exploitability against iterations", empty: "Press Run to start the solver",
   });
 }
 
-function drawLegend() {
-  const box = $("legend");
+function legend(box, runs, selected, unit, pick) {
   box.textContent = "";
-  for (const r of state.runs) {
+  for (const r of runs) {
     const b = document.createElement("button");
     b.type = "button";
-    b.setAttribute("aria-pressed", String(r === state.selected));
+    b.setAttribute("aria-pressed", String(r === selected));
     const sw = document.createElement("span");
     sw.className = "swatch";
-    sw.style.background = seriesColor(r.algorithm);
+    sw.style.background = seriesColor(runs, r);
     const last = r.points[r.points.length - 1];
     const num = document.createElement("span");
     num.className = "num";
-    num.textContent = `${fmtInt(r.iteration)} it, ${last ? fmt(last.average) : "-"}, ${(r.ms / 1000).toFixed(2)} s`;
-    b.append(sw, LABELS[r.algorithm], num);
-    b.addEventListener("click", () => select(r));
+    num.textContent = `${fmtInt(r.iteration)} it, ${last ? fmt(last.average) + unit : "-"}, ${(r.ms / 1000).toFixed(2)} s`;
+    b.append(sw, runName(r), num);
+    b.addEventListener("click", () => pick(r));
     box.appendChild(b);
   }
+}
+
+function drawLegend() {
+  legend($("legend"), state.runs, state.selected, "", select);
 }
 
 function drawActions() {
@@ -278,7 +286,7 @@ function drawTable() {
   const rows = t.infosets.filter((i) => (seat === "all" || String(i.player) === seat) && i.key.includes(q));
   const limit = 400;
   $("table-note").textContent =
-    `Average strategy after ${fmtInt(t.iteration)} iterations of ${LABELS[state.selected.algorithm]}. ` +
+    `Average strategy after ${fmtInt(t.iteration)} iterations of ${runName(state.selected)}. ` +
     (rows.length > limit ? `Showing ${limit} of ${fmtInt(rows.length)} infosets; filter to narrow.` : `${fmtInt(rows.length)} infosets.`);
   for (const i of rows.slice(0, limit)) {
     const b = document.createElement("button");
@@ -374,7 +382,7 @@ function drawHand(h) {
   const r = state.selected;
   if (h.value !== undefined) {
     $("play-note").textContent =
-      `Against ${LABELS[r.algorithm]} after ${fmtInt(r.iteration)} iterations. From your seat the bot's own strategy earns ` +
+      `Against ${runName(r)} after ${fmtInt(r.iteration)} iterations. From your seat the bot's own strategy earns ` +
       `${fmt(h.value)} per hand against itself, and a best response earns ${fmt(h.edge)}.`;
   }
   const moves = document.createElement("div");
@@ -432,54 +440,57 @@ function resetPlay() {
   $("play-note").textContent = state.selected ? "Press Deal to start a hand." : "Run a solver first.";
 }
 
-async function select(r) {
-  state.selected = r;
-  drawLegend();
-  resetPlay();
-  await refreshTable();
-  await refreshDetail();
+const iterationsIn = (id) => Math.max(1, Math.min(1e6, Math.floor(+$(id).value || 1)));
+
+function buttons(ctl, prefix) {
+  $(`${prefix}run`).disabled = ctl.running;
+  $(`${prefix}pause`).disabled = !ctl.running;
+  $(`${prefix}resume`).disabled = ctl.running || !ctl.selected;
+  if (ctl === state) $("deal").disabled = ctl.running || !ctl.selected;
 }
 
-async function run() {
-  const game = $("game").value, algorithm = $("algorithm").value;
-  const target = Math.max(1, Math.min(1e6, Math.floor(+$("iterations").value || 1)));
-  const last = $("last").checked;
-  const old = state.runs.find((r) => r.game === game && r.algorithm === algorithm);
-  if (old) {
-    state.runs = state.runs.filter((r) => r !== old);
-    await call({ kind: "drop", id: old.id });
-  }
-  const r = { id: state.nextId++, game, algorithm, last, points: [], iteration: 0, ms: 0 };
-  const created = await call({ kind: "create", id: r.id, game, algorithm, last });
-  if (created.type !== "created") { $("table-note").textContent = created.message; return; }
-  state.runs.push(r);
-  state.runs.sort((a, b) => ALGORITHMS.indexOf(a.algorithm) - ALGORITHMS.indexOf(b.algorithm));
-  state.selected = r;
-  state.running = true;
-  state.stopping = false;
-  resetPlay();
-  $("run").disabled = true;
-  $("stop").disabled = false;
-  const small = created.infosets <= 3000;
-  let shown = 0;
-  while (!state.stopping) {
+async function stepLoop(ctl, prefix, r, target, onStep) {
+  ctl.selected = r;
+  ctl.running = true;
+  ctl.stopping = false;
+  r.target = target;
+  buttons(ctl, prefix);
+  while (!ctl.stopping) {
     const t0 = performance.now();
     const p = await call({ kind: "step", id: r.id, budget: 60, target });
     r.ms += performance.now() - t0;
     if (p.type !== "progress") break;
     r.points.push(...p.points);
     r.iteration = p.iteration;
+    await onStep();
+    if (p.done) break;
+  }
+  ctl.running = false;
+  buttons(ctl, prefix);
+}
+
+async function select(r) {
+  state.selected = r;
+  drawLegend();
+  resetPlay();
+  buttons(state, "");
+  await refreshTable();
+  await refreshDetail();
+}
+
+async function drive(r, target) {
+  $("run-note").textContent = "";
+  let shown = 0;
+  state.selected = r;
+  resetPlay();
+  await stepLoop(state, "", r, target, async () => {
     drawChart();
     drawLegend();
-    if (small && performance.now() - shown > 1000) {
+    if (r.infosets <= 3000 && performance.now() - shown > 1000) {
       shown = performance.now();
       await refreshTable();
     }
-    if (p.done) break;
-  }
-  state.running = false;
-  $("run").disabled = false;
-  $("stop").disabled = true;
+  });
   resetPlay();
   if (state.selected === r) {
     await refreshTable();
@@ -487,9 +498,52 @@ async function run() {
   }
 }
 
+async function run() {
+  const game = $("game").value, algorithm = $("algorithm").value, sampling = $("sampling").value;
+  const last = $("last").checked;
+  const old = state.runs.find((r) => r.algorithm === algorithm && r.sampling === sampling);
+  if (old) {
+    state.runs = state.runs.filter((r) => r !== old);
+    await call({ kind: "drop", id: old.id });
+  }
+  const r = { id: state.nextId++, game, algorithm, sampling, last, points: [], iteration: 0, ms: 0, target: 0 };
+  const seed = Math.floor(Math.random() * 2 ** 30);
+  const created = await call({ kind: "create", id: r.id, game, algorithm, sampling, seed, last });
+  if (created.type !== "created") { $("run-note").textContent = created.message; return; }
+  r.infosets = created.infosets;
+  state.runs.push(r);
+  state.runs.sort((a, b) => runOrder(a) - runOrder(b));
+  await drive(r, iterationsIn("iterations"));
+}
+
+async function resume(ctl, input, note, go) {
+  const r = ctl.selected;
+  if (!r || ctl.running) return;
+  const target = Math.max(r.target, iterationsIn(input));
+  if (target <= r.iteration) {
+    $(note).textContent = `This run is at ${fmtInt(r.iteration)} iterations; raise Iterations to continue it.`;
+    return;
+  }
+  $(note).textContent = "";
+  await go(r, target);
+}
+
+function changeSampling() {
+  const sampled = $("sampling").value !== "full";
+  for (const o of $("algorithm").options) o.disabled = sampled && PREDICTIVE.has(o.value);
+  if ($("algorithm").selectedOptions[0].disabled) $("algorithm").value = "cfr";
+  $("sampling-note").textContent = sampled
+    ? "External sampling walks every action of the player being updated and samples chance and the opponent; outcome sampling follows one sampled path (with 60% exploration) and reweights by its probability. An iteration costs a small fraction of a full pass, so switch the axis to nodes touched to compare cost fairly. Predictive variants need full passes."
+    : "";
+}
+
+async function stopAll(ctl) {
+  if (ctl.running) ctl.stopping = true;
+  while (ctl.running) await new Promise((res) => setTimeout(res, 20));
+}
+
 async function changeGame() {
-  if (state.running) state.stopping = true;
-  while (state.running) await new Promise((res) => setTimeout(res, 20));
+  await stopAll(state);
   for (const r of state.runs) await call({ kind: "drop", id: r.id });
   const g = GAMES[$("game").value];
   state.runs = [];
@@ -500,6 +554,7 @@ async function changeGame() {
   $("iterations").value = g.iterations;
   $("last").checked = g.last;
   $("notation").textContent = g.notation;
+  $("run-note").textContent = "";
   $("detail").textContent = "";
   $("detail-note").textContent = "Click a row in the strategy list.";
   drawActions();
@@ -507,21 +562,275 @@ async function changeGame() {
   drawTable();
   drawChart();
   resetPlay();
+  buttons(state, "");
+}
+
+const RANKS = "AKQJT98765432";
+const river = { runs: [], selected: null, spec: null, lines: null, path: "", spot: null, label: null, vocabulary: [], running: false, stopping: false };
+
+function classOf(combo) {
+  const a = RANKS.indexOf(combo[0]), b = RANKS.indexOf(combo[2]);
+  const [hi, lo] = a <= b ? [combo[0], combo[2]] : [combo[2], combo[0]];
+  if (a === b) return hi + lo;
+  return hi + lo + (combo[1] === combo[3] ? "s" : "o");
+}
+
+function mixBar(probs, actions) {
+  const bar = document.createElement("span");
+  bar.className = "bar";
+  probs.forEach((p, a) => {
+    if (p < 0.005) return;
+    const seg = document.createElement("span");
+    seg.style.flex = `${p} 1 0`;
+    seg.style.background = actionColor(actions[a], river.vocabulary);
+    seg.title = `${actions[a]} ${(100 * p).toFixed(1)}%`;
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+
+function drawRiverChart() {
+  const series = [];
+  for (const r of river.runs) {
+    const color = seriesColor(river.runs, r);
+    series.push({ name: `${runName(r)} average`, color, points: r.points.map((p) => [p.iteration, p.average]) });
+    if (r.last) series.push({ name: `${runName(r)} last iterate`, color, dash: true, points: r.points.map((p) => [p.iteration, p.current]) });
+  }
+  plot($("r-chart"), series, {
+    logY: true, xLabel: "iterations", yLabel: "exploitability, % of pot", label: "River exploitability against iterations",
+    empty: "Press Run to solve the river",
+  });
+}
+
+function drawRiverLegend() {
+  legend($("r-legend"), river.runs, river.selected, "%", selectRiver);
+}
+
+function drawRiverActions() {
+  const box = $("r-actions");
+  box.textContent = "";
+  for (const name of river.vocabulary) {
+    const s = document.createElement("span");
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = actionColor(name, river.vocabulary);
+    s.append(chip, name);
+    box.appendChild(s);
+  }
+}
+
+function drawLines() {
+  const box = $("r-lines");
+  box.textContent = "";
+  const l = river.lines;
+  if (!l) { $("r-lines-note").textContent = ""; return; }
+  $("r-lines-note").textContent =
+    `${runName(river.selected)} after ${fmtInt(l.iteration)} iterations. The first player's average strategy is worth ` +
+    `${fmt(l.value)} chips a hand (pot ${fmt(l.pot)}). Bars are each node's mix over the hands that reach it.`;
+  const root = [0, 1].map((p) => l.lines.find((x) => x.player === p)?.mass || 1);
+  for (const x of l.lines) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "item";
+    b.setAttribute("role", "listitem");
+    b.setAttribute("aria-current", String(x.path === river.path));
+    const key = document.createElement("span");
+    key.className = "key";
+    const s = document.createElement("span");
+    s.className = "seat";
+    s.textContent = x.player ? "2nd" : "1st";
+    const reach = document.createElement("span");
+    reach.className = "reach";
+    reach.textContent = ` ${(100 * x.mass / root[x.player]).toFixed(0)}%`;
+    key.append(s, x.path || "(root)", reach);
+    b.setAttribute("aria-label", `${x.path || "root"}: ` + x.actions.map((a, k) => `${a} ${(100 * x.freqs[k]).toFixed(0)}%`).join(", "));
+    b.append(key, mixBar(x.freqs, x.actions));
+    b.addEventListener("click", () => { river.path = x.path; river.label = null; drawLines(); refreshSpot(); });
+    box.appendChild(b);
+  }
+}
+
+function drawSpot() {
+  const s = river.spot, grid = $("r-grid");
+  grid.textContent = "";
+  $("r-combos").textContent = "";
+  if (!s) return;
+  $("r-spot-note").textContent =
+    `${s.player ? "Second" : "First"} player at ${s.path || "the root"}. A cell fills to the share of that hand class still ` +
+    "in the range here (blocked combos excluded) and splits by the average strategy. Click a cell for its combos.";
+  const classes = new Map(s.classes.map((c) => [c.label, c]));
+  for (let i = 0; i < 13; i++) {
+    for (let j = 0; j < 13; j++) {
+      const label = i === j ? RANKS[i] + RANKS[j] : i < j ? RANKS[i] + RANKS[j] + "s" : RANKS[j] + RANKS[i] + "o";
+      const c = classes.get(label);
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "cell";
+      cell.setAttribute("aria-pressed", String(label === river.label));
+      const share = c && c.combos ? c.reach / c.combos : 0;
+      if (share > 0.001) {
+        const fill = mixBar(c.freqs, s.actions);
+        fill.classList.add("fill");
+        fill.style.height = `${100 * Math.min(1, share)}%`;
+        cell.appendChild(fill);
+        cell.title = `${label}: ${(100 * share).toFixed(0)}% of ${c.combos} combos; ` +
+          s.actions.map((a, k) => `${a} ${(100 * c.freqs[k]).toFixed(0)}%`).join(", ");
+      } else {
+        cell.classList.add("out");
+        cell.title = `${label}: not in the range here`;
+      }
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = label;
+      cell.appendChild(tag);
+      cell.addEventListener("click", () => { river.label = label; drawSpot(); });
+      grid.appendChild(cell);
+    }
+  }
+  if (river.label) drawCombos(s, river.label);
+}
+
+function drawCombos(s, label) {
+  const box = $("r-combos");
+  const hands = s.hands.filter((h) => classOf(h.combo) === label && h.reach > 0);
+  const h3 = document.createElement("h3");
+  h3.textContent = hands.length ? `${label} combos` : `${label}: no combos reach this node`;
+  box.appendChild(h3);
+  for (const h of hands) {
+    const row = document.createElement("div");
+    row.className = "combo";
+    const key = document.createElement("span");
+    key.className = "key";
+    key.textContent = `${h.combo} ${fmt(h.reach)}`;
+    row.append(key, mixBar(h.probs, s.actions));
+    row.title = s.actions.map((a, k) => `${a} ${(100 * h.probs[k]).toFixed(1)}%`).join(", ");
+    box.appendChild(row);
+  }
+}
+
+async function refreshSpot() {
+  const r = river.selected;
+  if (!r) return;
+  const s = await call({ kind: "spot", id: r.id, path: river.path });
+  if (river.selected !== r) return;
+  river.spot = s.type === "spot" ? s : null;
+  drawSpot();
+}
+
+async function refreshRiver() {
+  const r = river.selected;
+  if (!r) return;
+  const l = await call({ kind: "lines", id: r.id });
+  if (l.type !== "lines" || river.selected !== r) return;
+  river.lines = l;
+  const seen = new Set();
+  river.vocabulary = [];
+  for (const x of l.lines) for (const a of x.actions) if (!seen.has(a)) { seen.add(a); river.vocabulary.push(a); }
+  if (!l.lines.some((x) => x.path === river.path)) river.path = "";
+  drawRiverActions();
+  drawLines();
+  await refreshSpot();
+}
+
+async function selectRiver(r) {
+  river.selected = r;
+  drawRiverLegend();
+  buttons(river, "r-");
+  await refreshRiver();
+}
+
+async function driveRiver(r, target) {
+  let shown = 0;
+  await stepLoop(river, "r-", r, target, async () => {
+    drawRiverChart();
+    drawRiverLegend();
+    if (performance.now() - shown > 1500) {
+      shown = performance.now();
+      await refreshRiver();
+    }
+  });
+  drawRiverLegend();
+  if (river.selected === r) await refreshRiver();
+}
+
+async function runRiver() {
+  const spec = { board: $("r-board").value, pot: +$("r-pot").value, bet: +$("r-bet").value, cap: Math.floor(+$("r-cap").value), oop: $("r-oop").value, ip: $("r-ip").value };
+  const key = JSON.stringify(spec);
+  const algorithm = $("r-algorithm").value, last = $("r-last").checked;
+  if (river.spec !== key) {
+    for (const r of river.runs) await call({ kind: "drop", id: r.id });
+    river.runs = [];
+    river.spec = null;
+    river.path = "";
+    river.label = null;
+  }
+  const old = river.runs.find((r) => r.algorithm === algorithm);
+  if (old) {
+    river.runs = river.runs.filter((r) => r !== old);
+    await call({ kind: "drop", id: old.id });
+  }
+  const r = { id: state.nextId++, algorithm, sampling: "full", last, points: [], iteration: 0, ms: 0, target: 0 };
+  const created = await call({ kind: "river", id: r.id, ...spec, algorithm, last });
+  if (created.type !== "created") {
+    $("r-note").textContent = created.message;
+    drawRiverChart();
+    drawRiverLegend();
+    return;
+  }
+  river.spec = key;
+  $("r-note").textContent =
+    `${fmtInt(created.hands[0])} hands for the first player and ${fmtInt(created.hands[1])} for the second after card removal, ` +
+    `${created.decisions} public decision nodes.`;
+  river.runs.push(r);
+  river.runs.sort((a, b) => runOrder(a) - runOrder(b));
+  await driveRiver(r, iterationsIn("r-iterations"));
+}
+
+async function showTab(name) {
+  const games = name === "games";
+  $("tab-games").setAttribute("aria-selected", String(games));
+  $("tab-river").setAttribute("aria-selected", String(!games));
+  $("games-view").hidden = !games;
+  $("river-view").hidden = games;
+  await stopAll(games ? river : state);
+  buttons(state, "");
+  buttons(river, "r-");
+  if (games) drawChart(); else drawRiverChart();
+}
+
+for (const a of ALGORITHMS) {
+  const o = document.createElement("option");
+  o.value = a;
+  o.textContent = LABELS[a];
+  o.selected = a === "dcfr";
+  $("r-algorithm").appendChild(o);
 }
 
 $("run").addEventListener("click", run);
-$("stop").addEventListener("click", () => { state.stopping = true; });
+$("pause").addEventListener("click", () => { state.stopping = true; });
+$("resume").addEventListener("click", () => resume(state, "iterations", "run-note", drive));
 $("deal").addEventListener("click", deal);
 $("play-seat").addEventListener("change", resetPlay);
 $("game").addEventListener("change", changeGame);
+$("sampling").addEventListener("change", changeSampling);
+$("xaxis").addEventListener("change", drawChart);
 $("filter").addEventListener("input", drawTable);
 $("seat").addEventListener("change", drawTable);
+$("r-run").addEventListener("click", runRiver);
+$("r-pause").addEventListener("click", () => { river.stopping = true; });
+$("r-resume").addEventListener("click", () => resume(river, "r-iterations", "r-note", driveRiver));
+$("tab-games").addEventListener("click", () => showTab("games"));
+$("tab-river").addEventListener("click", () => showTab("river"));
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { drawChart(); if (state.key) refreshDetail(); }, 150);
+  resizeTimer = setTimeout(() => { drawChart(); drawRiverChart(); if (state.key) refreshDetail(); }, 150);
 });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  drawChart(); drawActions(); drawTable(); if (state.key) refreshDetail();
+  drawChart(); drawActions(); drawTable(); drawRiverChart(); drawRiverLegend(); drawRiverActions(); drawLines(); drawSpot();
+  if (state.key) refreshDetail();
 });
+changeSampling();
 changeGame();
+buttons(river, "r-");
+drawRiverChart();
