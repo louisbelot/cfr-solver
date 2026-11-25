@@ -9,6 +9,13 @@ let index (a, b) =
   (a * (a - 1) / 2) + b
 
 let combo_to_string (a, b) = Hand.to_string a ^ Hand.to_string b
+
+let label (a, b) =
+  let hi, lo = if Hand.rank a >= Hand.rank b then (a, b) else (b, a) in
+  let r c = String.make 1 (Hand.to_string c).[0] in
+  if Hand.rank hi = Hand.rank lo then r hi ^ r lo
+  else r hi ^ r lo ^ if Hand.suit hi = Hand.suit lo then "s" else "o"
+
 let size r = Array.length r.hands
 let total r = Array.fold_left ( +. ) 0. r.weights
 let blocks cards (a, b) = Array.exists (fun c -> c = a || c = b) cards

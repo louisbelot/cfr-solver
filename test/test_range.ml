@@ -61,10 +61,18 @@ let board () =
     "sorted" true
     (sorted (Range.of_string ~board "AK, 22+, T9s"))
 
+let labels () =
+  let l a b = Range.label (Hand.of_string a, Hand.of_string b) in
+  Alcotest.(check (list string))
+    "classes"
+    [ "AKo"; "AKs"; "77"; "T2o"; "32s" ]
+    [ l "As" "Kh"; l "Ks" "As"; l "7d" "7c"; l "2c" "Td"; l "2h" "3h" ]
+
 let tests =
   [
     Alcotest.test_case "combos" `Quick combos;
     Alcotest.test_case "notation" `Quick notation;
     Alcotest.test_case "weights" `Quick weights;
     Alcotest.test_case "board" `Quick board;
+    Alcotest.test_case "labels" `Quick labels;
   ]
