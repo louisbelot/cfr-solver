@@ -48,14 +48,38 @@ gifts) that keep it from getting more exploitable.
 
 [louisbelot.github.io/cfr-solver](https://louisbelot.github.io/cfr-solver/) runs
 the same OCaml code in your browser. The solver is compiled to JavaScript with
-js_of_ocaml (a 128 KB worker in the release build) and runs in a web worker, so
+js_of_ocaml (a 178 KB worker in the release build) and runs in a web worker, so
 the page stays responsive while it iterates. Pick Kuhn, Leduc, Liar's dice or
-Goofspiel and any of the seven full-tree algorithms, and runs on the same game
-are drawn on one exploitability chart, average strategy solid and last iterate
-dashed. Clicking an infoset shows its average strategy and cumulative regrets
-over the run, and the last panel deals hands against the run's average strategy.
+Goofspiel, any of the seven algorithms, and full passes or Monte Carlo CFR with
+external or outcome sampling. Runs on the same game are drawn on one
+exploitability chart, average strategy solid and last iterate dashed, against
+iterations or against nodes touched. Pause stops a run without dropping it and
+Resume carries it on, past the original target if you raise it. Clicking an
+infoset shows its average strategy and cumulative regrets over the run, and the
+last panel deals hands against the run's average strategy.
 
 ![The browser version on Leduc hold'em](docs/web.jpg)
+
+The nodes-touched axis is the fair one for sampling. With seed 1 on Leduc,
+2,000 CFR+ iterations touch 7.8 million nodes and reach 8.3e-5; 100,000
+iterations of external sampling CFR touch 4.4 million and reach 0.040; 400,000
+of outcome sampling CFR touch 6.3 million and reach 0.13. One full iteration
+on Leduc is only 3,878 nodes, so at these budgets CFR+ is far ahead, and
+sampling earns its keep on trees too big to sweep.
+
+The second tab solves a fixed-limit hold'em river over full ranges with the
+public-tree solver described under [Hold'em subgames](#holdem-subgames): any
+board, pot, bet, raise cap and range strings. It charts exploitability as a
+share of the pot, lists every public node with its action mix over the hands
+that reach it, and for the selected node draws the 13x13 grid of hand classes.
+Each cell fills to the share of that class still in the player's range at the
+node (combos blocked by the board don't count) and splits by the average
+strategy; clicking a cell lists its combos. The default spot (Qs Jh 8d 5c 2s,
+pot 6, bets of 1, both ranges random) runs 1,000 DCFR iterations in 4.2 s in
+the browser and ends at 0.00133% of the pot with the first player at -0.0822
+chips, the numbers `cfr-solver subgame` prints for that spot.
+
+![The river tab: public tree and hand grid](docs/web-river.jpg)
 
 The worker gives the same numbers as the native build. PCFR+ on Leduc, for
 example, reports an exploitability of 0.00126789 at iteration 568 in both, to
@@ -2676,6 +2700,36 @@ After 4,000 iterations, as a share of the pot: CFR 4.4e-2%, linear CFR
 2.3e-3%, CFR+ 4.2e-4% and DCFR 8.9e-5%. The ranking matches Leduc except
 that DCFR finishes ahead of CFR+ here.
 
+**Exact values.** `--exact` also writes the river as an ordinary game (chance
+deals every compatible pair of hands, weighted by the ranges) and solves its
+sequence-form LP in exact rationals with the simplex from
+[Exact equilibria](#exact-equilibria). That only fits small ranges, since the
+payoff matrix has one entry per pair of hands per leaf:
+
+```
+$ cfr-solver subgame --board "Qs Jh 8d 5c 2s" --pot 6 --limit 1 -n 1000 --exact \
+    --oop "QQ+, AJs+, KJs, JTs, T9s, 98s, 55, 22, A5s:0.5" \
+    --ip "JJ+, AQ, KQs, QJs, JTs, 88, 76s:0.5"
+river Qs Jh 8d 5c 2s, pot 6, limit 1, cap 4
+oop 47 hands, ip 45 hands, 10 decision nodes, 0.0 MB
+...
+      1000 1.059e-03
+...
+dcfr strategy, oop value -0.1580 (pot 6)
+...
+exact LP: 612 + 586 sequences, 30293 payoff entries, 2.41 s
+  oop value -3948144804608/24987782611407
+  oop value -0.1580030076, dcfr is off by 8.85e-06
+  LP strategy exploitability 7.633e-15% of the pot
+```
+
+The last line maps the LP's strategy back onto the public tree
+(`Subgame.of_strategy`) and measures it with the vector best response, so two
+independent solvers agree: the LP's equilibrium is unexploitable to rounding
+in the O(n) showdown evaluator, and DCFR's value after 1,000 iterations is
+within 9e-6 chips of the exact one. Twice its exploitability bounds that
+distance, and its exploitability is 1.06e-3% of 6 chips, about 6.4e-5.
+
 **Showdowns in O(n).** At a showdown each of my hands is worth
 `win x (opponent reach below me - opponent reach above me)`, counting only
 opponent hands that share no card with mine. Both players' hands are sorted by
@@ -3419,7 +3473,7 @@ The tests check against numbers that come from outside this code:
 - The hand evaluator: all five-card hands, the best-of-21 property, and hands
   that trip up evaluators (wheels, a third pair as kicker, two sets of trips,
   a flush and a straight in the same seven cards).
-- Subgames against the scalar solver: `test/subgame_ref.ml` writes the same
+- Subgames against the scalar solver: `Flat_subgame` writes the same
   river or turn as an ordinary `Game.S`, with chance dealing every compatible
   pair of hands (weighted by the ranges) and then the river card, so
   `Cfr.Make`, `Best_response.Make` and `Eval.Make` run on it unchanged. On a
@@ -3433,6 +3487,18 @@ The tests check against numbers that come from outside this code:
   inclusion-exclusion rounding where every opponent hand reaching the node
   shares a card with mine). Both are valid CFR+ iterates, and the values and
   best responses still agree to 1e-9.
+- Exact rivers: the sequence-form LP of a small river is an exact equilibrium
+  (each side's exact best response to the other's plan equals the value), its
+  strategy mapped onto the public tree has the LP value and exploitability 0
+  to 1e-12 there, both best responses of a DCFR average agree between the
+  exact sequence form and the vector evaluator to 1e-12, and the DCFR value
+  sits within twice its exploitability of the exact one.
+- The browser protocol: a sampled session matches a direct `Mccfr.Make` run
+  with the same seed (nodes touched, exploitability and every regret), the
+  river run's exploitability equals a direct `Subgame` run's at iteration
+  100, the hand grid has 169 classes whose combo counts follow card removal
+  (3 for QQ and 7 for QJo on Qs Jh 8d 5c 2s), and `web/smoke.js` runs the
+  compiled worker in Node through all of it.
 - Suit isomorphism: the 24 suit permutations, the symmetry group and number of
   river classes for rainbow, two-tone, paired and monotone boards, and which
   ranges keep the symmetry. Folded and unfolded solves agree to 1e-9 at every
