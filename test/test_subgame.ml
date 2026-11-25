@@ -374,6 +374,33 @@ let invalid () =
   fails "rbp with buckets" (fun () ->
       Subgame.create ~rbp:true ~buckets:[ 2; 2 ] turn ~board:turn_board r0 r1)
 
+let spot_matches_lines () =
+  let t = Subgame.create ~algorithm:Cfr.dcfr river ~board:river_board r0 r1 in
+  Subgame.run t 50;
+  let prof = Subgame.average t in
+  let lines = Subgame.lines t prof in
+  Alcotest.(check bool) "unknown" true (Subgame.spot t prof "zz" = None);
+  List.iter
+    (fun (l : Subgame.line) ->
+      match Subgame.spot t prof l.path with
+      | None -> Alcotest.failf "no spot at %S" l.path
+      | Some s ->
+          Alcotest.(check int) (l.path ^ " player") l.player s.player;
+          let mass = Array.fold_left ( +. ) 0. s.reach in
+          close 1e-12 (l.path ^ " mass") l.mass mass;
+          Array.iteri
+            (fun a f ->
+              let g = ref 0. in
+              Array.iteri (fun h r -> g := !g +. (r *. s.probs.(h).(a))) s.reach;
+              close 1e-12 (l.path ^ " " ^ l.actions.(a)) f (!g /. mass))
+            l.freqs)
+    lines;
+  match Subgame.spot t prof "" with
+  | None -> Alcotest.fail "no root"
+  | Some s ->
+      let r = Subgame.range t 0 in
+      Alcotest.(check (array (float 0.))) "root reach" r.weights s.reach
+
 let tests =
   [
     Alcotest.test_case "river cfr" `Quick
@@ -434,4 +461,5 @@ let tests =
     Alcotest.test_case "clairvoyance" `Quick clairvoyance;
     Alcotest.test_case "converges" `Quick converges;
     Alcotest.test_case "invalid" `Quick invalid;
+    Alcotest.test_case "spot matches lines" `Quick spot_matches_lines;
   ]

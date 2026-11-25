@@ -53,6 +53,16 @@ type line = {
 }
 
 val lines : ?chance:bool -> t -> profile -> line list
+
+type spot = {
+  player : int;
+  actions : string array;
+  hands : (Hand.card * Hand.card) array;
+  reach : float array;
+  probs : float array array;
+}
+
+val spot : t -> profile -> string -> spot option
 val combine : t -> profile -> profile -> profile
 
 type root = {

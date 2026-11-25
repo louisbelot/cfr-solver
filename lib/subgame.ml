@@ -1379,8 +1379,7 @@ type line = {
   mass : float;
 }
 
-let lines ?(chance = false) t (prof : profile) =
-  let out = ref [] in
+let visit ~chance t (prof : profile) f =
   let rec go node reach =
     match node with
     | Fold _ | Showdown _ -> ()
@@ -1401,24 +1400,7 @@ let lines ?(chance = false) t (prof : profile) =
     | Decision dn ->
         let p = dn.player and sigma = prof.(dn.id) in
         let own = reach.(p) in
-        let mass = Array.fold_left ( +. ) 0. own in
-        let freqs =
-          Array.map
-            (fun s ->
-              let f = ref 0. in
-              Array.iteri (fun h r -> f := !f +. (r *. s.(h))) own;
-              if mass > 0. then !f /. mass else 0.)
-            sigma
-        in
-        out :=
-          {
-            path = dn.path;
-            player = p;
-            actions = Array.map Bet_tree.action_to_string dn.actions;
-            freqs;
-            mass;
-          }
-          :: !out;
+        f dn own sigma;
         Array.iteri
           (fun a child ->
             let reach = Array.copy reach in
@@ -1426,8 +1408,54 @@ let lines ?(chance = false) t (prof : profile) =
             go child reach)
           dn.children
   in
-  go t.root (Array.map (fun s -> Array.copy s.w) t.sides);
+  go t.root (Array.map (fun s -> Array.copy s.w) t.sides)
+
+let lines ?(chance = false) t (prof : profile) =
+  let out = ref [] in
+  visit ~chance t prof (fun dn own sigma ->
+      let mass = Array.fold_left ( +. ) 0. own in
+      let freqs =
+        Array.map
+          (fun s ->
+            let f = ref 0. in
+            Array.iteri (fun h r -> f := !f +. (r *. s.(h))) own;
+            if mass > 0. then !f /. mass else 0.)
+          sigma
+      in
+      out :=
+        {
+          path = dn.path;
+          player = dn.player;
+          actions = Array.map Bet_tree.action_to_string dn.actions;
+          freqs;
+          mass;
+        }
+        :: !out);
   List.rev !out
+
+type spot = {
+  player : int;
+  actions : string array;
+  hands : (Hand.card * Hand.card) array;
+  reach : float array;
+  probs : float array array;
+}
+
+let spot t (prof : profile) path =
+  let found = ref None in
+  visit ~chance:false t prof (fun dn own sigma ->
+      if dn.path = path && !found = None then
+        let s = t.sides.(dn.player) in
+        found :=
+          Some
+            {
+              player = dn.player;
+              actions = Array.map Bet_tree.action_to_string dn.actions;
+              hands = s.range.hands;
+              reach = Array.copy own;
+              probs = Array.init s.n (fun h -> Array.map (fun p -> p.(h)) sigma);
+            });
+  !found
 
 let combine t (p0 : profile) (p1 : profile) =
   Array.map
