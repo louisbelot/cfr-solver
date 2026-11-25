@@ -18,17 +18,34 @@ let fresh () =
   let e = Explorer.create ~now:(clock ()) in
   ignore
     (Explorer.handle e
-       (Create { id = 1; game = "kuhn"; algorithm = "cfr+"; last = true }));
+       (Create
+          {
+            id = 1;
+            game = "kuhn";
+            algorithm = "cfr+";
+            sampling = "full";
+            seed = 1;
+            last = true;
+          }));
   e
 
 let rejects_unknown_names () =
   let e = Explorer.create ~now:(clock ()) in
-  let reply game algorithm =
-    kind (Explorer.handle e (Create { id = 1; game; algorithm; last = false }))
+  let reply ?(sampling = "full") game algorithm =
+    kind
+      (Explorer.handle e
+         (Create { id = 1; game; algorithm; sampling; seed = 1; last = false }))
   in
   Alcotest.(check string) "game" "error" (reply "chess" "cfr");
   Alcotest.(check string) "algorithm" "error" (reply "kuhn" "sgd");
-  Alcotest.(check string) "both known" "created" (reply "leduc" "dcfr+")
+  Alcotest.(check string) "sampling" "error" (reply ~sampling:"mc" "kuhn" "cfr");
+  Alcotest.(check string)
+    "predictive sampled" "error"
+    (reply ~sampling:"outcome" "kuhn" "pcfr+");
+  Alcotest.(check string) "both known" "created" (reply "leduc" "dcfr+");
+  Alcotest.(check string)
+    "sampled" "created"
+    (reply ~sampling:"external" "leduc" "lcfr")
 
 let one_iteration_per_tick () =
   let e = fresh () in
@@ -145,9 +162,31 @@ let drop_forgets () =
     "gone" "error"
     (kind (Explorer.handle e (Step { id = 1; budget = 1.; target = 1 })))
 
+let sampled_runs_are_seeded () =
+  let run seed =
+    let e = Explorer.create ~now:(clock ()) in
+    ignore
+      (Explorer.handle e
+         (Create
+            {
+              id = 1;
+              game = "leduc";
+              algorithm = "cfr";
+              sampling = "external";
+              seed;
+              last = false;
+            }));
+    let r = Explorer.handle e (Step { id = 1; budget = 1e9; target = 200 }) in
+    (int "touched" r, field "points" r)
+  in
+  let a = run 5 and b = run 5 and c = run 6 in
+  Alcotest.(check bool) "same seed" true (a = b);
+  Alcotest.(check bool) "other seed" true (fst a <> fst c)
+
 let tests =
   [
     Alcotest.test_case "rejects unknown names" `Quick rejects_unknown_names;
+    Alcotest.test_case "sampled runs are seeded" `Quick sampled_runs_are_seeded;
     Alcotest.test_case "one iteration per tick" `Quick one_iteration_per_tick;
     Alcotest.test_case "points sent once" `Quick points_sent_once;
     Alcotest.test_case "last point at target" `Quick last_point_at_target;

@@ -1,5 +1,12 @@
 type request =
-  | Create of { id : int; game : string; algorithm : string; last : bool }
+  | Create of {
+      id : int;
+      game : string;
+      algorithm : string;
+      sampling : string;
+      seed : int;
+      last : bool;
+    }
   | Step of { id : int; budget : float; target : int }
   | Table of { id : int }
   | History of { id : int; key : string }
@@ -59,12 +66,17 @@ let infoset (s : Tree.infoset) =
       List (Array.to_list (Array.map (fun a -> Json.String a) s.actions)) );
   ]
 
-let start t id game algorithm last =
-  match (Catalog.game game, Catalog.algorithm algorithm) with
-  | None, _ -> error id ("unknown game " ^ game)
-  | _, None -> error id ("unknown algorithm " ^ algorithm)
-  | Some g, Some algorithm ->
-      let session = Session.create ~algorithm ~last g in
+let start t id game algorithm sampling seed last =
+  match
+    (Catalog.game game, Catalog.algorithm algorithm, Catalog.sampling sampling)
+  with
+  | None, _, _ -> error id ("unknown game " ^ game)
+  | _, None, _ -> error id ("unknown algorithm " ^ algorithm)
+  | _, _, None -> error id ("unknown sampling " ^ sampling)
+  | _, Some a, Some (Some _) when Cfr.predictive a ->
+      error id (algorithm ^ " needs full passes")
+  | Some g, Some algorithm, Some sampling ->
+      let session = Session.create ~algorithm ?sampling ~seed ~last g in
       Hashtbl.replace t.runs id { session; sent = 0; seat = P0; hand = None };
       Json.Object
         [
@@ -188,7 +200,8 @@ let handle t request =
     | Some run -> k run
   in
   match request with
-  | Create { id; game; algorithm; last } -> start t id game algorithm last
+  | Create { id; game; algorithm; sampling; seed; last } ->
+      start t id game algorithm sampling seed last
   | Step { id; budget; target } ->
       find id (fun run -> step t id run budget target)
   | Table { id } -> find id (table id)

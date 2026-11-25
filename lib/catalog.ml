@@ -26,5 +26,13 @@ let algorithms =
     ("pdcfr+", Cfr.pdcfr_plus);
   ]
 
+let samplings =
+  [
+    ("full", None);
+    ("external", Some Mccfr.External);
+    ("outcome", Some Mccfr.outcome);
+  ]
+
 let game name = List.assoc_opt name games
 let algorithm name = List.assoc_opt name algorithms
+let sampling name = List.assoc_opt name samplings

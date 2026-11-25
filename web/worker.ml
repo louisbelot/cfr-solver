@@ -13,6 +13,8 @@ let request m : Explorer.request =
           id;
           game = str m "game";
           algorithm = str m "algorithm";
+          sampling = str m "sampling";
+          seed = int_of_float (num m "seed");
           last = Js.to_bool (Js.Unsafe.get m "last");
         }
   | "step" ->
