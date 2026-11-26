@@ -1653,6 +1653,166 @@ three items and one round, or one item and two rounds. A plan that puts all
 weight on both players swerving in Chicken gives each player a gain of
 exactly 1, the payoff of daring instead.
 
+### The best equilibrium by learning
+
+The LP above finds the SW-max EFCE exactly, but it stops scaling early: five
+items in two rounds take 137 s and ten items were still running when I
+stopped them after 15 minutes. Zhang et al.
+(NeurIPS 2023) show that an optimal equilibrium is the minimax strategy of a
+zero-sum game, so the same regret minimizers that solve poker can find it.
+Fix a welfare threshold tau and let a mediator play against a deviator:
+
+```
+max over xi in Xi   min over lambda in the simplex, deviations y
+    lambda_0 (welfare(xi) - tau) - sum over triggers t of lambda_t gain_t(xi, y_t)
+```
+
+The deviator either points at the objective or picks one trigger (a player
+and a recommended sequence) together with a continuation strategy below it.
+`gain_t` is that deviation's value minus the value of obeying, the two sides
+of the LP's incentive row for the trigger. If some EFCE has welfare at least
+tau, the mediator can hold the value at 0 or above; if none does, every plan
+either misses the threshold or leaves some trigger with a positive gain, and
+the value is negative. Bisection on tau finds the optimum, and every game in
+the sequence has payoffs bounded by Sheriff's own range. `Optimal` builds the
+game and runs the bisection; `cfr-solver optimal` prints the table below.
+
+**Regret over correlation plans.** The deviator's side is easy: a simplex
+over the objective and the triggers, and a CFR learner on the subtree below
+each trigger's infoset. The mediator's side is the correlation-plan polytope
+Xi, and there CFR doesn't apply directly: an entry xi(sigma1, sigma2) sits in
+one constraint for each player, and the constraints form cycles. `Xi`
+implements the construction of Farina, Ling, Fang and Sandholm (NeurIPS
+2019). In a two-player game without chance moves, Xi can be written as a
+chain of scaled extensions, `{1} <| X1 <| X2 <| ... <| Xn`, where each step
+either splits an entry that is already filled over the actions of one infoset
+(a simplex) or fills an entry as the sum of entries already filled (the
+singleton {1}). Some of the polytope's constraints are redundant and the
+order of the walk drops exactly those. At each relevant pair the walk extends
+the player with at most one infoset that is connected to the other player's
+next infosets, and without chance one of the two players always qualifies
+(their Proposition 2). A regret minimizer for a scaled extension needs one
+minimizer per piece: recommendations go forward through the chain and losses
+come back through it, and if every step is a split this is exactly CFR.
+`Xi.best` is the same backward pass with max instead of expectation, so the
+best response over Xi is one linear pass. Sheriff with ten items and three
+rounds has 33,633 relevant pairs and decomposes in 24 ms.
+
+**Certificates.** Every ten iterations the solver evaluates the averages: the
+deviator's best response to the mediator's average plan gives a lower bound
+on the game's value, and the mediator's best response to the deviator's
+average (one pass of `Xi.best`) gives an upper bound. A threshold counts as
+feasible once the lower bound reaches -eps and infeasible once the upper bound
+drops below 0, so no bisection step rests on a guess. With eps = 1e-4 no game
+hit the 100,000-iteration cap.
+
+```
+cfr-solver optimal --items 1,2,3,5,10 --lp
+cfr-solver optimal --items 1,2 --rounds 2 --lp
+cfr-solver optimal --items 5,10 --rounds 2
+```
+
+| items | rounds | pairs | triggers | learned (smuggler, sheriff) | welfare | exact LP | Farina et al. | games | iterations | seconds |
+|------:|-------:|------:|---------:|-----------------------------|--------:|---------:|---------------|------:|-----------:|--------:|
+| 1 | 1 | 63 | 14 | (3.4999, 1.4999) | 4.99983 | 5 | (3.00, 2.00) | 16 | 2,360 | 0.03 |
+| 2 | 1 | 91 | 18 | (7.9999, 1.9999) | 9.99983 | 10 | (8.00, 2.00) | 17 | 9,770 | 0.13 |
+| 3 | 1 | 119 | 22 | (3.8885, 1.4297) | 5.31815 | 5.31646 | (3.89, 1.43) | 18 | 89,070 | 1.47 |
+| 5 | 1 | 175 | 30 | (2.2850, 1.2595) | 3.54443 | 3.54260 | (2.28, 1.26) | 18 | 149,190 | 4.28 |
+| 10 | 1 | 315 | 50 | (1.7621, 0.9329) | 2.69498 | 2.69347 | (1.76, 0.93) | 19 | 475,410 | 32.61 |
+| 1 | 2 | 711 | 86 | (3.3333, 1.6666) | 4.99983 | 5 | (3.00, 2.00) | 16 | 2,580 | 0.24 |
+| 2 | 2 | 1045 | 108 | (8.0000, 1.9999) | 9.99983 | 10 | (8.00, 2.00) | 17 | 5,040 | 0.65 |
+| 5 | 2 | 2047 | 174 | (8.0006, 1.9994) | 10.00000 | 10 (137.5 s) | (8.00, 2.00) | 18 | 89,590 | 24.98 |
+| 10 | 2 | 3717 | 284 | (7.2611, 1.8179) | 9.07905 | stopped after 15 min | (7.26, 1.82) | 19 | 219,340 | 131.64 |
+
+"games" is the number of bisection steps and "iterations" their total. The
+largest trigger gain of every returned plan is under 1e-4.
+
+The plan that comes back is an eps-EFCE: no trigger gains more than eps, so
+its welfare can sit a little above the exact optimum. Theorem 3.7 of the
+paper bounds it from below by the optimum minus 2 eps, and from above it can't
+beat the LP with every incentive row relaxed by eps. Both bounds hold on every
+one-round row: three items give 5.31815 against an exact 5.31646 and a relaxed
+5.32286, ten items 2.69498 against 2.69347 and 2.69740. The two-round game
+with ten items, where I stopped the exact LP, lands on the published 9.08.
+
+**Predictive regret matching.** Both sides run regret matching+ with
+alternating updates and linear averaging, optionally the predictive variant
+(Farina, Kroer and Sandholm 2021), which plays as if the last instantaneous
+regret will repeat. At eps = 1e-4 plain regret matching+ is a bit quicker on
+three items (60,470 iterations against 89,070 with `--plain`). Tighter
+thresholds are where it matters. At tau equal to the exact optimum (420/79
+for three items), where the game's value is 0, the gap between the
+certificates after 100,000 iterations is 4e-7 with the predictive variant
+and 1e-5 without. At eps = 1e-6 plain regret matching+ left five bisection
+steps undecided at the 100,000-iteration cap, and since those count as
+infeasible it ended at 5.316363, below the optimum minus 2 eps; the
+predictive variant decided every step and ended at 5.316476 in 15.4 s.
+
+**The direct Lagrangian.** The paper's other formulation is a single game,
+welfare minus kappa times the largest trigger gain (with "no deviation" as an
+option, so strict incentives aren't rewarded). It is exact once kappa passes a
+critical multiplier, but the payoff range grows with kappa:
+
+```
+cfr-solver optimal --items 3 --penalty 4,16,64,256,1024 -n 100000
+```
+
+| kappa | lower | upper | welfare | max gain |
+|------:|------:|------:|--------:|---------:|
+| 4 | 12.818182 | 12.818182 | 15.000000 | 5.455e-01 |
+| 16 | 8.481315 | 8.481320 | 10.624776 | 1.340e-01 |
+| 64 | 5.318325 | 5.318690 | 8.099594 | 4.346e-02 |
+| 256 | 5.316450 | 5.316485 | 5.316452 | 1.107e-08 |
+| 1024 | 5.316062 | 5.316645 | 5.316358 | 2.891e-07 |
+
+Up to kappa = 64 the penalty is worth paying: the plan gives up incentives
+for welfare. At 256 the plan is an EFCE worth the optimum to
+4e-6, and at 1024 the same 100,000 iterations leave a gap 17 times wider.
+With max over triggers the critical kappa is large because a single
+trigger's gain is weighted by how often its sequence gets recommended. The
+chart below is the gap between the two certificates over iterations, all at
+tau equal to the exact optimum for the thresholded runs.
+
+![Gap between the certificates on three-item Sheriff](docs/optimal-gap.svg)
+
+**Coarser equilibria.** Nothing above is specific to EFCE except where the
+triggers sit. In an EFCCE (Farina, Bianchi and Sandholm 2020) a player
+decides to deviate on reaching an infoset, before seeing the recommendation
+there, so the trigger is the infoset and the deviation is weighted by
+xi(sigma(I), .) instead of xi(sigma*, .). In an NFCCE a player opts out
+before the game starts: one trigger per player, rooted at all of its first
+infosets. `--concept efcce,nfcce` (and `Efce_lp.solve ~concept`) switch both
+the learner and the LP. The sets are nested, EFCE inside EFCCE inside NFCCE,
+so the best welfare can only go up:
+
+```
+cfr-solver optimal --items 1,2,3,5,10 --concept efcce,nfcce --lp
+cfr-solver optimal --items 5,10 --rounds 2 --concept efcce,nfcce
+```
+
+| items | rounds | EFCE | EFCCE | NFCCE |
+|------:|-------:|-----:|------:|------:|
+| 1 | 1 | 5 | 5 | 5 |
+| 2 | 1 | 10 | 10 | 10 |
+| 3 | 1 | 5.31646 | 7.91667 | 10.18868 |
+| 5 | 1 | 3.54260 | 4.59402 | 10.25324 |
+| 10 | 1 | 2.69347 | 3.23767 | 7.92780 |
+| 1 | 2 | 5 | 5 | 5 |
+| 2 | 2 | 10 | 10 | 10 |
+| 5 | 2 | 10 | 10.00082 | 12.50013 |
+| 10 | 2 | 9.07905 | 9.56689 | 13.63653 |
+
+One-round values and the first two two-round rows are the exact LP's (the
+learned ones agree within the eps bracket); the last two rows are learned
+with eps = 1e-4 (the EFCE entry at five items is also the LP's 10). Ten items in one round take 4.4 s for EFCCE and 1.8 s for
+NFCCE against 32.6 s for EFCE.
+
+With three items the mediator gets 420/79 = 5.3165 if players can deviate
+after seeing each recommendation, 95/12 = 7.9167 if they have to decide
+before, and 540/53 = 10.1887 if they can only opt out at the start. The
+coarse games are also much faster to learn: two triggers for NFCCE against
+22 sequence triggers for EFCE.
+
 ### Coarse correlation and sampled play
 
 EFCE is the strongest of three nested notions. In an EFCE a player sees each
@@ -3674,6 +3834,34 @@ At the direct profile `Steer` must report zero off-direct mass and a payment
 of 2 alpha. On three-item Sheriff, P = 4 has to reach obeying play, the LP
 welfare and a payment of 2 alpha within 2,000 iterations, and unpaid
 learners have to stay off-direct with welfare under a third of the optimum.
+
+The scaled-extension chain for Xi has to fill every relevant pair exactly
+once (Chicken, Sheriff with one to three items in one round and one or two
+items in two rounds). Plans it recommends after random losses must satisfy
+every von Stengel-Forges constraint to 1e-12, `Xi.best` has to match the exact
+simplex maximizing random integer objectives over the same polytope, and a
+learner fed a fixed loss must get its linearly averaged value within 1% of
+that maximum in 500 iterations. For `Optimal`, the LP's own plan must have the
+LP's welfare and no trigger gain above 1e-9, the lower certificate may never
+exceed the upper one, and three-item Sheriff must come out feasible 0.05 below
+the optimum and infeasible 0.05 above it. The bisected plan at eps = 1e-4
+must have welfare between the optimum minus 2 eps and the exact LP with eps of
+incentive slack, satisfy Xi's constraints, and leave no step undecided. Its
+mediated game gives an independent check: the `Multi_br` gain against obeying
+has to lie between the largest trigger gain and the sum of positive ones, and
+the obeying values must add up to the plan's welfare. The direct Lagrangian
+with multiplier 1 must stay above the optimum by more than 1, and with 256
+must reach it within 1e-3 and gains under 1e-4.
+
+The three concepts get one more check that doesn't go through correlation
+plans at all: an LP over distributions on pairs of pure plans, written from
+the definitions. Each trigger is a condition on the recommended plan
+(reaching the infoset, and for EFCE also recommending the trigger action),
+and every pure continuation below the trigger gives one incentive row. On
+three-item Sheriff (324 by 8 plans) it must give 420/79, 95/12 and 540/53
+like the correlation-plan LP, and on a 3x3 game the correlated equilibrium's
+5 and the coarse one's 113/17. The bisection must land inside its eps
+bracket for EFCCE and NFCCE as well.
 
 ## License
 
