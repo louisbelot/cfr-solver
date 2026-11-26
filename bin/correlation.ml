@@ -345,6 +345,112 @@ let steer name items rounds iterations alpha decay pays svg payments_svg =
         Ok ()
       with Sys_error msg -> Error (`Msg msg))
 
+let optimal items rounds eps plain lp penalties iterations svg =
+  let predictive = not plain in
+  let instances =
+    List.concat_map (fun r -> List.map (fun n -> (n, r)) items) rounds
+  in
+  Format.printf "%5s %6s %6s %8s  %-18s %9s %9s %-14s %9s %6s %9s %8s@." "items"
+    "rounds" "pairs" "triggers" "eps-EFCE" "welfare" "lp" "Farina et al."
+    "max gain" "games" "iters" "seconds";
+  let solved =
+    List.map
+      (fun (n, r) ->
+        let plan =
+          Efce_lp.plan
+            (Multi_tree.build
+               (Sheriff.game { Sheriff.baseline with items = n; rounds = r }))
+        in
+        let g = Optimal.create plan in
+        let t0 = Unix.gettimeofday () in
+        let best, steps = Optimal.bisect ~eps ~predictive g in
+        let seconds = Unix.gettimeofday () -. t0 in
+        let v = Optimal.values g best.xi in
+        let paper =
+          match List.assoc_opt (n, r) published with
+          | Some (a, b) -> Printf.sprintf "(%.2f, %.2f)" a b
+          | None -> "-"
+        in
+        let optimum =
+          if lp then
+            Option.map
+              (fun (s : Efce_lp.result) -> s.values.(0) +. s.values.(1))
+              (Efce_lp.solve ~exact:true plan)
+          else None
+        in
+        let total =
+          List.fold_left
+            (fun acc (st : Optimal.step) -> acc + st.iterations)
+            0 steps
+        in
+        let open_ =
+          List.length
+            (List.filter (fun (st : Optimal.step) -> st.feasible = None) steps)
+        in
+        Format.printf
+          "%5d %6d %6d %8d  (%.4f, %.4f)  %9.5f %9s %-14s %9s %6d %9d %8.2f%s@."
+          n r (Optimal.size g) (Optimal.triggers g) v.(0) v.(1)
+          (v.(0) +. v.(1))
+          (match optimum with Some w -> Printf.sprintf "%.5f" w | None -> "-")
+          paper (sci best.bounds.gain) (List.length steps) total seconds
+          (if open_ > 0 then Printf.sprintf "  (%d undecided)" open_ else "");
+        (n, r, g, Option.value optimum ~default:best.tau))
+      instances
+  in
+  if penalties <> [] then begin
+    Format.printf
+      "@.direct Lagrangian, %d iterations@.%5s %6s %8s %12s %12s %12s %10s@."
+      iterations "items" "rounds" "kappa" "lower" "upper" "welfare" "max gain";
+    List.iter
+      (fun (n, r, g, _) ->
+        List.iter
+          (fun k ->
+            let s = Optimal.solver ~predictive g (Optimal.Penalty k) in
+            Optimal.run s iterations;
+            let b = Optimal.bounds s in
+            Format.printf "%5d %6d %8g %12.6f %12.6f %12.6f %10s@." n r k
+              b.lower b.upper b.welfare (sci b.gain))
+          penalties)
+      solved
+  end;
+  match (svg, solved) with
+  | None, _ | _, [] -> Ok ()
+  | Some path, (n, r, g, tau) :: _ -> (
+      let marks = log_checkpoints 4 iterations in
+      let series label predictive mode =
+        let s = Optimal.solver ~predictive g mode in
+        {
+          Plot.label;
+          dashed = not predictive;
+          points =
+            List.map
+              (fun k ->
+                Optimal.run s (k - Optimal.iterations s);
+                let b = Optimal.bounds s in
+                (k, b.upper -. b.lower))
+              marks;
+        }
+      in
+      try
+        Plot.loglog
+          ~title:
+            (Printf.sprintf
+               "sheriff %d items, %d round%s: saddle gap at tau = %.4f" n r
+               (if r = 1 then "" else "s")
+               tau)
+          ~xlabel:"iterations" ~ylabel:"upper minus lower certificate"
+          (series "threshold, rm+" false (Optimal.Threshold tau)
+          :: series "threshold, prm+" true (Optimal.Threshold tau)
+          :: List.map
+               (fun k ->
+                 series
+                   (Printf.sprintf "penalty %g, prm+" k)
+                   true (Optimal.Penalty k))
+               penalties)
+        |> write_file path;
+        Ok ()
+      with Sys_error msg -> Error (`Msg msg))
+
 let cmds =
   let name =
     Arg.(
@@ -439,6 +545,42 @@ let cmds =
         $ ints [ "items" ] [ 1; 2; 5; 10 ] "Item counts."
         $ ints [ "rounds" ] [ 1 ] "Round counts."
         $ Arg.(value & flag & info [ "exact" ] ~doc:"Exact rational simplex."));
+    Cmd.v
+      (Cmd.info "optimal"
+         ~doc:
+           "SW-max EFCE of Sheriff by learning (Zhang et al. 2023): bisection \
+            on the thresholded Lagrangian, each zero-sum game solved by regret \
+            matching over the correlation-plan polytope (Farina et al. 2019).")
+      Term.(
+        term_result
+          (const optimal
+          $ ints [ "items" ] [ 1; 2; 3; 5; 10 ] "Item counts."
+          $ ints [ "rounds" ] [ 1 ] "Round counts."
+          $ Arg.(
+              value & opt float 1e-4
+              & info [ "eps" ] ~docv:"E"
+                  ~doc:"Bisection width and incentive slack.")
+          $ Arg.(
+              value & flag
+              & info [ "plain" ]
+                  ~doc:"Regret matching+ instead of the predictive variant.")
+          $ Arg.(
+              value & flag
+              & info [ "lp" ]
+                  ~doc:
+                    "Also solve the exact LP; the chart then uses its optimum \
+                     as threshold.")
+          $ Arg.(
+              value
+              & opt (list float) []
+              & info [ "penalty" ] ~docv:"LIST"
+                  ~doc:"Also run the direct Lagrangian with these multipliers.")
+          $ Arg.(
+              value & opt positive 20_000
+              & info [ "n"; "iterations" ] ~docv:"N"
+                  ~doc:"Iterations for the penalty runs and the chart.")
+          $ file [ "svg" ]
+              "Write the saddle-gap chart for the first instance as SVG."));
     Cmd.v
       (Cmd.info "steer"
          ~doc:
