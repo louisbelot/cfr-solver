@@ -3283,3 +3283,107 @@ killed it and removed binaryen again; the wasm build needs a Linux machine
 
 Next: wasm_of_ocaml on a Linux runner, and SoPlex-style iterative refinement
 for LPs whose float basis is far off.
+
+## 2026-11-26: the best correlated equilibrium by learning
+
+The SW-max EFCE of Sheriff now comes out of regret minimization instead of
+the LP, following Zhang et al. (NeurIPS 2023), and the same code finds the
+best EFCCE and NFCCE.
+
+Built:
+
+- `Xi`: a regret minimizer over the correlation-plan polytope of a
+  two-player game without chance, after Farina, Ling, Fang and Sandholm
+  (NeurIPS 2019). `Xi.build` walks the relevant sequence pairs top-down
+  (their DECOMPOSE) and records a chain of operations: `Fill` splits an
+  entry that is already set over an infoset's actions, `Sum` sets an entry
+  to the sum of entries already set. `play` runs the chain forward with
+  regret matching+ at every `Fill`, `update` pushes the loss back through it,
+  and `best` is the same backward pass with max, so a best response over Xi
+  is one linear pass. Optional predictive regret matching+.
+- `Efce_lp`: the consistency rows are their own function, used by the LP and
+  by `residual` (largest violation of Xi's constraints). `solve` takes
+  `?slack` (every incentive row relaxed by eps) and `?concept` (EFCE, EFCCE
+  or NFCCE).
+- `Optimal`: the zero-sum game. The deviator picks the objective or one
+  trigger from a root simplex and plays CFR below the trigger; the mediator
+  plays `Xi`. `Threshold tau` is the paper's bounded Lagrangian, `Penalty k`
+  the direct one. `bounds` evaluates both averages exactly; `decide` runs a
+  threshold until a certificate settles it; `bisect` is their Algorithm 1.
+- `cfr-solver optimal` with `--concept`, `--lp`, `--penalty` and a
+  saddle-gap chart (`docs/optimal-gap.svg`).
+
+Design notes:
+
+- A trigger is a player plus a recommended sequence sigma* = (I*, a*). Its
+  deviation value is sum over leaves below I* of u_i(z) xi(sigma*,
+  sigma_-i(z)) y(sigma_i(z)), with y a sequence-form plan rooted at I*, and
+  obeying is worth sum over leaves below sigma* of u_i(z) xi(z). For EFCCE
+  the trigger is the infoset and the deviation uses xi(sigma(I*), .), since
+  the player hasn't seen the recommendation at I*. For NFCCE there is one
+  trigger per player, rooted at all of its first infosets and using the
+  empty sequence. `Optimal.create` and the LP build the three the same way;
+  deviation shapes with several roots made `backward` sum over roots.
+- The game value is 0 or more exactly when some EFCE reaches tau, and
+  negative otherwise. In practice it is exactly 0 below the optimum, because
+  a trigger whose sequence is never recommended has gain 0. Payoffs stay in Sheriff's own range, which is the point
+  of the thresholded form.
+- Certificates: the lower bound is min(welfare - tau, -max gain) at the
+  mediator's average, the upper bound is `Xi.best` against the deviator's
+  average (lambda and lambda-scaled sequence-form plans are averaged, so the
+  bound is linear in them). A step is feasible once the lower bound is at
+  least -eps and infeasible once the upper bound is below 0. A step that hits
+  the iteration cap counts as infeasible and is reported as undecided.
+- With plain regret matching+ the solve near tau = optimum stalls (value 0,
+  gap still 1e-5 after 1e5 iterations), and at eps = 1e-6 five steps hit the
+  cap, so the bisection ended 1e-4 low. Predictive regret matching+ fixed
+  that: the certificate gap falls about 4x per doubling of iterations.
+- On the infeasible side just above the optimum both variants converge
+  slowly (gap 4e-5 at 5e4 iterations), which is why the chart pins tau to
+  the exact optimum instead of the last feasible bisection point.
+
+Checks:
+
+- `Xi`: every relevant pair filled exactly once (Chicken, Sheriff up to
+  three items in one round and two items in two rounds); random-loss
+  iterates satisfy every constraint to 1e-12; `best` equals the exact
+  simplex on random integer objectives; a learner on a fixed loss gets
+  within 1% of the maximum in 500 iterations.
+- The LP's optimal plan has the LP's welfare and no trigger gain above 1e-9
+  under `Optimal`'s formulas.
+- The bisected plan (eps = 1e-4) has welfare between optimum - 2 eps and the
+  relaxed LP; its mediated game (`Mediator.game`) gives a `Multi_br` gain
+  between the largest trigger gain and the sum of the positive ones, and the
+  obeying values add up to its welfare.
+- An LP over pairs of pure plans, written straight from the definitions
+  (trigger, condition on reaching it, every pure continuation), gives the
+  same optimum as the correlation-plan LP for all three concepts on
+  three-item Sheriff (2,592 joint plans) and a 3x3 game.
+
+Results (eps = 1e-4, predictive, this machine):
+
+| items | rounds | welfare | exact LP | Farina et al. | games | iterations | seconds |
+|------:|-------:|--------:|---------:|--------------:|------:|-----------:|--------:|
+| 3 | 1 | 5.31815 | 5.31646 | 5.32 | 18 | 89,070 | 1.47 |
+| 5 | 1 | 3.54443 | 3.54260 | 3.54 | 18 | 149,190 | 4.28 |
+| 10 | 1 | 2.69498 | 2.69347 | 2.69 | 19 | 475,410 | 32.61 |
+| 5 | 2 | 10.00000 | 10 (137.5 s) | 10 | 18 | 89,590 | 24.98 |
+| 10 | 2 | 9.07905 | stopped at 15 min | 9.08 | 19 | 219,340 | 131.64 |
+
+- Exact optimum for three items: 420/79. Relaxed LP (slack 1e-4): 5.32286,
+  so the learned 5.31815 sits inside [optimum - 2 eps, relaxed].
+- Certificate gap at tau = 420/79 after 100,000 iterations: 4e-7 predictive,
+  1e-5 plain. At eps = 1e-6 the plain bisection left five steps undecided and
+  ended at 5.316363; predictive ended at 5.316476 in 15.4 s.
+- Direct Lagrangian, 100,000 iterations: kappa = 64 still trades incentives
+  for welfare (8.10 with gain 0.043); kappa = 256 gives 5.316452 with gain
+  1e-8 and a gap of 3.5e-5; kappa = 1024 a gap of 5.8e-4.
+- Best welfare by concept, three items: 5.3165 / 7.9167 / 10.1887 (EFCE,
+  EFCCE, NFCCE); ten items in one round 2.693 / 3.238 / 7.928; ten items in
+  two rounds (learned) 9.079 / 9.567 / 13.637.
+- `Xi.build` on ten items and three rounds: 33,633 pairs, 21,555 operations
+  (10,737 splits), 24 ms.
+- Full suite: 527 tests in 189 s.
+
+Next: Battleship (Farina et al. 2019) with the `Xi` learner, where the LP
+runs out of memory in the paper, and TrajectorySteer with sampled play.
