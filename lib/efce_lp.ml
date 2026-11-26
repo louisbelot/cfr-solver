@@ -57,20 +57,15 @@ let plan tree =
   { tp; index; leaves = !leaves; pairs = Hashtbl.length index }
 
 let pairs p = p.pairs
+let treeplex p = p.tp
+let leaves p = p.leaves
+let index p s0 s1 = Hashtbl.find_opt p.index (s0, s1)
 
-let problem ?(objective = Welfare) p =
+let consistency p =
   let tp = p.tp in
   let tree = tp.tree in
   let off = tree.offset in
-  let var pair =
-    match Hashtbl.find_opt p.index pair with
-    | Some i -> i
-    | None -> invalid_arg "Efce_lp: irrelevant pair"
-  in
-  let rat = Rat.of_float in
-  let rows = ref [] in
-  let row coeffs rel rhs = rows := { Lp.coeffs; rel; rhs } :: !rows in
-  row [ (var (-1, -1), Rat.one) ] Lp.Eq Rat.one;
+  let var pair = Hashtbl.find p.index pair in
   let with_other side s other = if side = 0 then (s, other) else (other, s) in
   let partners = Array.make (slots tree) [ -1 ] in
   Hashtbl.iter
@@ -80,22 +75,51 @@ let problem ?(objective = Welfare) p =
         partners.(s1) <- s0 :: partners.(s1)
       end)
     p.index;
+  let rows = ref [] in
   Array.iteri
     (fun k parent ->
       let pl = tree.owner.(k) in
-      let others = List.sort_uniq compare partners.(off.(k)) in
       List.iter
         (fun o ->
-          let terms =
-            List.init
+          let children =
+            Array.init
               (off.(k + 1) - off.(k))
-              (fun a -> (var (with_other pl (off.(k) + a) o), Rat.one))
+              (fun a -> var (with_other pl (off.(k) + a) o))
           in
-          row
-            ((var (with_other pl parent o), Rat.neg Rat.one) :: terms)
-            Lp.Eq Rat.zero)
-        others)
+          rows := (var (with_other pl parent o), children) :: !rows)
+        (List.sort_uniq compare partners.(off.(k))))
     tp.parent;
+  List.rev !rows
+
+let residual p x =
+  List.fold_left
+    (fun worst (parent, children) ->
+      let total = Array.fold_left (fun acc c -> acc +. x.(c)) 0. children in
+      Float.max worst (Float.abs (total -. x.(parent))))
+    (Float.abs (x.(Hashtbl.find p.index (-1, -1)) -. 1.))
+    (consistency p)
+
+let problem ?(objective = Welfare) ?(slack = 0.) p =
+  let tp = p.tp in
+  let tree = tp.tree in
+  let off = tree.offset in
+  let var pair =
+    match Hashtbl.find_opt p.index pair with
+    | Some i -> i
+    | None -> invalid_arg "Efce_lp: irrelevant pair"
+  in
+  let with_other side s other = if side = 0 then (s, other) else (other, s) in
+  let rat = Rat.of_float in
+  let rows = ref [] in
+  let row coeffs rel rhs = rows := { Lp.coeffs; rel; rhs } :: !rows in
+  row [ (var (-1, -1), Rat.one) ] Lp.Eq Rat.one;
+  List.iter
+    (fun (parent, children) ->
+      row
+        ((parent, Rat.neg Rat.one)
+        :: Array.to_list (Array.map (fun c -> (c, Rat.one)) children))
+        Lp.Eq Rat.zero)
+    (consistency p);
   let next = ref p.pairs in
   let fresh () =
     let i = !next in
@@ -129,7 +153,9 @@ let problem ?(objective = Welfare) p =
     let follow =
       List.map (fun (s0, s1, u) -> (var (s0, s1), rat u.(pl))) above.(s)
     in
-    row (free (Hashtbl.find v k) (Rat.neg Rat.one) @ follow) Lp.Ge Rat.zero;
+    row
+      (free (Hashtbl.find v k) (Rat.neg Rat.one) @ follow)
+      Lp.Ge (rat (-.slack));
     Array.iter
       (fun j ->
         for s' = off.(j) to off.(j + 1) - 1 do
@@ -159,8 +185,8 @@ let problem ?(objective = Welfare) p =
   in
   (!next, objective, List.rev !rows)
 
-let solve ?(exact = false) ?objective p =
-  let vars, objective, rows = problem ?objective p in
+let solve ?(exact = false) ?objective ?slack p =
+  let vars, objective, rows = problem ?objective ?slack p in
   let solution =
     if exact then
       match Lp.maximize ~vars objective rows with
