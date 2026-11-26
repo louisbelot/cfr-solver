@@ -345,56 +345,69 @@ let steer name items rounds iterations alpha decay pays svg payments_svg =
         Ok ()
       with Sys_error msg -> Error (`Msg msg))
 
-let optimal items rounds eps plain lp penalties iterations svg =
+let lp_concepts =
+  [ ("efce", Efce_lp.Efce); ("efcce", Efce_lp.Efcce); ("nfcce", Efce_lp.Nfcce) ]
+
+let optimal items rounds chosen eps plain lp penalties iterations svg =
   let predictive = not plain in
   let instances =
     List.concat_map (fun r -> List.map (fun n -> (n, r)) items) rounds
   in
-  Format.printf "%5s %6s %6s %8s  %-18s %9s %9s %-14s %9s %6s %9s %8s@." "items"
-    "rounds" "pairs" "triggers" "eps-EFCE" "welfare" "lp" "Farina et al."
-    "max gain" "games" "iters" "seconds";
+  Format.printf "%5s %6s %-6s %6s %8s  %-18s %9s %9s %-14s %9s %6s %9s %8s@."
+    "items" "rounds" "" "pairs" "triggers" "learned" "welfare" "lp"
+    "Farina et al." "max gain" "games" "iters" "seconds";
   let solved =
-    List.map
+    List.concat_map
       (fun (n, r) ->
         let plan =
           Efce_lp.plan
             (Multi_tree.build
                (Sheriff.game { Sheriff.baseline with items = n; rounds = r }))
         in
-        let g = Optimal.create plan in
-        let t0 = Unix.gettimeofday () in
-        let best, steps = Optimal.bisect ~eps ~predictive g in
-        let seconds = Unix.gettimeofday () -. t0 in
-        let v = Optimal.values g best.xi in
-        let paper =
-          match List.assoc_opt (n, r) published with
-          | Some (a, b) -> Printf.sprintf "(%.2f, %.2f)" a b
-          | None -> "-"
-        in
-        let optimum =
-          if lp then
-            Option.map
-              (fun (s : Efce_lp.result) -> s.values.(0) +. s.values.(1))
-              (Efce_lp.solve ~exact:true plan)
-          else None
-        in
-        let total =
-          List.fold_left
-            (fun acc (st : Optimal.step) -> acc + st.iterations)
-            0 steps
-        in
-        let open_ =
-          List.length
-            (List.filter (fun (st : Optimal.step) -> st.feasible = None) steps)
-        in
-        Format.printf
-          "%5d %6d %6d %8d  (%.4f, %.4f)  %9.5f %9s %-14s %9s %6d %9d %8.2f%s@."
-          n r (Optimal.size g) (Optimal.triggers g) v.(0) v.(1)
-          (v.(0) +. v.(1))
-          (match optimum with Some w -> Printf.sprintf "%.5f" w | None -> "-")
-          paper (sci best.bounds.gain) (List.length steps) total seconds
-          (if open_ > 0 then Printf.sprintf "  (%d undecided)" open_ else "");
-        (n, r, g, Option.value optimum ~default:best.tau))
+        List.map
+          (fun name ->
+            let concept = List.assoc name lp_concepts in
+            let g = Optimal.create ~concept plan in
+            let t0 = Unix.gettimeofday () in
+            let best, steps = Optimal.bisect ~eps ~predictive g in
+            let seconds = Unix.gettimeofday () -. t0 in
+            let v = Optimal.values g best.xi in
+            let paper =
+              match List.assoc_opt (n, r) published with
+              | Some (a, b) when concept = Efce ->
+                  Printf.sprintf "(%.2f, %.2f)" a b
+              | _ -> "-"
+            in
+            let optimum =
+              if lp then
+                Option.map
+                  (fun (s : Efce_lp.result) -> s.values.(0) +. s.values.(1))
+                  (Efce_lp.solve ~exact:true ~concept plan)
+              else None
+            in
+            let total =
+              List.fold_left
+                (fun acc (st : Optimal.step) -> acc + st.iterations)
+                0 steps
+            in
+            let open_ =
+              List.length
+                (List.filter
+                   (fun (st : Optimal.step) -> st.feasible = None)
+                   steps)
+            in
+            Format.printf
+              "%5d %6d %-6s %6d %8d  (%.4f, %.4f)  %9.5f %9s %-14s %9s %6d %9d \
+               %8.2f%s@."
+              n r name (Optimal.size g) (Optimal.triggers g) v.(0) v.(1)
+              (v.(0) +. v.(1))
+              (match optimum with
+              | Some w -> Printf.sprintf "%.5f" w
+              | None -> "-")
+              paper (sci best.bounds.gain) (List.length steps) total seconds
+              (if open_ > 0 then Printf.sprintf "  (%d undecided)" open_ else "");
+            (n, r, g, Option.value optimum ~default:best.tau))
+          chosen)
       instances
   in
   if penalties <> [] then begin
@@ -556,6 +569,13 @@ let cmds =
           (const optimal
           $ ints [ "items" ] [ 1; 2; 3; 5; 10 ] "Item counts."
           $ ints [ "rounds" ] [ 1 ] "Round counts."
+          $ Arg.(
+              value
+              & opt
+                  (list (enum (List.map (fun (n, _) -> (n, n)) lp_concepts)))
+                  [ "efce" ]
+              & info [ "concept" ] ~docv:"LIST"
+                  ~doc:"Any of efce, efcce, nfcce.")
           $ Arg.(
               value & opt float 1e-4
               & info [ "eps" ] ~docv:"E"
