@@ -1,7 +1,7 @@
 type mode = Threshold of float | Penalty of float
 type t
 
-val create : Efce_lp.plan -> t
+val create : ?concept:Efce_lp.concept -> Efce_lp.plan -> t
 val range : t -> float * float
 val size : t -> int
 val triggers : t -> int

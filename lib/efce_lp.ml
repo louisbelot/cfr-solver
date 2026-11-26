@@ -1,6 +1,7 @@
 open Multi_tree
 
 type objective = Welfare | Player of int
+type concept = Efce | Efcce | Nfcce
 
 type plan = {
   tp : Treeplex.t;
@@ -99,7 +100,7 @@ let residual p x =
     (Float.abs (x.(Hashtbl.find p.index (-1, -1)) -. 1.))
     (consistency p)
 
-let problem ?(objective = Welfare) ?(slack = 0.) p =
+let problem ?(objective = Welfare) ?(slack = 0.) ?(concept = Efce) p =
   let tp = p.tp in
   let tree = tp.tree in
   let off = tree.offset in
@@ -145,38 +146,63 @@ let problem ?(objective = Welfare) ?(slack = 0.) p =
           end)
         [ s0; s1 ])
     p.leaves;
-  for s = 0 to slots tree - 1 do
-    let k = Treeplex.infoset tp s in
-    let pl = tree.owner.(k) in
-    let v = Hashtbl.create 16 in
-    Array.iter (fun j -> Hashtbl.add v j (fresh ())) tp.subtree.(k);
-    let follow =
-      List.map (fun (s0, s1, u) -> (var (s0, s1), rat u.(pl))) above.(s)
-    in
-    row
-      (free (Hashtbl.find v k) (Rat.neg Rat.one) @ follow)
-      Lp.Ge (rat (-.slack));
-    Array.iter
-      (fun j ->
-        for s' = off.(j) to off.(j + 1) - 1 do
-          let children =
-            List.concat_map
-              (fun j' -> free (Hashtbl.find v j') (Rat.neg Rat.one))
-              (Array.to_list tp.below.(s'))
-          in
-          let leaves =
-            List.map
-              (fun (s0, s1, u) ->
-                let o = if pl = 0 then s1 else s0 in
-                (var (with_other pl s o), Rat.neg (rat u.(pl))))
-              ending.(s')
-          in
-          row
-            (free (Hashtbl.find v j) Rat.one @ children @ leaves)
-            Lp.Ge Rat.zero
-        done)
-      tp.subtree.(k)
-  done;
+  let slots_of k = List.init (off.(k + 1) - off.(k)) (fun a -> off.(k) + a) in
+  let under k = List.concat_map (fun s -> above.(s)) (slots_of k) in
+  let triggers =
+    match concept with
+    | Efce ->
+        List.init (slots tree) (fun s ->
+            let k = Treeplex.infoset tp s in
+            (tree.owner.(k), [ k ], s, above.(s)))
+    | Efcce ->
+        List.init (Array.length tp.parent) (fun k ->
+            (tree.owner.(k), [ k ], tp.parent.(k), under k))
+    | Nfcce ->
+        List.init 2 (fun pl ->
+            let roots =
+              List.filter
+                (fun k -> tree.owner.(k) = pl && tp.parent.(k) < 0)
+                (Array.to_list tp.order)
+            in
+            (pl, roots, -1, List.concat_map under roots))
+  in
+  List.iter
+    (fun (pl, roots, seq, follow) ->
+      let v = Hashtbl.create 16 in
+      let region =
+        List.concat_map (fun k -> Array.to_list tp.subtree.(k)) roots
+      in
+      List.iter (fun j -> Hashtbl.add v j (fresh ())) region;
+      let follow =
+        List.map (fun (s0, s1, u) -> (var (s0, s1), rat u.(pl))) follow
+      in
+      row
+        (List.concat_map
+           (fun k -> free (Hashtbl.find v k) (Rat.neg Rat.one))
+           roots
+        @ follow)
+        Lp.Ge (rat (-.slack));
+      List.iter
+        (fun j ->
+          for s' = off.(j) to off.(j + 1) - 1 do
+            let children =
+              List.concat_map
+                (fun j' -> free (Hashtbl.find v j') (Rat.neg Rat.one))
+                (Array.to_list tp.below.(s'))
+            in
+            let leaves =
+              List.map
+                (fun (s0, s1, u) ->
+                  let o = if pl = 0 then s1 else s0 in
+                  (var (with_other pl seq o), Rat.neg (rat u.(pl))))
+                ending.(s')
+            in
+            row
+              (free (Hashtbl.find v j) Rat.one @ children @ leaves)
+              Lp.Ge Rat.zero
+          done)
+        region)
+    triggers;
   let weight u =
     match objective with Welfare -> u.(0) +. u.(1) | Player i -> u.(i)
   in
@@ -185,8 +211,8 @@ let problem ?(objective = Welfare) ?(slack = 0.) p =
   in
   (!next, objective, List.rev !rows)
 
-let solve ?(exact = false) ?objective ?slack p =
-  let vars, objective, rows = problem ?objective ?slack p in
+let solve ?(exact = false) ?objective ?slack ?concept p =
+  let vars, objective, rows = problem ?objective ?slack ?concept p in
   let solution =
     if exact then
       match Lp.maximize ~vars objective rows with

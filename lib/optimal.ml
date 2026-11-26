@@ -24,18 +24,26 @@ type t = {
   hi : float;
 }
 
-let shape_of (tp : Treeplex.t) k =
+let shape_of (tp : Treeplex.t) roots =
   let off = tp.tree.offset in
-  let infosets = tp.subtree.(k) in
+  let infosets =
+    Array.of_list
+      (List.concat_map (fun k -> Array.to_list tp.subtree.(k)) roots)
+  in
   let pos = Hashtbl.create 16 in
   Array.iteri (fun m j -> Hashtbl.replace pos j m) infosets;
-  let base = tp.local.(k) in
+  let base = Array.make (Array.length infosets + 1) 0 in
+  Array.iteri
+    (fun m j -> base.(m + 1) <- base.(m) + off.(j + 1) - off.(j))
+    infosets;
   let local s =
     let j = Treeplex.infoset tp s in
     base.(Hashtbl.find pos j) + s - off.(j)
   in
   let up =
-    Array.map (fun j -> if j = k then -1 else local tp.parent.(j)) infosets
+    Array.map
+      (fun j -> if List.mem j roots then -1 else local tp.parent.(j))
+      infosets
   in
   let kids = Array.make base.(Array.length infosets) [||] in
   Array.iter
@@ -46,25 +54,47 @@ let shape_of (tp : Treeplex.t) k =
     infosets;
   ({ infosets; base; up; kids }, local)
 
-let create plan =
+let create ?(concept = Efce_lp.Efce) plan =
   let tp = Efce_lp.treeplex plan in
   let tree = tp.tree in
   let off = tree.offset in
-  let get s0 s1 =
-    match Efce_lp.index plan s0 s1 with
-    | Some i -> i
+  let get i s o =
+    match if i = 0 then Efce_lp.index plan s o else Efce_lp.index plan o s with
+    | Some x -> x
     | None -> invalid_arg "Optimal.create: irrelevant pair"
   in
-  let shapes =
-    Array.map
-      (fun k -> lazy (shape_of tp k))
-      (Array.init (Array.length tree.keys) Fun.id)
+  let infosets = Array.length tree.keys in
+  let roots pl =
+    List.filter
+      (fun k -> tree.owner.(k) = pl && tp.parent.(k) < 0)
+      (Array.to_list tp.order)
   in
-  let dev = Array.make (slots tree) [] and obey = Array.make (slots tree) [] in
+  let count, region =
+    match concept with
+    | Efce -> (slots tree, fun t -> [ Treeplex.infoset tp t ])
+    | Efcce -> (infosets, fun t -> [ t ])
+    | Nfcce -> (2, roots)
+  in
+  let memo = Hashtbl.create 64 in
+  let shape t =
+    let r = region t in
+    match Hashtbl.find_opt memo r with
+    | Some sh -> sh
+    | None ->
+        let sh = shape_of tp r in
+        Hashtbl.add memo r sh;
+        sh
+  in
+  let local t s = snd (shape t) s in
+  let dev = Array.make count [] and obey = Array.make count [] in
+  let add t entry z =
+    dev.(t) <- entry :: dev.(t);
+    obey.(t) <- z @ obey.(t)
+  in
   let welfare = ref [] and payoffs = ref [] in
   List.iter
     (fun (s0, s1, u) ->
-      let z = get s0 s1 in
+      let z = get 0 s0 s1 in
       welfare := (z, u.(0) +. u.(1)) :: !welfare;
       payoffs := (z, u) :: !payoffs;
       List.iter
@@ -72,12 +102,18 @@ let create plan =
           let rec climb a =
             if a >= 0 then begin
               let k = Treeplex.infoset tp a in
-              let _, local = Lazy.force shapes.(k) in
-              for b = off.(k) to off.(k + 1) - 1 do
-                let pair = if i = 0 then get b o else get o b in
-                dev.(b) <- (local s, pair, u.(i)) :: dev.(b);
-                if b = a then obey.(b) <- (z, u.(i)) :: obey.(b)
-              done;
+              (match concept with
+              | Efce ->
+                  for b = off.(k) to off.(k + 1) - 1 do
+                    add b
+                      (local b s, get i b o, u.(i))
+                      (if b = a then [ (z, u.(i)) ] else [])
+                  done
+              | Efcce ->
+                  add k (local k s, get i tp.parent.(k) o, u.(i)) [ (z, u.(i)) ]
+              | Nfcce ->
+                  if tp.parent.(k) < 0 then
+                    add i (local i s, get i (-1) o, u.(i)) [ (z, u.(i)) ]);
               climb tp.parent.(k)
             end
           in
@@ -85,11 +121,11 @@ let create plan =
         [ (0, s0, s1); (1, s1, s0) ])
     (Efce_lp.leaves plan);
   let triggers =
-    Array.init (slots tree) (fun b ->
+    Array.init count (fun t ->
         {
-          shape = fst (Lazy.force shapes.(Treeplex.infoset tp b));
-          dev = Array.of_list dev.(b);
-          obey = Array.of_list obey.(b);
+          shape = fst (shape t);
+          dev = Array.of_list dev.(t);
+          obey = Array.of_list obey.(t);
         })
   in
   let ws = List.map snd !welfare in
@@ -139,7 +175,9 @@ let backward sh gl visit =
     in
     v.(m) <- visit lo q
   done;
-  v.(0)
+  let total = ref 0. in
+  Array.iteri (fun m u -> if u < 0 then total := !total +. v.(m)) sh.up;
+  !total
 
 let gain_of tr x =
   backward tr.shape (deviation tr x) (fun _ q ->

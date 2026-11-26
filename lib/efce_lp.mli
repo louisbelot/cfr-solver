@@ -1,4 +1,5 @@
 type objective = Welfare | Player of int
+type concept = Efce | Efcce | Nfcce
 type plan
 type result = { values : float array; vars : int; rows : int; x : float array }
 
@@ -11,6 +12,11 @@ val consistency : plan -> (int * int array) list
 val residual : plan -> float array -> float
 
 val solve :
-  ?exact:bool -> ?objective:objective -> ?slack:float -> plan -> result option
+  ?exact:bool ->
+  ?objective:objective ->
+  ?slack:float ->
+  ?concept:concept ->
+  plan ->
+  result option
 
 val mass : plan -> result -> int -> int -> float
