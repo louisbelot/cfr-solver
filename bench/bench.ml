@@ -163,7 +163,24 @@ let efce items rounds =
     (Printf.sprintf "efce lp %dx%d" items rounds)
     elapsed
 
+let optimal name g iterations =
+  let o = Optimal.create (Efce_lp.plan (Multi_tree.build g)) in
+  let lo, hi = Optimal.range o in
+  let s =
+    Optimal.solver ~predictive:true o (Optimal.Threshold ((lo +. hi) /. 2.))
+  in
+  let elapsed, words = time (fun () -> Optimal.run s iterations) in
+  let n = float_of_int iterations in
+  Printf.printf "%-6s %-14s %10.3f ms/it %10.0f words/it\n" name "optimal"
+    (1000. *. elapsed /. n)
+    (words /. n)
+
 let () =
+  optimal "sheriff" (Sheriff.game Sheriff.baseline) 2000;
+  optimal "ships"
+    (Battleship.game
+       { Battleship.baseline with height = 2; width = 2; shots = 3 })
+    500;
   exact "leduc" (module Leduc);
   exact "liars"
     (module (val Liars_dice.game { Liars_dice.dice = 1; faces = 4; wild = true })
