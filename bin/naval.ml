@@ -76,6 +76,22 @@ let solve boards ships gamma repeat eps plain lp =
         (v.(0) +. v.(1))
         (sci best.bounds.gain) (List.length steps) iterations
         (Unix.gettimeofday () -. t0);
+      (match
+         List.filter_map
+           (fun (st : Optimal.step) ->
+             if st.feasible = Some false then Some st.tau else None)
+           steps
+       with
+      | [] -> ()
+      | taus ->
+          Format.printf "  certified: no exact EFCE has welfare above %.6f@."
+            (List.fold_left Float.min infinity taus));
+      let undecided =
+        List.length
+          (List.filter (fun (st : Optimal.step) -> st.feasible = None) steps)
+      in
+      if undecided > 0 then
+        Format.printf "  %d bisection steps hit the iteration cap@." undecided;
       if lp then begin
         let t0 = Unix.gettimeofday () in
         match Efce_lp.solve ~exact:true plan with
