@@ -7,6 +7,7 @@ let () =
       ("steer", Test_steer.tests);
       ("xi", Test_xi.tests);
       ("optimal", Test_optimal.tests);
+      ("battleship", Test_battleship.tests);
       ("team", Test_team.tests);
       ("tme", Test_tme.tests);
       ("flp", Test_flp.tests);
