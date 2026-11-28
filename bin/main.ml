@@ -959,4 +959,4 @@ let () =
            ]
           @ Holdem.cmds @ Multiplayer.cmds @ Exact.cmds @ Auctions.cmds
           @ Markets.cmds @ Trading.cmds @ Exploit.cmds @ Pure.cmds @ Local.cmds
-          @ Deep.cmds @ Collusion.cmds @ Correlation.cmds)))
+          @ Deep.cmds @ Collusion.cmds @ Correlation.cmds @ Naval.cmds)))
