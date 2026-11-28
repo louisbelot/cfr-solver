@@ -1878,6 +1878,13 @@ certificates only rule out thresholds above -0.675232, and the predictive
 run shows the exact optimum is below -0.685608. At eps = 1e-6 three of the
 twenty steps hit the 100,000-iteration cap and counted as infeasible.
 
+The effect grows with the board. On 2x3 with three shots, eps = 1e-4 returns
+a plan with welfare -0.002137 and largest gain 9.0e-05 (3,380 iterations,
+838 s), nearly peace, while the certificates only show that the exact
+optimum is below -0.039856. Uniform play is worth -0.75 there. Closing that
+gap would take an eps near 1e-6, which on the 2x2 board already needed half a
+million iterations.
+
 **Speed.** The 2x3 board has 3.9M relevant pairs and 62,328 triggers, and
 the solver as first written spent 620 ms per iteration there, most of it
 allocating: closures and boxed floats in every regret update, a fresh
