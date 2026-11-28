@@ -1813,6 +1813,87 @@ before, and 540/53 = 10.1887 if they can only opt out at the start. The
 coarse games are also much faster to learn: two triggers for NFCCE against
 22 sequence triggers for EFCE.
 
+### Battleship
+
+Sheriff is one of the two benchmarks Farina, Ling, Fang and Sandholm
+(NeurIPS 2019) introduced for EFCE; the other is a general-sum Battleship,
+and `Battleship` implements it with OpenSpiel's rules. Each player has an
+H x W grid and the same fleet. The players take turns placing one ship at a
+time (player 1 first), horizontally or vertically, without overlap and only
+where the remaining ships still fit. Then they alternate shots at the other
+grid, player 1 first, `shots` each, never twice at the same cell. The shooter
+learns water, hit or sunk, the target sees where the shot landed, and the
+game ends when a fleet is gone or the shots run out. A player scores the
+value of the opponent's ships it sank minus gamma times the value of its own
+losses, so with gamma = 2 every sinking costs welfare and the mediator's job
+is to keep both fleets afloat.
+
+The trees match OpenSpiel's published sizes (the table in
+`battleship.h`, all six rows up to 2x3 with three shots, sequences,
+infosets and terminals for both players), and the relevant-pair counts match
+Table 2 of Farina et al.: 35,241 for the 2x2 board with three shots and
+3,893,341 ("3.89M") for 2x3.
+
+```
+cfr-solver battleship --boards 3x1:2 --eps 1e-6 --lp
+cfr-solver battleship --boards 2x2:3 --eps 1e-5
+```
+
+**Uniform play is a Nash equilibrium.** With one ship of length 1 every cell
+is equally likely to hold the enemy ship, so no shot beats another and no
+placement is safer. The uniform plan has a largest trigger gain of 0 on 3x1,
+1.7e-17 on 2x2 and 8.9e-15 on 2x3. On the paper's worked example (3x1 board,
+one ship, two shots) its welfare is -8/9, the paper's best Nash welfare, and
+both fleets survive with probability 1/9.
+
+**The paper's example, exactly.** The exact LP gives a SW-max EFCE of
+(-1/9, -11/18), welfare -13/18, which is the value in the paper. With a
+single ship, welfare is minus the probability that someone sinks, so the
+mediator raises the chance of peace from 1/9 to 5/18 (their 2.5 times).
+Player 1 still gets -1/9 and all of the gain goes to player 2, who moves
+second and loses more in the uniform equilibrium. Learning with eps = 1e-6
+gives -0.722221 in 3.7 s, and the bisection certifies that no EFCE is
+above -0.722219.
+
+**eps matters more here than on Sheriff.** The returned plan is an eps-EFCE,
+and on Battleship a small slack in absolute terms buys a lot of welfare:
+most triggers sit deep in the tree where their sequences are rarely
+recommended, so their gains are tiny numbers and an eps of 1e-3 switches
+them off. Every bisection step that ends with the upper certificate below 0
+proves that no exact EFCE reaches that threshold, so each run also gives an
+upper bound on the true optimum. On the 2x2 board with three shots
+(predictive regret matching+, this machine):
+
+| eps | learned welfare | max gain | exact optimum at most | games | iterations | seconds |
+|----:|----------------:|---------:|----------------------:|------:|-----------:|--------:|
+| 1e-3 | -0.453873 | 9.9e-04 | -0.453125 | 10 | 1,190 | 1.6 |
+| 1e-4 | -0.685767 | 6.5e-05 | -0.685608 | 14 | 27,770 | 45.2 |
+| 1e-5 | -0.702807 | 4.1e-06 | -0.702789 | 17 | 161,050 | 266.5 |
+| 1e-6 | -0.703514 | 1.0e-06 | -0.703491 | 20 | 515,160 | 826.9 |
+
+Uniform play is worth -0.9375 here (peace with probability 1/16), and the
+best EFCE keeps both fleets afloat about 30% of the time. Plain regret
+matching+ at eps = 1e-4 stops at -0.675303: also a valid 1e-4-EFCE, but its
+certificates only rule out thresholds above -0.675232, and the predictive
+run shows the exact optimum is below -0.685608. At eps = 1e-6 three of the
+twenty steps hit the 100,000-iteration cap and counted as infeasible.
+
+**Speed.** The 2x3 board has 3.9M relevant pairs and 62,328 triggers, and
+the solver as first written spent 620 ms per iteration there, most of it
+allocating: closures and boxed floats in every regret update, a fresh
+deviation vector for each trigger, a copy of the gradient for each
+backward pass. Flattening the trigger data into plain arrays, reusing one
+buffer per pass and writing the hot loops as `for` loops (no `Float.max`,
+which returns a boxed float) leaves the arithmetic in exactly the same order,
+and the certificates after a fixed number of iterations are bit-for-bit the
+same as before:
+
+| game | pairs | before | after | words allocated per iteration |
+|------|------:|-------:|------:|------------------------------:|
+| Sheriff, 10 items, 2 rounds | 3,717 | 0.48 ms | 0.14 ms | 244,082 to 16,841 |
+| Battleship 2x2, 3 shots | 35,241 | 3.54 ms | 1.08 ms | 1,688,416 to 124,705 |
+| Battleship 2x3, 3 shots | 3,893,341 | 620 ms | 229 ms | 109,033,644 to 10,040,449 |
+
 ### Coarse correlation and sampled play
 
 EFCE is the strongest of three nested notions. In an EFCE a player sees each
@@ -3862,6 +3943,14 @@ three-item Sheriff (324 by 8 plans) it must give 420/79, 95/12 and 540/53
 like the correlation-plan LP, and on a 3x3 game the correlated equilibrium's
 5 and the coarse one's 113/17. The bisection must land inside its eps
 bracket for EFCCE and NFCCE as well.
+
+Battleship is checked against OpenSpiel's size table (sequences, infosets and
+terminals for six boards), Farina et al.'s 35,241 relevant pairs, placement
+masks counted by hand, the rule that only placements leaving room for the
+rest of the fleet are offered, a 1x1 game that ends at the first sinking,
+zero-sum payoffs at gamma = 1 and the four payoff pairs that can occur with
+two ships on a 2x2 board, and the paper's worked example: the exact LP must
+give (-1/9, -11/18) and the learned plan must land in its eps bracket.
 
 ## License
 
