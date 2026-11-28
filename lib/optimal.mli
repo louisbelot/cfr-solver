@@ -5,6 +5,7 @@ val create : ?concept:Efce_lp.concept -> Efce_lp.plan -> t
 val range : t -> float * float
 val size : t -> int
 val triggers : t -> int
+val uniform : t -> float array
 val welfare : t -> float array -> float
 val values : t -> float array -> float array
 val gains : t -> float array -> float array

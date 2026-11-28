@@ -6,13 +6,17 @@ type shape = {
   infosets : int array;
   base : int array;
   up : int array;
-  kids : int array array;
+  first : int array;
+  kids : int array;
 }
 
 type trigger = {
   shape : shape;
-  dev : (int * int * float) array;
-  obey : (int * float) array;
+  dev_at : int array;
+  dev_pair : int array;
+  dev_u : float array;
+  obey_z : int array;
+  obey_u : float array;
 }
 
 type t = {
@@ -52,7 +56,10 @@ let shape_of (tp : Treeplex.t) roots =
         kids.(local s) <- Array.map (Hashtbl.find pos) tp.below.(s)
       done)
     infosets;
-  ({ infosets; base; up; kids }, local)
+  let first = Array.make (Array.length kids + 1) 0 in
+  Array.iteri (fun a k -> first.(a + 1) <- first.(a) + Array.length k) kids;
+  ( { infosets; base; up; first; kids = Array.concat (Array.to_list kids) },
+    local )
 
 let create ?(concept = Efce_lp.Efce) plan =
   let tp = Efce_lp.treeplex plan in
@@ -122,10 +129,14 @@ let create ?(concept = Efce_lp.Efce) plan =
     (Efce_lp.leaves plan);
   let triggers =
     Array.init count (fun t ->
+        let d = Array.of_list dev.(t) and o = Array.of_list obey.(t) in
         {
           shape = fst (shape t);
-          dev = Array.of_list dev.(t);
-          obey = Array.of_list obey.(t);
+          dev_at = Array.map (fun (l, _, _) -> l) d;
+          dev_pair = Array.map (fun (_, p, _) -> p) d;
+          dev_u = Array.map (fun (_, _, u) -> u) d;
+          obey_z = Array.map fst o;
+          obey_u = Array.map snd o;
         })
   in
   let ws = List.map snd !welfare in
@@ -141,6 +152,7 @@ let create ?(concept = Efce_lp.Efce) plan =
 let range g = (g.lo, g.hi)
 let size g = Xi.size g.xi
 let triggers g = Array.length g.triggers
+let uniform g = Xi.play (Xi.learner g.xi)
 
 let welfare g x =
   Array.fold_left (fun acc (z, w) -> acc +. (w *. x.(z))) 0. g.welfare
@@ -154,41 +166,60 @@ let values g x =
     g.payoffs;
   v
 
+let width tr = tr.shape.base.(Array.length tr.shape.infosets)
+
 let obeyed tr x =
-  Array.fold_left (fun acc (z, u) -> acc +. (u *. x.(z))) 0. tr.obey
+  let acc = ref 0. in
+  for i = 0 to Array.length tr.obey_z - 1 do
+    acc := !acc +. (tr.obey_u.(i) *. x.(tr.obey_z.(i)))
+  done;
+  !acc
 
-let deviation tr x =
-  let gl = Array.make tr.shape.base.(Array.length tr.shape.infosets) 0. in
-  Array.iter (fun (l, pair, u) -> gl.(l) <- gl.(l) +. (u *. x.(pair))) tr.dev;
-  gl
+let deviation tr x gl =
+  Array.fill gl 0 (width tr) 0.;
+  for i = 0 to Array.length tr.dev_at - 1 do
+    let l = tr.dev_at.(i) in
+    gl.(l) <- gl.(l) +. (tr.dev_u.(i) *. x.(tr.dev_pair.(i)))
+  done
 
-let backward sh gl visit =
-  let v = Array.make (Array.length sh.infosets) 0. in
+let backward sh gl v visit =
   for m = Array.length sh.infosets - 1 downto 0 do
-    let lo = sh.base.(m) and hi = sh.base.(m + 1) in
-    let q =
-      Array.init (hi - lo) (fun b ->
-          Array.fold_left
-            (fun acc m' -> acc +. v.(m'))
-            gl.(lo + b)
-            sh.kids.(lo + b))
-    in
-    v.(m) <- visit lo q
+    for a = sh.base.(m) to sh.base.(m + 1) - 1 do
+      let acc = ref gl.(a) in
+      for k = sh.first.(a) to sh.first.(a + 1) - 1 do
+        acc := !acc +. v.(sh.kids.(k))
+      done;
+      gl.(a) <- !acc
+    done;
+    visit m sh.base.(m) sh.base.(m + 1)
   done;
   let total = ref 0. in
   Array.iteri (fun m u -> if u < 0 then total := !total +. v.(m)) sh.up;
   !total
 
-let gain_of tr x =
-  backward tr.shape (deviation tr x) (fun _ q ->
-      Array.fold_left Float.max neg_infinity q)
+let buffers g =
+  let most f = Array.fold_left (fun acc tr -> max acc (f tr)) 0 g.triggers in
+  ( Array.make (most width) 0.,
+    Array.make (most (fun tr -> Array.length tr.shape.infosets)) 0. )
+
+let gain_of tr x (gl, v) =
+  deviation tr x gl;
+  backward tr.shape gl v (fun m lo hi ->
+      let b = ref neg_infinity in
+      for a = lo to hi - 1 do
+        if gl.(a) > !b then b := gl.(a)
+      done;
+      v.(m) <- !b)
   -. obeyed tr x
 
-let gains g x = Array.map (fun tr -> gain_of tr x) g.triggers
+let gains g x =
+  let bufs = buffers g in
+  Array.map (fun tr -> gain_of tr x bufs) g.triggers
+
 let gain g x = Array.fold_left Float.max neg_infinity (gains g x)
 
-let gradient g mode lam ytil =
-  let d = Array.make (Xi.size g.xi) 0. in
+let gradient g mode lam ys coef d =
+  Array.fill d 0 (Array.length d) 0.;
   let w, scale =
     match mode with Threshold _ -> (lam.(0), 1.) | Penalty k -> (1., k)
   in
@@ -197,38 +228,41 @@ let gradient g mode lam ytil =
     (fun o tr ->
       let l = scale *. lam.(o + 1) in
       if l > 0. then begin
-        Array.iter (fun (z, u) -> d.(z) <- d.(z) +. (l *. u)) tr.obey;
-        let y = ytil.(o) in
-        Array.iter
-          (fun (loc, pair, u) ->
-            d.(pair) <- d.(pair) -. (scale *. u *. y.(loc)))
-          tr.dev
+        for i = 0 to Array.length tr.obey_z - 1 do
+          let z = tr.obey_z.(i) in
+          d.(z) <- d.(z) +. (l *. tr.obey_u.(i))
+        done;
+        let y = ys.(o) and c = coef.(o) in
+        for i = 0 to Array.length tr.dev_at - 1 do
+          let p = tr.dev_pair.(i) in
+          d.(p) <- d.(p) -. (scale *. tr.dev_u.(i) *. (c *. y.(tr.dev_at.(i))))
+        done
       end)
-    g.triggers;
-  d
+    g.triggers
 
 let constant mode lam =
   match mode with Threshold tau -> -.lam.(0) *. tau | Penalty _ -> 0.
 
+let[@inline] pos x = if x > 0. then x else 0.
+
 let regret_match r m y lo hi =
-  let w a = Float.max 0. (r.(a) +. m.(a)) in
   let total = ref 0. in
   for a = lo to hi - 1 do
-    total := !total +. w a
+    total := !total +. pos (r.(a) +. m.(a))
   done;
   for a = lo to hi - 1 do
     y.(a) <-
-      (if !total > 0. then w a /. !total else 1. /. float_of_int (hi - lo))
+      (if !total > 0. then pos (r.(a) +. m.(a)) /. !total
+       else 1. /. float_of_int (hi - lo))
   done
 
 let realize sh y x =
-  Array.iteri
-    (fun m _ ->
-      let p = if sh.up.(m) < 0 then 1. else x.(sh.up.(m)) in
-      for a = sh.base.(m) to sh.base.(m + 1) - 1 do
-        x.(a) <- p *. y.(a)
-      done)
-    sh.infosets
+  for m = 0 to Array.length sh.infosets - 1 do
+    let p = if sh.up.(m) < 0 then 1. else x.(sh.up.(m)) in
+    for a = sh.base.(m) to sh.base.(m + 1) - 1 do
+      x.(a) <- p *. y.(a)
+    done
+  done
 
 type bounds = { lower : float; upper : float; welfare : float; gain : float }
 
@@ -247,26 +281,28 @@ type solver = {
   xbar : float array;
   lbar : float array;
   ybar : float array array;
+  gl : float array;
+  v : float array;
+  grad : float array;
+  coef : float array;
   mutable t : int;
 }
-
-let width tr = tr.shape.base.(Array.length tr.shape.infosets)
 
 let refresh s =
   regret_match s.top s.top_last s.lam 0 (Array.length s.lam);
   Array.iteri
     (fun o tr ->
-      Array.iteri
-        (fun m _ ->
-          regret_match s.regret.(o) s.last.(o) s.y.(o) tr.shape.base.(m)
-            tr.shape.base.(m + 1))
-        tr.shape.infosets;
+      let base = tr.shape.base in
+      for m = 0 to Array.length tr.shape.infosets - 1 do
+        regret_match s.regret.(o) s.last.(o) s.y.(o) base.(m) base.(m + 1)
+      done;
       realize tr.shape s.y.(o) s.plan.(o))
     s.game.triggers
 
 let solver ?(predictive = false) game mode =
   let n = Array.length game.triggers in
   let per f = Array.map (fun tr -> Array.make (width tr) f) game.triggers in
+  let gl, v = buffers game in
   let s =
     {
       game;
@@ -283,6 +319,10 @@ let solver ?(predictive = false) game mode =
       xbar = Array.make (Xi.size game.xi) 0.;
       lbar = Array.make (n + 1) 0.;
       ybar = per 0.;
+      gl;
+      v;
+      grad = Array.make (Xi.size game.xi) 0.;
+      coef = Array.make n 0.;
       t = 0;
     }
   in
@@ -299,20 +339,23 @@ let iterate s =
   value.(0) <-
     (match s.mode with Threshold tau -> tau -. welfare g x | Penalty _ -> 0.);
   let scale = match s.mode with Threshold _ -> 1. | Penalty k -> k in
+  let gl = s.gl and vs = s.v in
   Array.iteri
     (fun o tr ->
       let r = s.regret.(o) and m = s.last.(o) and y = s.y.(o) in
+      deviation tr x gl;
       let v =
-        backward tr.shape (deviation tr x) (fun lo q ->
+        backward tr.shape gl vs (fun k lo hi ->
             let ev = ref 0. in
-            Array.iteri (fun b qb -> ev := !ev +. (y.(lo + b) *. qb)) q;
-            Array.iteri
-              (fun b qb ->
-                let d = qb -. !ev in
-                if s.predictive then m.(lo + b) <- d;
-                r.(lo + b) <- Float.max 0. (r.(lo + b) +. d))
-              q;
-            !ev)
+            for a = lo to hi - 1 do
+              ev := !ev +. (y.(a) *. gl.(a))
+            done;
+            for a = lo to hi - 1 do
+              let d = gl.(a) -. !ev in
+              if s.predictive then m.(a) <- d;
+              r.(a) <- pos (r.(a) +. d)
+            done;
+            vs.(k) <- !ev)
       in
       value.(o + 1) <- scale *. (v -. obeyed tr x))
     g.triggers;
@@ -322,20 +365,21 @@ let iterate s =
     (fun o v ->
       let d = v -. !ev in
       if s.predictive then s.top_last.(o) <- d;
-      s.top.(o) <- Float.max 0. (s.top.(o) +. d))
+      s.top.(o) <- pos (s.top.(o) +. d))
     value;
   refresh s;
   Array.iteri (fun o l -> s.lbar.(o) <- s.lbar.(o) +. (w *. l)) s.lam;
-  let ytil =
-    Array.mapi
-      (fun o p ->
-        let l = s.lam.(o + 1) in
-        let yb = s.ybar.(o) in
-        Array.iteri (fun a v -> yb.(a) <- yb.(a) +. (w *. l *. v)) p;
-        Array.map (fun v -> l *. v) p)
-      s.plan
-  in
-  Xi.update s.med (gradient g s.mode s.lam ytil)
+  Array.iteri
+    (fun o p ->
+      let l = s.lam.(o + 1) in
+      let yb = s.ybar.(o) in
+      for a = 0 to Array.length p - 1 do
+        yb.(a) <- yb.(a) +. (w *. l *. p.(a))
+      done;
+      s.coef.(o) <- l)
+    s.plan;
+  gradient g s.mode s.lam s.plan s.coef s.grad;
+  Xi.update s.med s.grad
 
 let run s n =
   for _ = 1 to n do
@@ -351,7 +395,9 @@ let bounds s =
   let z = total s in
   let lam = Array.map (fun v -> v /. z) s.lbar in
   let ytil = Array.map (Array.map (fun v -> v /. z)) s.ybar in
-  let best, _ = Xi.best s.game.xi (gradient s.game s.mode lam ytil) in
+  let d = Array.make (Xi.size s.game.xi) 0. in
+  gradient s.game s.mode lam ytil (Array.make (Array.length ytil) 1.) d;
+  let best, _ = Xi.best s.game.xi d in
   let w = welfare s.game x and worst = gain s.game x in
   let lower =
     match s.mode with
