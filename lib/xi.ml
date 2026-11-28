@@ -88,6 +88,7 @@ let build plan =
 let size t = t.size
 let ops t = t.ops
 let root t = Option.get (Efce_lp.index t.plan (-1) (-1))
+let[@inline] pos x = if x > 0. then x else 0.
 
 let forward t pick =
   let x = Array.make t.size 0. in
@@ -101,24 +102,18 @@ let forward t pick =
     t.ops;
   x
 
-let backward t g visit =
+let best t g =
+  let choice = Array.make t.width 0 in
   let l = Array.copy g in
   for m = Array.length t.ops - 1 downto 0 do
     match t.ops.(m) with
-    | Fill { src; dst; at } -> l.(src) <- l.(src) +. visit at dst l
-    | Sum { dst; src } -> Array.iter (fun s -> l.(s) <- l.(s) +. l.(dst)) src
-  done;
-  l
-
-let best t g =
-  let choice = Array.make t.width 0 in
-  let l =
-    backward t g (fun at dst l ->
+    | Fill { src; dst; at } ->
         let b = ref 0 in
         Array.iteri (fun a d -> if l.(d) > l.(dst.(!b)) then b := a) dst;
         choice.(at) <- !b;
-        l.(dst.(!b)))
-  in
+        l.(src) <- l.(src) +. l.(dst.(!b))
+    | Sum { dst; src } -> Array.iter (fun s -> l.(s) <- l.(s) +. l.(dst)) src
+  done;
   (l.(root t), forward t (fun at a -> if choice.(at) = a then 1. else 0.))
 
 type learner = {
@@ -127,6 +122,8 @@ type learner = {
   regret : float array;
   last : float array;
   y : float array;
+  x : float array;
+  q : float array;
 }
 
 let learner ?(predictive = false) xi =
@@ -136,35 +133,56 @@ let learner ?(predictive = false) xi =
     regret = Array.make xi.width 0.;
     last = Array.make xi.width 0.;
     y = Array.make xi.width 0.;
+    x = Array.make xi.size 0.;
+    q = Array.make xi.size 0.;
   }
 
 let play l =
-  let w a = Float.max 0. (l.regret.(a) +. l.last.(a)) in
+  let x = l.x and y = l.y and r = l.regret and m = l.last in
+  Array.fill x 0 (Array.length x) 0.;
+  x.(root l.xi) <- 1.;
   Array.iter
     (function
-      | Fill { dst; at; _ } ->
+      | Fill { src; dst; at } ->
           let n = Array.length dst in
           let total = ref 0. in
           for a = at to at + n - 1 do
-            total := !total +. w a
+            total := !total +. pos (r.(a) +. m.(a))
           done;
-          for a = at to at + n - 1 do
-            l.y.(a) <-
-              (if !total > 0. then w a /. !total else 1. /. float_of_int n)
+          for a = 0 to n - 1 do
+            let w = pos (r.(at + a) +. m.(at + a)) in
+            y.(at + a) <-
+              (if !total > 0. then w /. !total else 1. /. float_of_int n);
+            x.(dst.(a)) <- x.(src) *. y.(at + a)
           done
-      | Sum _ -> ())
+      | Sum { dst; src } ->
+          let acc = ref 0. in
+          for i = 0 to Array.length src - 1 do
+            acc := !acc +. x.(src.(i))
+          done;
+          x.(dst) <- !acc)
     l.xi.ops;
-  forward l.xi (fun at a -> l.y.(at + a))
+  x
 
 let update l g =
-  ignore
-    (backward l.xi g (fun at dst q ->
-         let v = ref 0. in
-         Array.iteri (fun a d -> v := !v +. (l.y.(at + a) *. q.(d))) dst;
-         Array.iteri
-           (fun a d ->
-             let r = q.(d) -. !v in
-             if l.predictive then l.last.(at + a) <- r;
-             l.regret.(at + a) <- Float.max 0. (l.regret.(at + a) +. r))
-           dst;
-         !v))
+  let q = l.q and y = l.y and r = l.regret and m = l.last in
+  Array.blit g 0 q 0 (Array.length q);
+  let ops = l.xi.ops in
+  for k = Array.length ops - 1 downto 0 do
+    match ops.(k) with
+    | Fill { src; dst; at } ->
+        let v = ref 0. in
+        for a = 0 to Array.length dst - 1 do
+          v := !v +. (y.(at + a) *. q.(dst.(a)))
+        done;
+        for a = 0 to Array.length dst - 1 do
+          let d = q.(dst.(a)) -. !v in
+          if l.predictive then m.(at + a) <- d;
+          r.(at + a) <- pos (r.(at + a) +. d)
+        done;
+        q.(src) <- q.(src) +. !v
+    | Sum { dst; src } ->
+        for i = 0 to Array.length src - 1 do
+          q.(src.(i)) <- q.(src.(i)) +. q.(dst)
+        done
+  done
