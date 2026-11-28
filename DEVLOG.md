@@ -3387,3 +3387,90 @@ Results (eps = 1e-4, predictive, this machine):
 
 Next: Battleship (Farina et al. 2019) with the `Xi` learner, where the LP
 runs out of memory in the paper, and TrajectorySteer with sampled play.
+
+## 2026-11-27: Battleship and a faster correlation learner
+
+The second benchmark from Farina, Ling, Fang and Sandholm (NeurIPS 2019)
+now runs through the learned SW-max EFCE from yesterday, and the learner got
+about three times faster.
+
+Built:
+
+- `Battleship`: the general-sum Battleship with OpenSpiel's rules. Players
+  place ships in turn (player 1 first), horizontal or vertical, no overlap,
+  and only where the rest of the fleet still fits (a backtracking check over
+  bitmask placements). Then `shots` rounds of alternating shots, no repeats
+  by default. The shooter's infoset records water/hit/sunk, the target's
+  records the cell. Payoff: sunk enemy value minus gamma times own losses.
+  Ships are bitmasks over at most 62 cells, so sinking is
+  `mask land fired = mask`.
+- `cfr-solver battleship --boards 3x1:2,2x2:3`: tree sizes, the uniform
+  plan's values and largest gain, the bisection's learned SW-max EFCE, the
+  best certified upper bound on the exact optimum, optional exact LP.
+- `Optimal` and `Xi` hot paths rewritten without allocation; `Optimal.uniform`.
+- Bench entry for one `Optimal` iteration on Sheriff and 2x2 Battleship.
+
+Design notes:
+
+- Infoset keys are the player's own view (placements, own shots with
+  outcomes, opponent shot cells) prefixed by the player. Turn order is
+  fixed, so the view determines the move number that OpenSpiel's key spells
+  out as `T=`.
+- Speed: triggers kept their deviation and obey terms as arrays of tuples,
+  `deviation` and `backward` allocated per trigger and per infoset, the
+  learners' loops used closures over float refs, and `Float.max` (a function
+  call returning a boxed float) sat in every regret update. Now the trigger
+  data is struct-of-arrays, the kid lists are CSR, `backward` writes q in
+  place into the deviation buffer, `Xi.play`/`Xi.update` reuse the
+  learner's buffers, and the gradient goes into a solver buffer. The order of
+  every floating-point sum is unchanged, so results are bit-for-bit the
+  same: the 3x1 bisection trace (15 steps, 25,440 iterations) matches the
+  old build exactly, as do the certificates after a fixed number of
+  iterations on all three benchmark games.
+- `Xi.play` now returns the learner's own buffer, valid until the next call.
+- Tried and dropped: running the per-trigger passes on domains (dynamic
+  chunks of 16 triggers, one buffer pair per domain, gradient kept
+  sequential). Results stayed bit-identical for 1, 2, 4 and 8 domains, but
+  on 2x3 it only went from 302 to 213 ms per iteration at 8 domains (the
+  machine was busy with three other runs): the `Xi` passes and the gradient
+  are sequential and take most of the time. Not worth the code.
+- The float LP (`bound_float`) does not finish on the 3x1 example: phase 1
+  with the Harris ratio test keeps pivoting (4,000 pivots and counting, ratio
+  never exactly 0, so the stall switch to Bland's rule never fires). The
+  exact LP solves it in 4.3 s. Left as is; the tests use the exact LP.
+
+Checks:
+
+- Sizes equal OpenSpiel's table in `battleship.h` for all six rows up to
+  2x3 with three shots (sequences, infosets, terminals); relevant pairs
+  35,241 and 3,893,341 equal Table 2 of Farina et al.
+- Placement masks by hand, feasibility filter (a 1x3 board with ships 1 and
+  2 only offers the end cells), first sinking ends the game, zero-sum at
+  gamma = 1, the four reachable payoff pairs on 2x2 with ships 1 and 2.
+- Paper's example (3x1, one ship, two shots, gamma = 2): exact LP
+  (-1/9, -11/18), welfare -13/18 as published; uniform play has welfare -8/9
+  (the published best Nash welfare) and gain 0. Learned plan inside its eps
+  bracket.
+- Full suite: 536 tests.
+
+Results (predictive regret matching+, this machine):
+
+| board | eps | learned | certified bound | iterations | seconds |
+|------:|----:|--------:|----------------:|-----------:|--------:|
+| 3x1:2 | 1e-6 | -0.722221 | -0.722219 | 87,920 | 3.7 |
+| 2x2:3 | 1e-3 | -0.453873 | -0.453125 | 1,190 | 1.6 |
+| 2x2:3 | 1e-4 | -0.685767 | -0.685608 | 27,770 | 45.2 |
+| 2x2:3 | 1e-5 | -0.702807 | -0.702789 | 161,050 | 266.5 |
+| 2x2:3 | 1e-6 | -0.703514 | -0.703491 | 515,160 | 826.9 |
+| 2x3:3 | 1e-4 | -0.002137 | -0.039856 | 3,380 | 837.6 |
+
+- The eps-EFCE's welfare moves a lot with eps on Battleship: plain regret
+  matching+ at 1e-4 gives -0.675303 on 2x2, a valid 1e-4-EFCE that the
+  predictive run's certificates show is 0.01 above any exact EFCE.
+- Per iteration, before and after: Sheriff 10/2 0.48 to 0.14 ms, 2x2 3.54
+  to 1.08 ms, 2x3 620 to 229 ms; minor words per iteration 244,082 to
+  16,841, 1,688,416 to 124,705, 109,033,644 to 10,040,449.
+
+Next: an eps relative to how often a trigger is reached (or a sparse exact
+LP) so the 2x3 and 3x2 boards get a real optimum instead of a bracket, then
+Battleship with two ships.
